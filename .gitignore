@@ -1,0 +1,45 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.idea/
+.vscode/
+.DS_Store
+
+data/raw/
+data/profiles/
+data/findings/
+data/viz/
+data/llm_cache/
+data/pipeline/
+
+*.log
+.pytest_cache/
+
+# Generated data
+backend/data/
+data/
+
+# Local Database Fallbacks / Caches
+*.db
+*.sqlite3
+
+# Large datasets & Local Files
+*.csv
+*.xlsx
+*.parquet
+
+# Test Scripts & Scratch
+test_*.py
+progress
+scratch/
+
+# Frontend
+node_modules/
+dist/
+.env.local
+
+# Cache
+*.log

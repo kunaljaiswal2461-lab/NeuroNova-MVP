@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: neuronova_backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8000
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      API_KEY: ${API_KEY:-dev-local-key-change-me}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-neuronova}:${POSTGRES_PASSWORD:-neuronova}@postgres:5432/${POSTGRES_DB:-neuronova}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      DATA_DIR: /app/data
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-104857600}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-gpt-4o}
+      OPENAI_MINI_MODEL: ${OPENAI_MINI_MODEL:-gpt-4o-mini}
+      OPENAI_EMBED_MODEL: ${OPENAI_EMBED_MODEL:-text-embedding-3-small}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - neuronova_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - neuronova_network
+    develop:
+      watch:
+        - action: sync
+          path: ./backend
+          target: /app
+        - action: rebuild
+          path: ./backend/requirements.txt
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: neuronova_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-neuronova}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-neuronova}
+      POSTGRES_DB: ${POSTGRES_DB:-neuronova}
+    ports:
+      - "5433:5432"
+    volumes:
+      - neuronova_pgdata:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-neuronova} -d ${POSTGRES_DB:-neuronova}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - neuronova_network
+
+volumes:
+  neuronova_pgdata:
+    driver: local
+  neuronova_data:
+    driver: local
+
+networks:
+  neuronova_network:
+    driver: bridge
