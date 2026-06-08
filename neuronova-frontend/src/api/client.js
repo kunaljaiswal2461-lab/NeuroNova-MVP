@@ -1,5 +1,5 @@
-const BASE_URL = 'http://localhost:8000/api/v1'
-const API_KEY = 'dev-local-key-change-me'
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1'
+const API_KEY = import.meta.env.VITE_API_KEY || 'dev-local-key-change-me'
 
 function authHeaders() {
   return { 'X-API-Key': API_KEY, 'Content-Type': 'application/json' }
