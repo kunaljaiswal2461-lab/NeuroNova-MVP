@@ -102,7 +102,7 @@ export default function Landing() {
             </span>
           </Link>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 28 }}>
+          <div className="desktop-menu" style={{ display: 'flex', alignItems: 'center', gap: 28 }}>
             {NAV_LINKS.map(l => (
               <a key={l} href={`#${l.toLowerCase().replace(' ', '-')}`}
                 style={{ fontFamily: 'var(--font-body)', fontSize: 14, color: 'var(--color-text-secondary)', transition: 'color 150ms' }}
