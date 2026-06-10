@@ -923,6 +923,21 @@ input, textarea, select { font-family: inherit; }
   .text-display-md { font-size: 28px; }
   .text-headline-md { font-size: 20px; }
 
+  /* 👇 NEW: Fix for mobile navbar overlap 👇 */
+  .landing-nav {
+    justify-content: space-between;
+  }
+  .desktop-menu { /* <-- IMPORTANT: Change this to your actual HTML class name */
+    display: none !important;
+  }
+
+  /* Add the button fix right here! */
+  .landing-nav .btn { 
+    display: none !important; 
+  }
+  /* 👆 End of new navbar fix 👆 */
+  /* 👆 End of new navbar fix 👆 */
+
   /* Spacing & Padding Adjustments */
   .hero-section { padding: var(--space-12) var(--space-4); }
   .section { padding: var(--space-8) var(--space-4); }
