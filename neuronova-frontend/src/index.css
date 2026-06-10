@@ -920,9 +920,69 @@ input, textarea, select { font-family: inherit; }
 /* --- Responsive --- */
 @media (max-width: 768px) {
   .text-display-lg { font-size: 32px; }
+  .text-display-md { font-size: 28px; }
+  .text-headline-md { font-size: 20px; }
+
+  /* Spacing & Padding Adjustments */
   .hero-section { padding: var(--space-12) var(--space-4); }
-  .section { padding: var(--space-10) var(--space-4); }
+  .section { padding: var(--space-8) var(--space-4); }
+  .card-pad { padding: var(--space-4); }
+  .landing-nav, .topbar { padding: 0 var(--space-4); }
+
+  /* Grid Layouts */
   .grid-2, .grid-3 { grid-template-columns: 1fr; }
-  .sidebar { transform: translateX(-100%); }
-  .main-content { margin-left: 0; }
+
+  /* Sidebar Mobile Behavior */
+  .sidebar { transform: translateX(-100%); transition: transform var(--transition-med) cubic-bezier(0.4, 0, 0.2, 1); box-shadow: var(--shadow-dropdown);}
+
+  /* Add this class via React state to open the menu */
+  .sidebar.mobile-open { 
+    transform: translateX(0); 
+  }
+
+  .main-content { margin-left: 0;width: 100vw;overflow-x: hidden; }
+
+  /* Data Table Horizontal Scrolling */
+  .table-responsive-wrapper {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
+  }
+
+  /* Chat Interface Constraints */
+  .chat-user, .chat-assistant { 
+    max-width: 95%; 
+  }
+
+  /* Upload Zone Tweaks */
+  .upload-zone { 
+    padding: var(--space-6) var(--space-4); 
+  }
+}
+
+/* Optional: Mobile overlay backdrop for when sidebar is open */
+.mobile-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(28, 25, 23, 0.4);
+  backdrop-filter: blur(4px);
+  z-index: 90; /* Just below the sidebar (z-index: 100) */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-med);
+}
+
+.mobile-overlay.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* --- Mobile Specific Utilities --- */
+.hamburger-btn, .mobile-close-btn { display: none !important; }
+
+@media (max-width: 768px) {
+  .hamburger-btn { display: flex !important; }
+  .mobile-close-btn { display: block !important; }
 }
