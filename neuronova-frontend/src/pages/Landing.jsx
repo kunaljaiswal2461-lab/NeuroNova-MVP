@@ -1,4 +1,5 @@
-import { Link } from 'react-router-dom'
+import { Link, Navigate } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext'
 
 const NAV_LINKS = ['Product', 'How It Works', 'Use Cases', 'Pricing']
 
@@ -90,6 +91,14 @@ const Check = ({ ok }) => ok ? (
 )
 
 export default function Landing() {
+  const { user, loading } = useAuth();
+
+  // While checking auth, render nothing to avoid landing flash before redirect
+  if (loading) return null;
+
+  // If already logged in, skip the marketing page and go straight to the app
+  if (user) return <Navigate to="/upload" replace />;
+
   return (
     <div className="landing-main dot-grid">
       {/* ── Nav ── */}
@@ -112,7 +121,7 @@ export default function Landing() {
             ))}
           </div>
 
-          <Link to="/upload" className="btn btn-navy btn-lg">
+          <Link to="/register" className="btn btn-navy btn-lg">
             Get Early Access →
           </Link>
         </div>
@@ -144,7 +153,7 @@ export default function Landing() {
           </p>
 
           <div style={{ display: 'flex', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }}>
-            <Link to="/upload" className="btn btn-navy btn-lg">
+            <Link to="/register" className="btn btn-navy btn-lg">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="16 16 12 12 8 16" /><line x1="12" y1="12" x2="12" y2="21" />
                 <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
@@ -322,7 +331,7 @@ export default function Landing() {
                   <span style={{ fontFamily: 'var(--font-display)', fontSize: 36, fontWeight: 700, color: 'var(--color-text-primary)' }}>{plan.price}</span>
                   <span style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-muted)' }}>{plan.period}</span>
                 </div>
-                <Link to="/upload" className={`btn w-full ${plan.featured ? 'btn-primary' : 'btn-ghost-neutral'}`} style={{ justifyContent: 'center', marginBottom: 20, display: 'flex' }}>
+                <Link to="/register" className={`btn w-full ${plan.featured ? 'btn-primary' : 'btn-ghost-neutral'}`} style={{ justifyContent: 'center', marginBottom: 20, display: 'flex' }}>
                   {plan.cta}
                 </Link>
                 <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -347,7 +356,7 @@ export default function Landing() {
         <p style={{ fontFamily: 'var(--font-body)', fontSize: 14, color: 'rgba(255,255,255,0.65)', marginBottom: 28 }}>
           Upload your first dataset and get a full intelligence report in under 30 seconds.
         </p>
-        <Link to="/upload" className="btn btn-lg" style={{ background: 'white', color: 'var(--color-primary)', fontFamily: 'var(--font-heading)', fontWeight: 700, display: 'inline-flex' }}>
+        <Link to="/register" className="btn btn-lg" style={{ background: 'white', color: 'var(--color-primary)', fontFamily: 'var(--font-heading)', fontWeight: 700, display: 'inline-flex' }}>
           Start Finding Answers →
         </Link>
       </section>

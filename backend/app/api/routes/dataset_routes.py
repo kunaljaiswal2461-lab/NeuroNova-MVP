@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, UploadFile, status
 
-from app.core.dependencies import AuthRequired, DBSession, SettingsDep, StorageDep
+from app.core.dependencies import AuthContext, DBSession, SettingsDep, StorageDep, get_auth_context
 from app.db.models.dataset import DatasetStatus
 from app.exceptions.custom_exceptions import NotFoundError
 from app.schemas.response_schemas import (
@@ -27,7 +27,7 @@ from agentic_engine.workflows.profiling_pipeline import run_profiling
 router = APIRouter(
     prefix="/api/v1",
     tags=["datasets"],
-    dependencies=[AuthRequired],
+    dependencies=[AuthContext],  # accepts JWT Bearer or legacy X-API-Key
 )
 
 
@@ -43,6 +43,7 @@ async def upload_dataset(
     storage: StorageDep,
     settings: SettingsDep,
     file: UploadFile = File(..., description="CSV / XLSX / JSON / Parquet"),
+    current_user=Depends(get_auth_context),
 ) -> UploadAck:
     record = await dataset_service.create_dataset_from_upload(
         upload=file,
@@ -50,6 +51,10 @@ async def upload_dataset(
         storage=storage,
         settings=settings,
     )
+    # Stamp the uploading user so we can trace which user owns which dataset
+    if current_user is not None:
+        record.user_id = current_user.id
+        await session.commit()
     background_tasks.add_task(run_profiling, record.id)
     return UploadAck.model_validate(record)
 
@@ -76,9 +81,11 @@ async def list_datasets(
     session: DBSession,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    current_user=Depends(get_auth_context),
 ) -> DatasetList:
+    user_id = current_user.id if current_user is not None else None
     items, total = await dataset_service.list_datasets(
-        session, limit=limit, offset=offset
+        session, limit=limit, offset=offset, user_id=user_id
     )
     return DatasetList(
         items=[DatasetSummary.model_validate(it) for it in items],

@@ -44,9 +44,13 @@ function QueryResultTable({ result }) {
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
         <thead>
           <tr style={{ background: 'var(--color-base)' }}>
-            {(columns ?? []).map(h => (
-              <th key={h} style={{ padding: '6px 10px', fontFamily: 'var(--font-heading)', fontSize: 10, fontWeight: 700, color: 'var(--color-text-muted)', textAlign: 'left', borderBottom: '1px solid var(--color-border)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{h}</th>
-            ))}
+            {(columns ?? []).map((h, i) => {
+              // Backend sends columns as [{name, dtype}, ...] objects; tolerate plain strings too
+              const name = typeof h === 'string' ? h : h?.name ?? `col_${i}`
+              return (
+                <th key={name} style={{ padding: '6px 10px', fontFamily: 'var(--font-heading)', fontSize: 10, fontWeight: 700, color: 'var(--color-text-muted)', textAlign: 'left', borderBottom: '1px solid var(--color-border)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{name}</th>
+              )
+            })}
           </tr>
         </thead>
         <tbody>
@@ -121,13 +125,15 @@ export default function Chat() {
             : m
           ))
         } else if (event === 'citations') {
+          // Backend wraps payload as {"citations": [...]}, unwrap it
           setMessages(prev => prev.map(m => m.id === assistantId
-            ? { ...m, citations: data }
+            ? { ...m, citations: data.citations ?? data }
             : m
           ))
         } else if (event === 'query_result') {
+          // Backend wraps payload as {"query_result": {...}}, unwrap it
           setMessages(prev => prev.map(m => m.id === assistantId
-            ? { ...m, queryResult: data }
+            ? { ...m, queryResult: data.query_result ?? data }
             : m
           ))
         } else if (event === 'token') {

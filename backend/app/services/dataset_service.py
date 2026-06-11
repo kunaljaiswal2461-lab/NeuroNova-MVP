@@ -152,17 +152,21 @@ async def list_datasets(
     *,
     limit: int = 50,
     offset: int = 0,
+    user_id: uuid.UUID | None = None,
 ) -> tuple[list[DatasetRecord], int]:
-    stmt = (
-        select(DatasetRecord)
-        .order_by(DatasetRecord.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-    )
+    stmt = select(DatasetRecord).order_by(DatasetRecord.created_at.desc())
+    count_stmt = select(DatasetRecord.id)
+
+    # When a user is logged in, scope datasets to their ownership.
+    # Legacy X-API-Key callers (user_id=None) still see everything for backwards-compat scripts.
+    if user_id is not None:
+        stmt = stmt.where(DatasetRecord.user_id == user_id)
+        count_stmt = count_stmt.where(DatasetRecord.user_id == user_id)
+
+    stmt = stmt.offset(offset).limit(limit)
     result = await session.execute(stmt)
     items = list(result.scalars().all())
 
-    count_stmt = select(DatasetRecord.id)
     count_result = await session.execute(count_stmt)
     total = len(count_result.all())
 

@@ -54,12 +54,32 @@ class Settings(BaseSettings):
     openai_mini_model: str = "gpt-4o-mini"
     openai_embed_model: str = "text-embedding-3-small"
 
-    # --- ADD THESE BACK IN ---
+    # --- health grades ---
     health_grade_a: int = 90
     health_grade_b: int = 75
     health_grade_c: int = 60
     health_grade_d: int = 45
-    # -------------------------
+
+    # --- JWT ---
+    jwt_secret_key: str = Field(default="change-me-in-production", min_length=16)
+    access_token_expire_minutes: int = 30
+    refresh_token_expire_days: int = 7
+
+    # --- frontend ---
+    frontend_url: str = "http://localhost:5173"
+
+    # --- email (SMTP) ---
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = "noreply@neuronova.ai"
+    smtp_tls: bool = True
+
+    # --- Google OAuth ---
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = "http://localhost:8000/api/v1/auth/google/callback"
 
     # --- DIRECTORIES ---
     @property

@@ -8,8 +8,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware 
 from fastapi.staticfiles import StaticFiles
 
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+
 from app.api.routes import api_router
 from app.core.config import get_settings
+from app.core.limiter import limiter
 from app.core.logging import configure_logging, get_logger
 from app.db.session import dispose_engine
 from app.exceptions.handlers import register_exception_handlers
@@ -25,6 +29,9 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="NeuroNova API", lifespan=lifespan)
+
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
     app.add_middleware(TimingMiddleware)

@@ -23,7 +23,8 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Query, status
 from fastapi.responses import Response, StreamingResponse
 
-from app.core.dependencies import AuthRequired, DBSession, SettingsDep
+from fastapi import Depends
+from app.core.dependencies import AuthContext, DBSession, SettingsDep, get_auth_context
 from app.core.logging import get_logger
 from app.db.models.dataset import DatasetStatus
 from app.exceptions.custom_exceptions import NotFoundError
@@ -46,7 +47,7 @@ logger = get_logger("chat_routes")
 router = APIRouter(
     prefix="/api/v1",
     tags=["chat"],
-    dependencies=[AuthRequired],
+    dependencies=[AuthContext],  # accepts JWT Bearer or legacy X-API-Key
 )
 
 
@@ -62,6 +63,7 @@ async def create_session(
     dataset_id: uuid.UUID,
     body: CreateSessionRequest,
     session: DBSession,
+    current_user=Depends(get_auth_context),
 ) -> SessionResponse:
     # Sessions can only be opened on datasets that have completed the
     # full pipeline — the chat agent depends on the profile, findings,
@@ -76,6 +78,7 @@ async def create_session(
         session_db=session,
         dataset_id=dataset_id,
         mode=body.mode,
+        user_id=current_user.id if current_user is not None else None,
     )
     return SessionResponse(session=created)
 
