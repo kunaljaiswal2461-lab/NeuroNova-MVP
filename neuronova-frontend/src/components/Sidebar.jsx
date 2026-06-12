@@ -51,13 +51,24 @@ const NAV_ITEMS = [
   },
 ]
 
-export default function Sidebar() {
+export default function Sidebar({ isMobileMenuOpen, setIsMobileMenuOpen }) {
   const { activeDataset } = useDataset()
-
   const health = activeDataset?._health ?? null
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${isMobileMenuOpen ? 'mobile-open' : ''}`}>
+      {/* Mobile Close Button */}
+      <button 
+        className="mobile-close-btn"
+        onClick={() => setIsMobileMenuOpen(false)}
+        style={{ position: 'absolute', top: 16, right: 16, background: 'transparent', color: 'rgba(255,255,255,0.5)', cursor: 'pointer' }}
+      >
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
+
       {/* Wordmark */}
       <div style={{ padding: '20px 16px 12px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -138,6 +149,7 @@ export default function Sidebar() {
           <NavLink
             key={item.to}
             to={item.to}
+            onClick={() => setIsMobileMenuOpen(false)} // Closes menu automatically when tapped on mobile
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
             style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', marginBottom: 2, borderRadius: 8, textDecoration: 'none', color: 'rgba(255,255,255,0.65)', fontSize: 14, fontFamily: 'var(--font-body)', fontWeight: 500, cursor: 'pointer', transition: 'all 150ms' }}
           >
