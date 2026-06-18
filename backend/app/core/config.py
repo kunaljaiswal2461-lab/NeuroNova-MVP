@@ -1,5 +1,4 @@
 import os
-import sys
 from pathlib import Path
 from functools import lru_cache
 from typing import Literal
@@ -16,18 +15,13 @@ if ENV_TXT_FILE.exists() and not ENV_FILE.exists():
     print("\n⚠️ WARNING: Found '.env.txt'. Windows hid the extension! Renaming to '.env' automatically...\n")
     ENV_TXT_FILE.rename(ENV_FILE)
 
-# --- 2. FAIL LOUDLY IF MISSING ---
-if not ENV_FILE.exists():
-    print(f"\n❌ FATAL ERROR: Python cannot find a file at this exact path:\n{ENV_FILE}")
-    print("Please create the file or check your folder structure before running the server.\n")
-    sys.exit(1)  # Stop the script completely
-
-# --- 3. FORCE LOAD VARIABLES ---
-load_dotenv(dotenv_path=ENV_FILE, override=False)
+# --- 2. LOAD .env IF PRESENT (silently skip in production where env vars are injected) ---
+if ENV_FILE.exists():
+    load_dotenv(dotenv_path=ENV_FILE, override=False)
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=str(ENV_FILE),
+        env_file=str(ENV_FILE) if ENV_FILE.exists() else None,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
