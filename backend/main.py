@@ -62,7 +62,7 @@ def create_app() -> FastAPI:
             
             for file in all_files:
                 if file.lower().endswith(('.png', '.jpg', '.jpeg', '.svg')):
-                    chart_urls.append(f"http://localhost:8000/viz/{file}")
+                    chart_urls.append(f"{settings.public_url}/viz/{file}")
         
         return {"charts": chart_urls}
 

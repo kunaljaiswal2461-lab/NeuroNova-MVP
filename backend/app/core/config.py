@@ -75,6 +75,7 @@ class Settings(BaseSettings):
 
     # --- frontend ---
     frontend_url: str = "http://localhost:5173"
+    public_url: str = "http://localhost:8000"
 
     # --- email (SMTP) ---
     smtp_host: str = ""
