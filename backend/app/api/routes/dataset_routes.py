@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, Request, UploadFile, status
 
+from app.core.config import get_settings
 from app.core.dependencies import AuthContext, DBSession, SettingsDep, StorageDep, get_auth_context
+from app.middlewares.rate_limiter import limiter
 from app.db.models.dataset import DatasetStatus
 from app.exceptions.custom_exceptions import NotFoundError
 from app.schemas.response_schemas import (
@@ -37,7 +37,9 @@ router = APIRouter(
     status_code=status.HTTP_202_ACCEPTED,
     summary="Upload a dataset",
 )
+@limiter.limit(get_settings().rate_limit_upload)
 async def upload_dataset(
+    request: Request,
     background_tasks: BackgroundTasks,
     session: DBSession,
     storage: StorageDep,
@@ -67,8 +69,12 @@ async def upload_dataset(
 async def get_dataset_status(
     dataset_id: uuid.UUID,
     session: DBSession,
+    current_user=Depends(get_auth_context),
 ) -> DatasetStatusResponse:
-    record = await dataset_service.get_dataset(session, dataset_id)
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
     return DatasetStatusResponse.model_validate(record)
 
 
@@ -101,8 +107,12 @@ async def list_datasets(
 async def get_dataset(
     dataset_id: uuid.UUID,
     session: DBSession,
+    current_user=Depends(get_auth_context),
 ) -> DatasetSummary:
-    record = await dataset_service.get_dataset(session, dataset_id)
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
     return DatasetSummary.model_validate(record)
 
 
@@ -114,8 +124,12 @@ async def get_dataset_profile(
     dataset_id: uuid.UUID,
     session: DBSession,
     settings: SettingsDep,
+    current_user=Depends(get_auth_context),
 ) -> dict[str, Any]:
-    record = await dataset_service.get_dataset(session, dataset_id)
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
     if record.status is not DatasetStatus.COMPLETE:
         raise NotFoundError(
             f"profile for dataset {dataset_id} is not ready",
@@ -150,8 +164,12 @@ async def get_dataset_findings(
         None,
         description="Filter findings for a specific column name",
     ),
+    current_user=Depends(get_auth_context),
 ) -> dict:
-    record = await dataset_service.get_dataset(session, dataset_id)
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
     if record.status is not DatasetStatus.COMPLETE:
         raise NotFoundError(
             f"findings for dataset {dataset_id} are not ready",
@@ -200,8 +218,12 @@ async def get_dataset_viz(
         None,
         description="Return only charts that involve this column",
     ),
+    current_user=Depends(get_auth_context),
 ) -> dict:
-    record = await dataset_service.get_dataset(session, dataset_id)
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
     if record.status is not DatasetStatus.COMPLETE:
         raise NotFoundError(
             f"viz for dataset {dataset_id} is not ready",
@@ -249,8 +271,12 @@ async def get_dataset_insights(
             "Omit to return the full report."
         ),
     ),
+    current_user=Depends(get_auth_context),
 ) -> dict[str, Any]:
-    record = await dataset_service.get_dataset(session, dataset_id)
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
     if record.status is not DatasetStatus.COMPLETE:
         raise NotFoundError(
             f"insights for dataset {dataset_id} are not ready",
@@ -297,6 +323,7 @@ async def retrieve_findings(
     query: RetrievalQuery,
     session: DBSession,
     settings: SettingsDep,
+    current_user=Depends(get_auth_context),
 ) -> RetrievalResult:
     """RAG-style retrieval endpoint backing Layer 7's chat agent.
 
@@ -305,7 +332,10 @@ async def retrieve_findings(
     Empty result with ``degraded=True`` if the dataset has no embeddings
     indexed yet (e.g. pipeline still running or OpenAI key absent).
     """
-    record = await dataset_service.get_dataset(session, dataset_id)
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
     if record.status is not DatasetStatus.COMPLETE:
         raise NotFoundError(
             f"dataset {dataset_id} is not ready for retrieval",

@@ -65,6 +65,20 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
 
+    # --- rate limits (slowapi expressions, e.g. "10/hour") ---
+    rate_limit_upload: str = "10/hour"
+    rate_limit_chat_message: str = "60/hour"
+    rate_limit_interpret: str = "20/hour"
+    rate_limit_session_create: str = "20/hour"
+    rate_limit_global: str = "200/hour"
+    max_concurrent_pipelines: int = 3
+
+    # --- upload abuse protection ---
+    max_upload_rows: int = 5_000_000
+
+    # --- request size + security ---
+    max_request_bytes: int = 110 * 1024 * 1024
+
     # --- frontend ---
     frontend_url: str = "http://localhost:5173"
 

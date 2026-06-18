@@ -25,6 +25,59 @@ _MAX_TOP_VALUES_PER_COL = 5
 _MAX_CORRELATIONS_IN_CONTEXT = 10
 _MAX_FINDING_TITLES_PER_SEVERITY = 20
 
+# Prompt-injection sanitiser — every string flowing from dataset content
+# (column values, finding text, evidence) into a prompt is run through
+# ``_sanitise_value`` before assembly. We truncate long values to keep
+# tokens bounded and replace anything that looks like an instruction
+# injection ("ignore previous", "system prompt", etc.) with a redacted
+# placeholder so the model treats it as data, not control flow.
+_MAX_VALUE_CHARS = 150
+_REDACTED_PLACEHOLDER = "[REDACTED: possible prompt injection]"
+_INJECTION_PHRASES: tuple[str, ...] = (
+    "ignore previous",
+    "ignore prior",
+    "ignore the above",
+    "disregard previous",
+    "disregard prior",
+    "disregard the above",
+    "system prompt",
+    "system message",
+    "you are now",
+    "act as",
+    "pretend to be",
+    "jailbreak",
+    "developer mode",
+    "override instructions",
+    "new instructions",
+    "forget your instructions",
+    "reveal your prompt",
+    "show your prompt",
+)
+
+
+def _sanitise_value(value: Any) -> Any:
+    """Sanitise one value that may end up inside an LLM prompt.
+
+    Non-strings pass through. Strings are truncated to
+    ``_MAX_VALUE_CHARS`` and screened for injection-signal phrases; on a
+    hit the entire value is replaced with a fixed placeholder so the
+    model can't reconstruct the original.
+    """
+    if not isinstance(value, str):
+        return value
+    lowered = value.lower()
+    for phrase in _INJECTION_PHRASES:
+        if phrase in lowered:
+            return _REDACTED_PLACEHOLDER
+    if len(value) > _MAX_VALUE_CHARS:
+        return value[:_MAX_VALUE_CHARS] + "…"
+    return value
+
+
+def _sanitise_list(values: list[Any]) -> list[Any]:
+    """Apply :func:`_sanitise_value` element-wise."""
+    return [_sanitise_value(v) for v in values]
+
 
 # ── public entry points ──────────────────────────────────────────────────────
 
@@ -71,11 +124,11 @@ def serialise_findings_for_prompt(findings: list[Finding]) -> list[dict[str, Any
             "type": f.type.value,
             "severity": f.severity.value,
             "confidence": f.confidence,
-            "column": f.column,
-            "title": f.title,
-            "description": f.description,
+            "column": _sanitise_value(f.column) if f.column is not None else None,
+            "title": _sanitise_value(f.title),
+            "description": _sanitise_value(f.description),
             "evidence": _trim_evidence(f.evidence),
-            "semantic_context": f.semantic_context,
+            "semantic_context": _sanitise_value(f.semantic_context) if f.semantic_context is not None else None,
         }
         for f in findings
     ]
@@ -130,13 +183,16 @@ def _stats_excerpt(col_stats: Any) -> dict[str, Any] | None:
         })
     if col_stats.categorical is not None:
         c = col_stats.categorical
+        # Top values and mode flow from raw column data — sanitise both
+        # before they reach the prompt to neutralise injection attempts
+        # embedded in user-supplied categorical strings.
         top = [
-            {"value": str(v), "count": int(cnt)}
+            {"value": _sanitise_value(str(v)), "count": int(cnt)}
             for v, cnt in (c.top_values or [])[:_MAX_TOP_VALUES_PER_COL]
         ]
         return _drop_none({
             "cardinality": c.cardinality,
-            "mode": c.mode,
+            "mode": _sanitise_value(c.mode) if c.mode is not None else None,
             "top_values": top or None,
         })
     if col_stats.datetime_ is not None:
@@ -187,13 +243,22 @@ def _summarise_findings(findings: FindingsReport) -> dict[str, Any]:
 
 
 def _trim_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
-    """Round floats and strip nulls; structurally preserve everything else."""
+    """Round floats and strip nulls; structurally preserve everything else.
+
+    String values inside evidence can carry raw user data (column
+    samples, top values, sentinel strings) so they are sanitised before
+    being handed to the prompt builder.
+    """
     trimmed: dict[str, Any] = {}
     for key, value in evidence.items():
         if value is None:
             continue
         if isinstance(value, float):
             trimmed[key] = round(value, 4)
+        elif isinstance(value, str):
+            trimmed[key] = _sanitise_value(value)
+        elif isinstance(value, list):
+            trimmed[key] = _sanitise_list(value)
         else:
             trimmed[key] = value
     return trimmed
