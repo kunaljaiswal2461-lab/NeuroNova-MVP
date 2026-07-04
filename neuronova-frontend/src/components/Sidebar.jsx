@@ -61,27 +61,20 @@ export default function Sidebar() {
   return (
     <aside className="sidebar">
       {/* Wordmark */}
+{/* Wordmark */}
       <div style={{ padding: '20px 16px 12px' }}>
-        {/* Changed this wrapper to a Link pointing to '/' */}
         <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none', cursor: 'pointer' }}>
-          <div style={{
-            width: 28, height: 28, borderRadius: 6,
-            background: 'rgba(79,70,229,0.9)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            flexShrink: 0,
-          }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="3" /><path d="M3 12h3M18 12h3M12 3v3M12 18v3" />
-              <path d="M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" />
-            </svg>
-          </div>
+          {/* Replaced the SVG container with the requested image file */}
+          <img 
+            src="/image_908aa6.png" 
+            alt="NeuroNova Logo" 
+            style={{ width: 28, height: 28, borderRadius: 6, flexShrink: 0, objectFit: 'cover' }} 
+          />
           <div>
             <div style={{ fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 15, color: 'white', letterSpacing: '-0.01em' }}>
               NeuroNova
             </div>
-            <div style={{ fontFamily: 'var(--font-body)', fontSize: 10, color: 'rgba(255,255,255,0.5)', letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 1 }}>
-              Enterprise
-            </div>
+            {/* The "Enterprise" text block has been deleted from here */}
           </div>
         </Link>
 
@@ -219,7 +212,7 @@ export default function Sidebar() {
                 onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
               >
-                Explore Website
+                Explore NeuroNova 
               </Link>
               <div style={{ display: 'block', padding: '8px 16px', fontSize: 13, color: 'rgba(255,255,255,0.3)', cursor: 'not-allowed', fontFamily: 'var(--font-body)' }}>
                 Email Support (Soon)
