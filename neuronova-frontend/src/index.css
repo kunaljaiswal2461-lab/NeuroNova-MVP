@@ -756,7 +756,6 @@ input, textarea, select { font-family: inherit; }
   padding: 0 var(--space-10);
 }
 .landing-main {
-  padding-top: 60px;
   min-height: 100vh;
 }
 
