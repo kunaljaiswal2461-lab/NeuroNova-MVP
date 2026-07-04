@@ -66,7 +66,7 @@ export default function Sidebar() {
         <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none', cursor: 'pointer' }}>
           {/* Replaced the SVG container with the requested image file */}
           <img 
-            src="/image_908aa6.png" 
+            src="/logo.png" 
             alt="NeuroNova Logo" 
             style={{ width: 28, height: 28, borderRadius: 6, flexShrink: 0, objectFit: 'cover' }} 
           />
