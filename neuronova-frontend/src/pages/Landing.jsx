@@ -95,7 +95,7 @@ export default function Landing() {
   const { user, loading } = useAuth();
 
   if (loading) return null;
-  if (user) return <Navigate to="/upload" replace />;
+  // if (user) return <Navigate to="/upload" replace />;
 
   return (
     <div className="landing-main dot-grid" style={{ backgroundColor: '#FFFFFF', color: '#0F172A', minHeight: '100vh', fontFamily: '"Inter", system-ui, sans-serif' }}>
