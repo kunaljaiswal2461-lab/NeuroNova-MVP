@@ -93,6 +93,8 @@ const Check = ({ ok }) => ok ? (
 
 export default function Landing() {
   const { user, loading } = useAuth();
+  const ctaLink = user ? '/upload' : '/register';
+
 
   if (loading) return null;
   // if (user) return <Navigate to="/upload" replace />;
@@ -135,8 +137,8 @@ export default function Landing() {
             ))}
           </div>
 
-          <Link to="/register" style={{ backgroundColor: '#0F172A', color: '#FFFFFF', padding: '10px 20px', borderRadius: '8px', fontSize: 14, fontWeight: 600, textDecoration: 'none' }}>
-            Get Early Access →
+          <Link to={ctaLink} style={{ backgroundColor: '#0F172A', color: '#FFFFFF', padding: '10px 20px', borderRadius: '8px', fontSize: 14, fontWeight: 600, textDecoration: 'none' }}>
+            {user ? 'Go to Dashboard →' : 'Get Early Access →'}
           </Link>
           
         </div>
@@ -171,8 +173,8 @@ export default function Landing() {
           </p>
 
           <div style={{ display: 'flex', justifyContent: 'center', gap: 16, flexWrap: 'wrap' }}>
-            <Link to="/register" style={{ backgroundColor: '#0F172A', color: '#FFFFFF', padding: '14px 28px', borderRadius: '10px', fontSize: 16, fontWeight: 600, textDecoration: 'none' }}>
-              Upload Your First Dataset
+            <Link to={ctaLink} style={{ backgroundColor: '#0F172A', color: '#FFFFFF', padding: '14px 28px', borderRadius: '10px', fontSize: 16, fontWeight: 600, textDecoration: 'none' }}>
+              {user ? 'Go to Dashboard' : 'Upload Your First Dataset'}
             </Link>
             <Link to="/explorer" style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', color: '#0F172A', padding: '14px 28px', borderRadius: '10px', fontSize: 16, fontWeight: 600, textDecoration: 'none' }}>
               See a Live Demo
@@ -437,8 +439,8 @@ export default function Landing() {
         <p style={{ fontSize: 18, color: '#94A3B8', marginBottom: 40, maxWidth: 600, margin: '0 auto 40px', lineHeight: 1.6 }}>
           Upload your first dataset and get a full intelligence report in under 30 seconds.
         </p>
-        <Link to="/register" style={{ background: '#FFFFFF', color: '#0F172A', padding: '16px 32px', borderRadius: '12px', fontSize: 16, fontWeight: 700, textDecoration: 'none', display: 'inline-flex' }}>
-          Start Finding Answers →
+        <Link to={ctaLink} style={{ background: '#FFFFFF', color: '#0F172A', padding: '16px 32px', borderRadius: '12px', fontSize: 16, fontWeight: 700, textDecoration: 'none', display: 'inline-flex' }}>
+          {user ? 'Go to Dashboard →' : 'Start Finding Answers →'}
         </Link>
       </section>
 
