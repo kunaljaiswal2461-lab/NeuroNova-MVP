@@ -91,7 +91,7 @@ export default function Sidebar() {
           onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.11)'}
           onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.07)'}
         >
-          <div style={{ width: 22, height: 22, borderRadius: 4, background: 'rgba(79,70,229,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <div style={{ width: 22, height: 22, borderRadius: 4, background: 'rgba(59,130,246,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
               <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="3" y1="15" x2="21" y2="15" /><line x1="9" y1="3" x2="9" y2="21" />
             </svg>

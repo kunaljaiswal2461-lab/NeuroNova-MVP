@@ -60,7 +60,7 @@ export default function Layout({ title, subtitle, actions, children }) {
             </button>
 
             {/* Avatar */}
-            <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'linear-gradient(135deg, #3525CD, #0D9488)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+            <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'linear-gradient(135deg, #3B82F6, #0F172A)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
               <span style={{ fontFamily: 'var(--font-heading)', fontSize: 12, fontWeight: 700, color: 'white' }}>N</span>
             </div>
           </div>

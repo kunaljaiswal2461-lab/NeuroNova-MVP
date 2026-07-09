@@ -7,33 +7,33 @@
 /* --- CSS Custom Properties (Design Tokens) --- */
 :root {
   /* Page & Surface */
-  --color-base: #F7F6F3;
+  --color-base: #F8FAFC;
   --color-card: #FFFFFF;
-  --color-border: #E5E2DA;
-  --color-border-light: #F1EFEC;
-  --color-surface-variant: #E4E1EE;
+  --color-border: #E2E8F0;
+  --color-border-light: #F1F5F9;
+  --color-surface-variant: #EFF6FF;
 
   /* Primary */
-  --color-primary: #1E3A5F;
+  --color-primary: #0F172A;
   --color-primary-50: #EFF6FF;
-  --color-primary-indigo: #3525CD;
-  --color-primary-container: #4F46E5;
-  --color-primary-hover: #162d4a;
+  --color-primary-indigo: #3B82F6;
+  --color-primary-container: #2563EB;
+  --color-primary-hover: #1E293B;
 
-  /* Success / Teal */
-  --color-success: #0D9488;
-  --color-success-bg: #F0FDFA;
-  --color-success-border: #99F6E4;
+  /* Success / Emerald */
+  --color-success: #10B981;
+  --color-success-bg: #ECFDF5;
+  --color-success-border: #A7F3D0;
 
   /* Warning / Amber */
   --color-warning: #D97706;
   --color-warning-bg: #FFFBEB;
   --color-warning-border: #FDE68A;
 
-  /* Danger / Rose */
-  --color-danger: #E11D48;
-  --color-danger-bg: #FFF1F2;
-  --color-danger-border: #FECDD3;
+  /* Danger / Red */
+  --color-danger: #EF4444;
+  --color-danger-bg: #FEF2F2;
+  --color-danger-border: #FECACA;
 
   /* Info / Blue */
   --color-info: #2563EB;
@@ -41,14 +41,14 @@
   --color-info-border: #BFDBFE;
 
   /* Text */
-  --color-text-primary: #1C1917;
-  --color-text-secondary: #6B6560;
-  --color-text-muted: #A09890;
+  --color-text-primary: #0F172A;
+  --color-text-secondary: #64748B;
+  --color-text-muted: #94A3B8;
   --color-text-on-dark: #FFFFFF;
 
   /* Typography */
-  --font-display: 'Bricolage Grotesque', 'Georgia', serif;
-  --font-heading: 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-display: 'Inter', system-ui, sans-serif;
+  --font-heading: 'Inter', system-ui, sans-serif;
   --font-body: 'Inter', system-ui, sans-serif;
   --font-data: 'JetBrains Mono', 'Consolas', monospace;
 
@@ -72,10 +72,10 @@
   --radius-full: 9999px;
 
   /* Shadows */
-  --shadow-card: 0 1px 2px rgba(28,25,23,0.04), 0 4px 16px rgba(28,25,23,0.06);
-  --shadow-card-hover: 0 2px 4px rgba(28,25,23,0.06), 0 8px 24px rgba(28,25,23,0.10);
-  --shadow-dropdown: 0 8px 24px rgba(28,25,23,0.12);
-  --shadow-input-focus: 0 0 0 3px rgba(53, 37, 205, 0.12);
+  --shadow-card: 0 1px 2px rgba(15,23,42,0.04), 0 4px 16px rgba(15,23,42,0.06);
+  --shadow-card-hover: 0 2px 4px rgba(15,23,42,0.06), 0 8px 24px rgba(15,23,42,0.10);
+  --shadow-dropdown: 0 8px 24px rgba(15,23,42,0.12);
+  --shadow-input-focus: 0 0 0 3px rgba(59, 130, 246, 0.15);
 
   /* Layout */
   --sidebar-width: 240px;
@@ -87,7 +87,7 @@
   --transition-slow: 600ms ease;
 
   /* Dot Grid */
-  --dot-color: rgba(196, 192, 186, 0.35);
+  --dot-color: rgba(148, 163, 184, 0.35);
   --dot-size: 1.2px;
   --dot-gap: 22px;
 }
@@ -277,14 +277,14 @@ input, textarea, select { font-family: inherit; }
   border: 1px solid var(--color-info-border);
 }
 .badge-neutral {
-  background: #F5F3F0;
+  background: #F1F5F9;
   color: var(--color-text-secondary);
   border: 1px solid var(--color-border);
 }
 .badge-indigo {
-  background: #EDEAFF;
+  background: #DBEAFE;
   color: var(--color-primary-indigo);
-  border: 1px solid #C4BFFE;
+  border: 1px solid #93C5FD;
 }
 
 /* --- Grade Badges --- */
@@ -311,9 +311,9 @@ input, textarea, select { font-family: inherit; }
   align-items: center;
   gap: 4px;
   padding: 4px 10px;
-  background: #F0EDF9;
+  background: #EFF6FF;
   color: var(--color-primary-indigo);
-  border: 1px solid #DDD9F5;
+  border: 1px solid #BFDBFE;
   border-radius: var(--radius-sm);
   font-family: var(--font-data);
   font-size: 12px;
@@ -330,7 +330,7 @@ input, textarea, select { font-family: inherit; }
 }
 .type-numeric { background: #DBEAFE; color: #1D4ED8; }
 .type-categorical { background: #FCE7F3; color: #BE185D; }
-.type-identifier { background: #F5F3FF; color: #6D28D9; }
+.type-identifier { background: #EFF6FF; color: #1D4ED8; }
 .type-financial { background: #ECFDF5; color: #065F46; }
 .type-temporal { background: #FFF7ED; color: #C2410C; }
 .type-geographic { background: #F0FDF4; color: #166534; }
@@ -384,7 +384,7 @@ input, textarea, select { font-family: inherit; }
   50% { opacity: 1; }
 }
 .skeleton {
-  background: #E9E6E0;
+  background: #E2E8F0;
   border-radius: var(--radius-sm);
   animation: pulse-skeleton 1.5s ease-in-out infinite;
 }
@@ -392,8 +392,8 @@ input, textarea, select { font-family: inherit; }
 /* --- Scrollbar Styling --- */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #D4D0C8; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #B8B3AA; }
+::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
 
 /* --- Sidebar Layout --- */
 .app-layout {
@@ -463,7 +463,7 @@ input, textarea, select { font-family: inherit; }
   color: white;
 }
 .nav-item.active {
-  background: rgba(79, 70, 229, 0.85);
+  background: rgba(59, 130, 246, 0.85);
   color: white;
 }
 .nav-item svg { width: 16px; height: 16px; flex-shrink: 0; }
@@ -553,7 +553,7 @@ input, textarea, select { font-family: inherit; }
   font-size: 14px;
 }
 .data-table tr:last-child td { border-bottom: none; }
-.data-table tr:hover td { background: #FAFAF8; }
+.data-table tr:hover td { background: #F8FAFC; }
 
 /* --- Chat Bubble --- */
 .chat-user {
@@ -599,7 +599,7 @@ input, textarea, select { font-family: inherit; }
 .mode-auto {
   background: var(--color-primary-50);
   color: var(--color-primary-indigo);
-  border: 1px solid #C4BFFE;
+  border: 1px solid #93C5FD;
 }
 
 /* --- Dashed Upload Zone --- */
@@ -613,7 +613,7 @@ input, textarea, select { font-family: inherit; }
 }
 .upload-zone:hover, .upload-zone.drag-active {
   border-color: var(--color-primary-indigo);
-  background: #F5F3FF;
+  background: #EFF6FF;
 }
 
 /* --- Progress Step --- */
