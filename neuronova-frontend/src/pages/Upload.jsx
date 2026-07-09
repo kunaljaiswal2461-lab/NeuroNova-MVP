@@ -183,7 +183,7 @@ export default function Upload() {
         >
           <input ref={fileRef} type="file" style={{ display: 'none' }} accept=".csv,.xlsx,.json,.parquet" onChange={handleFileChange} />
 
-          <div style={{ width: 52, height: 52, borderRadius: '50%', background: '#F0EDF9', border: '1px solid #DDD9F5', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
+          <div style={{ width: 52, height: 52, borderRadius: '50%', background: '#EFF6FF', border: '1px solid #BFDBFE', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary-indigo)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="16 16 12 12 8 16" /><line x1="12" y1="12" x2="12" y2="21" />
               <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
@@ -303,7 +303,7 @@ export default function Upload() {
                     <tr key={ds.dataset_id}>
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                          <div style={{ width: 28, height: 28, borderRadius: 6, background: '#F0EDF9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-primary-indigo)', flexShrink: 0 }}>
+                          <div style={{ width: 28, height: 28, borderRadius: 6, background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-primary-indigo)', flexShrink: 0 }}>
                             {ext}
                           </div>
                           <span style={{ fontFamily: 'var(--font-data)', fontSize: 13, color: 'var(--color-text-primary)' }}>{ds.original_name}</span>
