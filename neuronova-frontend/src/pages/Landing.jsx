@@ -1,5 +1,6 @@
 import { Link, Navigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import DatasetExplorerDemo from '../components/landing/DatasetExplorerDemo'
 
 const NAV_LINKS = ['Product', 'How It Works', 'Use Cases', 'Pricing']
 
@@ -184,57 +185,7 @@ export default function Landing() {
 
         {/* Product Preview with floating animation */}
         <div className="anim-fade-up floating-ui" style={{ animationDelay: '120ms', marginTop: 80 }}>
-          <div className="preview-window" style={{ maxWidth: 800, margin: '0 auto', textAlign: 'left', backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 16, overflow: 'hidden', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.08)' }}>
-            <div className="preview-title-bar" style={{ backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0', padding: '12px 16px', display: 'flex', alignItems: 'center' }}>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#FF5F57' }} />
-                <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#FEBC2E' }} />
-                <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#28C840' }} />
-              </div>
-              <span style={{ marginLeft: 16, fontFamily: 'monospace', fontSize: 12, color: '#94A3B8' }}>Dataset Explorer · sales_data_q3.csv</span>
-            </div>
-            <div style={{ display: 'flex', minHeight: 300 }}>
-              <div style={{ width: 200, borderRight: '1px solid #E2E8F0', padding: '20px', background: '#F8FAFC', display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Files</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px', background: '#E2E8F0', borderRadius: 8 }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>sales_data_q3.csv</span>
-                </div>
-                <div style={{ marginTop: 'auto', background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 12, padding: '16px' }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: '#64748B', marginBottom: 4 }}>Health Score</div>
-                  <div style={{ fontSize: 32, fontWeight: 800, color: '#0F172A', letterSpacing: '-0.02em' }}>74 <span style={{ fontSize: 14, fontWeight: 500, color: '#94A3B8' }}>/ 100</span></div>
-                </div>
-              </div>
-
-              <div style={{ flex: 1, padding: '24px' }}>
-                <div style={{ marginBottom: 20 }}>
-                  <span style={{ fontSize: 16, fontWeight: 700, color: '#0F172A', letterSpacing: '-0.02em' }}>Schema Overview</span>
-                </div>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                  <thead>
-                    <tr>
-                      {['Column Name', 'Type', 'Nulls', 'Insight'].map(h => (
-                        <th key={h} style={{ padding: '10px 12px', fontWeight: 600, fontSize: 12, color: '#64748B', textAlign: 'left', textTransform: 'uppercase', borderBottom: '1px solid #E2E8F0' }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {SCHEMA_PREVIEW_ROWS.map((row, i) => (
-                      <tr key={i} style={{ borderBottom: '1px solid #F1F5F9' }}>
-                        <td style={{ padding: '14px 12px', fontWeight: 500, color: '#0F172A' }}>{row.col}</td>
-                        <td style={{ padding: '14px 12px', fontFamily: 'monospace', color: '#64748B' }}>{row.type}</td>
-                        <td style={{ padding: '14px 12px', color: row.nulls === '0%' ? '#94A3B8' : '#EF4444', fontWeight: row.nulls === '0%' ? 400 : 600 }}>{row.nulls}</td>
-                        <td style={{ padding: '14px 12px' }}>
-                          <span style={{ fontSize: 11, fontWeight: 700, color: row.insightColor, backgroundColor: `${row.insightColor}15`, padding: '6px 10px', borderRadius: 6 }}>
-                            {row.insight}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
+          <DatasetExplorerDemo />
         </div>
       </section>
 
