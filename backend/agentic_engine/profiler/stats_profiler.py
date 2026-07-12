@@ -1,6 +1,7 @@
 """Per-column statistical profile."""
 from __future__ import annotations
 
+import numpy as np 
 import math
 from typing import Literal
 
@@ -68,6 +69,14 @@ def _numeric_stats(series: pl.Series) -> NumericStats:
         except Exception:
             skew, kurt = None, None
 
+        try:
+            n_bins=max(10,min(50,int(count*0.05)))
+            counts, edges=np.histogram(arr,bins=n_bins)
+            bin_edges=[float(e) for e in edges]
+            bin_counts=[int(c) for c in counts]
+        except:
+            bin_edges,bin_counts=None,None
+
     return NumericStats(
         count=count,
         mean=_safe_float(non_null.mean()),
@@ -79,6 +88,8 @@ def _numeric_stats(series: pl.Series) -> NumericStats:
         max=_safe_float(non_null.max()),
         skew=skew,
         kurtosis=kurt,
+        bin_edges=bin_edges,
+        bin_counts=bin_counts,
     )
 
 

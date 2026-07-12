@@ -80,6 +80,8 @@ def build(report: ProfileReport, idx: FindingsIndex) -> list[VizChart]:
                         "bins": _bin_count(num.count),
                         "x_label": x_label,
                         "y_label": "Count",
+                        "bin_edges":num.bin_edges,
+                        "bin_counts":num.bin_counts,
                         "stats": {
                             "mean": num.mean,
                             "median": num.median,
