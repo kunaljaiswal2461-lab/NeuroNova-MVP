@@ -18,7 +18,8 @@ from agentic_engine.profiler.report import (
     QualitySection,
     SchemaSection,
 )
-from agentic_engine.profiler.confidence import confidence_score
+
+from agentic_engine.conversational.findings.confidence import confidence_score
 from agentic_engine.profiler.report import StatsSection
 
 
