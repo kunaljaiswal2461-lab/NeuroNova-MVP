@@ -56,7 +56,8 @@ class NumericStats(BaseModel):
     max: float | None = None
     skew: float | None = None
     kurtosis: float | None = None
-
+    bin_edges: list[float] | None=None 
+    bin_counts: list[int] | None=None
 
 class CategoricalStats(BaseModel):
     count: int
