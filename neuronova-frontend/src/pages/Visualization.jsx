@@ -62,6 +62,159 @@ function SkipPlaceholder({ column, reason }) {
   )
 }
 
+function HistogramBars({ edges, counts, meanVal, medianVal }) {
+  if (!edges || !counts || counts.length === 0) return null
+  const maxCount = Math.max(...counts, 1)
+  const min = edges[0]
+  const max = edges[edges.length - 1]
+  const range = max - min || 1
+  const toPct = (v) => ((v - min) / range) * 100
+
+  return (
+    <div style={{ padding: '0 4px' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', height: 180, gap: 2, position: 'relative' }}>
+        {counts.map((count, i) => {
+          const heightPct = (count / maxCount) * 100
+          const binStart = edges[i]
+          const binEnd = edges[i + 1]
+          return (
+            <div
+              key={i}
+              title={`${binStart.toFixed(2)} – ${binEnd.toFixed(2)}: ${count.toLocaleString()}`}
+              style={{
+                flex: 1,
+                height: `${heightPct}%`,
+                background: 'var(--color-primary-indigo)',
+                borderRadius: '2px 2px 0 0',
+                minHeight: count > 0 ? 2 : 0,
+                transition: 'height 400ms ease',
+                cursor: 'default',
+              }}
+            />
+          )
+        })}
+        {meanVal != null && (
+          <div style={{
+            position: 'absolute', top: 0, bottom: 0,
+            left: `${toPct(meanVal)}%`,
+            width: 2, background: '#EF4444', opacity: 0.8,
+          }} title={`Mean: ${meanVal.toFixed(2)}`} />
+        )}
+        {medianVal != null && (
+          <div style={{
+            position: 'absolute', top: 0, bottom: 0,
+            left: `${toPct(medianVal)}%`,
+            width: 2, background: 'var(--color-text-primary)', opacity: 0.5,
+          }} title={`Median: ${medianVal.toFixed(2)}`} />
+        )}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
+        <span style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)' }}>{min.toFixed(2)}</span>
+        <span style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)' }}>{max.toFixed(2)}</span>
+      </div>
+    </div>
+  )
+}
+
+function BoxPlotChart({ stats, outlierPct, iqr, yLabel }) {
+  if (!stats) return null
+  const { min, p25, median, p75, max, mean } = stats
+  const range = (max ?? 0) - (min ?? 0)
+  const toPos = (v) => range > 0 ? ((v - min) / range) * 100 : 50
+  return (
+    <div style={{ padding: '24px 24px 16px' }}>
+      <div style={{ position: 'relative', height: 70, marginBottom: 28 }}>
+        {/* Whisker line */}
+        <div style={{ position: 'absolute', top: '50%', left: `${toPos(min)}%`, right: `${100 - toPos(max)}%`, height: 2, background: 'var(--color-primary-indigo)', transform: 'translateY(-50%)' }} />
+        {/* IQR box */}
+        <div style={{ position: 'absolute', top: '20%', left: `${toPos(p25)}%`, width: `${toPos(p75) - toPos(p25)}%`, height: '60%', background: 'var(--color-primary-indigo)', opacity: 0.2, borderRadius: 4, border: '1.5px solid var(--color-primary-indigo)' }} />
+        {/* Median line */}
+        <div style={{ position: 'absolute', top: '15%', left: `${toPos(median)}%`, width: 2, height: '70%', background: 'var(--color-primary-indigo)', transform: 'translateX(-50%)' }} />
+        {/* Mean marker */}
+        {mean != null && (
+          <div style={{ position: 'absolute', top: -4, left: `${toPos(mean)}%`, width: 10, height: 10, borderRadius: '50%', background: '#EF4444', transform: 'translateX(-50%)', border: '2px solid white', boxShadow: '0 0 0 1px #EF4444' }} title={`Mean: ${mean.toFixed(2)}`} />
+        )}
+        {/* Min / Max labels */}
+        <div style={{ position: 'absolute', bottom: -22, left: `${toPos(min)}%`, fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)', transform: 'translateX(-50%)' }}>{min?.toFixed(2)}</div>
+        <div style={{ position: 'absolute', bottom: -22, left: `${toPos(max)}%`, fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)', transform: 'translateX(-50%)' }}>{max?.toFixed(2)}</div>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'center', gap: 20, flexWrap: 'wrap' }}>
+        {outlierPct != null && (
+          <span style={{ fontFamily: 'var(--font-data)', fontSize: 12, color: outlierPct > 5 ? '#E11D48' : 'var(--color-text-muted)' }}>
+            {outlierPct.toFixed(2)}% outliers (IQR fence)
+          </span>
+        )}
+        {iqr != null && (
+          <span style={{ fontFamily: 'var(--font-data)', fontSize: 12, color: 'var(--color-text-muted)' }}>
+            IQR: {iqr.toFixed(2)}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function NullMatrixChart({ columns, nullPcts, flagged }) {
+  if (!columns || columns.length === 0) return null
+  const flaggedSet = new Set(flagged ?? [])
+  return (
+    <div style={{ padding: '10px 4px' }}>
+      {columns.map((col, i) => {
+        const pct = nullPcts[i] ?? 0
+        const isFlagged = flaggedSet.has(col)
+        return (
+          <div key={col} style={{ marginBottom: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+              <span style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-primary)' }}>{col}</span>
+              <span style={{ fontFamily: 'var(--font-data)', fontSize: 12, color: isFlagged ? '#E11D48' : 'var(--color-text-secondary)' }}>{pct.toFixed(1)}%</span>
+            </div>
+            <div style={{ height: 8, background: 'var(--color-border-light)', borderRadius: 4, overflow: 'hidden' }}>
+              <div style={{ height: '100%', width: `${pct}%`, background: isFlagged ? '#E11D48' : 'var(--color-primary)', borderRadius: 4 }} />
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function RadarChart({ dimensions, scores, axisMax = 100 }) {
+  if (!dimensions || !scores) return null
+  const n = dimensions.length
+  const cx = 100, cy = 100, r = 80
+  const angleFor = (i) => (Math.PI * 2 * i) / n - Math.PI / 2
+  const pointFor = (i, val) => {
+    const scale = val / axisMax
+    const angle = angleFor(i)
+    return [cx + r * scale * Math.cos(angle), cy + r * scale * Math.sin(angle)]
+  }
+  const dataPoints = scores.map((s, i) => pointFor(i, s))
+  const dataPath = dataPoints.map(p => p.join(',')).join(' ')
+  const axisLines = dimensions.map((_, i) => {
+    const [x, y] = pointFor(i, axisMax)
+    return <line key={i} x1={cx} y1={cy} x2={x} y2={y} stroke="var(--color-border)" strokeWidth="1" />
+  })
+  const labels = dimensions.map((d, i) => {
+    const [x, y] = pointFor(i, axisMax * 1.18)
+    return (
+      <text key={d} x={x} y={y} fontSize="9" fill="var(--color-text-muted)" textAnchor="middle" fontFamily="var(--font-data)">
+        {d}
+      </text>
+    )
+  })
+  return (
+    <svg viewBox="0 0 200 200" width="220" height="220">
+      {[0.25, 0.5, 0.75, 1].map(f => (
+        <circle key={f} cx={cx} cy={cy} r={r * f} fill="none" stroke="var(--color-border-light)" strokeWidth="1" />
+      ))}
+      {axisLines}
+      <polygon points={dataPath} fill="var(--color-primary-indigo)" fillOpacity="0.25" stroke="var(--color-primary-indigo)" strokeWidth="2" />
+      {dataPoints.map(([x, y], i) => <circle key={i} cx={x} cy={y} r="3" fill="var(--color-primary-indigo)" />)}
+      {labels}
+    </svg>
+  )
+}
+
 // Per-chart-type display name + color, used by the Chart Catalogue.
 const CHART_TYPE_DISPLAY = {
   HISTOGRAM:   { label: 'HISTOGRAM',   color: '#1E3A5F' },
@@ -122,6 +275,7 @@ export default function Visualization() {
 
   // Derived collections by chart type
   const histogramCharts = charts.filter(c => c.type === 'HISTOGRAM')
+  const boxplotCharts   = charts.filter(c => c.type === 'BOXPLOT')
   const barCharts       = charts.filter(c => c.type === 'BAR')
   const heatmapChart    = charts.find(c => c.type === 'HEATMAP') ?? null
   const timeseriesCharts= charts.filter(c => c.type === 'TIMESERIES')
@@ -129,6 +283,9 @@ export default function Visualization() {
   // Active histogram stats
   const activeHistogram = histogramCharts.find(c => c.config?.x_col === activeCol || c.columns?.[0] === activeCol) ?? null
   const stats = activeHistogram?.config?.stats ?? null
+
+  // Active boxplot for the same column, if one exists
+  const activeBoxplot = boxplotCharts.find(c => c.config?.y_col === activeCol || c.columns?.[0] === activeCol) ?? null
 
   // Active bar chart
   const activeBarChart = barCharts.find(c => c.config?.x_col === activeBarCol || c.columns?.[0] === activeBarCol) ?? null
@@ -340,7 +497,7 @@ export default function Visualization() {
                 )
               })()}
 
-              {/* ── NUMERIC: Percentile Box ── */}
+              {/* ── NUMERIC: Histogram + Box Plot ── */}
               {activeTab === 'Numeric' && activeColIsSkipped ? (
                 <SkipPlaceholder column={activeCol} reason={skippedByName[activeCol]?.reason} />
               ) : activeTab === 'Numeric' && (
@@ -352,42 +509,41 @@ export default function Visualization() {
                     <p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-muted)' }}>{loading ? 'Loading…' : 'No numeric charts'}</p>
                     {!loading && <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-muted)', opacity: 0.7 }}>Profile a dataset with numeric columns</p>}
                   </div>
-                ) : (() => {
-                  const { min, p25, median, p75, max, mean } = stats
-                  const range = (max ?? 0) - (min ?? 0)
-                  const toPos = (v) => range > 0 ? ((v - min) / range) * 100 : 50
-                  return (
-                    <div style={{ height: 220, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '0 24px' }}>
-                      <p style={{ fontFamily: 'var(--font-heading)', fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 24 }}>
-                        Distribution Summary — {activeCol}
-                      </p>
-                      {/* Box plot visualization */}
-                      <div style={{ position: 'relative', height: 60, marginBottom: 16 }}>
-                        {/* Whisker line */}
-                        <div style={{ position: 'absolute', top: '50%', left: `${toPos(min ?? 0)}%`, right: `${100 - toPos(max ?? 0)}%`, height: 2, background: 'var(--color-primary-indigo)', transform: 'translateY(-50%)' }} />
-                        {/* IQR box */}
-                        <div style={{ position: 'absolute', top: '20%', left: `${toPos(p25 ?? 0)}%`, width: `${toPos(p75 ?? 0) - toPos(p25 ?? 0)}%`, height: '60%', background: 'var(--color-primary-indigo)', opacity: 0.2, borderRadius: 4, border: '1.5px solid var(--color-primary-indigo)' }} />
-                        {/* Median line */}
-                        <div style={{ position: 'absolute', top: '15%', left: `${toPos(median ?? 0)}%`, width: 2, height: '70%', background: 'var(--color-primary-indigo)', transform: 'translateX(-50%)' }} />
-                        {/* Mean marker */}
-                        {mean !== null && mean !== undefined && (
-                          <div style={{ position: 'absolute', top: '-4px', left: `${toPos(mean)}%`, width: 10, height: 10, borderRadius: '50%', background: '#EF4444', transform: 'translateX(-50%)', border: '2px solid white', boxShadow: '0 0 0 1px #EF4444' }} title={`Mean: ${fmt(mean)}`} />
-                        )}
-                        {/* Min / Max labels */}
-                        <div style={{ position: 'absolute', bottom: -20, left: `${toPos(min ?? 0)}%`, fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)', transform: 'translateX(-50%)' }}>{fmt(min)}</div>
-                        <div style={{ position: 'absolute', bottom: -20, left: `${toPos(max ?? 0)}%`, fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)', transform: 'translateX(-50%)' }}>{fmt(max)}</div>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'center', gap: 20, marginTop: 24, flexWrap: 'wrap' }}>
-                        {[['P25', p25], ['Median', median], ['Mean', mean], ['P75', p75]].map(([l, v]) => (
-                          <div key={l} style={{ textAlign: 'center' }}>
-                            <div style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 2 }}>{l}</div>
-                            <div style={{ fontFamily: 'var(--font-display)', fontSize: 15, fontWeight: 700, color: 'var(--color-text-primary)' }}>{fmt(v)}</div>
-                          </div>
-                        ))}
-                      </div>
+                ) : (
+                  <div style={{ padding: '10px 20px 20px' }}>
+                    <p style={{ fontFamily: 'var(--font-heading)', fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 20 }}>
+                      Distribution — {activeCol}
+                    </p>
+                    <HistogramBars
+                      edges={activeHistogram.config?.bin_edges}
+                      counts={activeHistogram.config?.bin_counts}
+                      meanVal={stats.mean}
+                      medianVal={stats.median}
+                    />
+                    <div style={{ display: 'flex', justifyContent: 'center', gap: 20, marginTop: 24, flexWrap: 'wrap' }}>
+                      {[['P25', stats.p25], ['Median', stats.median], ['Mean', stats.mean], ['P75', stats.p75]].map(([l, v]) => (
+                        <div key={l} style={{ textAlign: 'center' }}>
+                          <div style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 2 }}>{l}</div>
+                          <div style={{ fontFamily: 'var(--font-display)', fontSize: 15, fontWeight: 700, color: 'var(--color-text-primary)' }}>{fmt(v)}</div>
+                        </div>
+                      ))}
                     </div>
-                  )
-                })()
+
+                    {/* ── Box Plot (same column) ── */}
+                    {activeBoxplot && (
+                      <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--color-border-light)' }}>
+                        <p style={{ fontFamily: 'var(--font-heading)', fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+                          Spread &amp; Outliers — {activeCol}
+                        </p>
+                        <BoxPlotChart
+                          stats={activeBoxplot.config?.stats}
+                          outlierPct={activeBoxplot.config?.outlier_pct}
+                          iqr={activeBoxplot.config?.iqr}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )
               )}
 
               {/* ── CATEGORICAL: Bar chart ── */}
@@ -441,49 +597,85 @@ export default function Visualization() {
                 </div>
               )}
 
-              {/* ── DATASET: Heatmap ── */}
-              {activeTab === 'Dataset' && (
-                <div>
-                  <h4 style={{ fontFamily: 'var(--font-heading)', fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 14 }}>
-                    Correlation Heatmap (Pearson)
-                  </h4>
-                  {!heatmapChart ? (
-                    <div style={{ textAlign: 'center', padding: '32px 0' }}>
-                      <p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-muted)' }}>{loading ? 'Loading…' : 'No correlation data'}</p>
-                      {!loading && <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-muted)', opacity: 0.7, marginTop: 4 }}>Requires ≥ 3 numeric columns</p>}
-                    </div>
-                  ) : (() => {
-                    const cols = heatmapChart.config?.columns ?? []
-                    const matrix = heatmapChart.config?.matrix ?? {}
-                    const showValues = heatmapChart.config?.show_values ?? cols.length <= 10
-                    return (
-                      <div style={{ overflowX: 'auto' }}>
-                        <div style={{ display: 'grid', gridTemplateColumns: `auto repeat(${cols.length}, 1fr)`, gap: 2, minWidth: cols.length * 48 }}>
-                          <div />
-                          {cols.map(c => (
-                            <div key={c} style={{ fontFamily: 'var(--font-data)', fontSize: 9, color: 'var(--color-text-muted)', textAlign: 'center', padding: '0 0 4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c}>{c}</div>
-                          ))}
-                          {cols.map(rowCol => (
-                            <>
-                              <div key={`lbl-${rowCol}`} style={{ fontFamily: 'var(--font-data)', fontSize: 9, color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', paddingRight: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={rowCol}>{rowCol}</div>
-                              {cols.map(colCol => {
-                                const val = matrix[rowCol]?.[colCol] ?? null
-                                return (
-                                  <div key={`${rowCol}-${colCol}`}
-                                    style={{ background: heatmapColor(val), borderRadius: 3, padding: '8px 2px', textAlign: 'center', fontFamily: 'var(--font-data)', fontSize: 10, color: textColor(val), fontWeight: 500, cursor: 'default' }}
-                                    title={`${rowCol} × ${colCol}: ${val !== null ? val.toFixed(3) : 'N/A'}`}>
-                                    {showValues ? (val !== null ? val.toFixed(2) : '—') : ''}
-                                  </div>
-                                )
-                              })}
-                            </>
-                          ))}
+    {/* ── DATASET: Heatmap + Null Matrix + Radar ── */}
+    {activeTab === 'Dataset' && (
+      <div>
+        <h4 style={{ fontFamily: 'var(--font-heading)', fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 14 }}>
+          Correlation Heatmap (Pearson)
+        </h4>
+        {!heatmapChart ? (
+          <div style={{ textAlign: 'center', padding: '32px 0' }}>
+            <p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-muted)' }}>{loading ? 'Loading…' : 'No correlation data'}</p>
+            {!loading && <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-muted)', opacity: 0.7, marginTop: 4 }}>Requires ≥ 3 numeric columns</p>}
+          </div>
+        ) : (() => {
+          const cols = heatmapChart.config?.columns ?? []
+          const matrix = heatmapChart.config?.matrix ?? {}
+          const showValues = heatmapChart.config?.show_values ?? cols.length <= 10
+          return (
+            <div style={{ overflowX: 'auto' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: `auto repeat(${cols.length}, 1fr)`, gap: 2, minWidth: cols.length * 48 }}>
+                <div />
+                {cols.map(c => (
+                  <div key={c} style={{ fontFamily: 'var(--font-data)', fontSize: 9, color: 'var(--color-text-muted)', textAlign: 'center', padding: '0 0 4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c}>{c}</div>
+                ))}
+                {cols.map(rowCol => (
+                  <>
+                    <div key={`lbl-${rowCol}`} style={{ fontFamily: 'var(--font-data)', fontSize: 9, color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', paddingRight: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={rowCol}>{rowCol}</div>
+                    {cols.map(colCol => {
+                      const val = matrix[rowCol]?.[colCol] ?? null
+                      return (
+                        <div key={`${rowCol}-${colCol}`}
+                          style={{ background: heatmapColor(val), borderRadius: 3, padding: '8px 2px', textAlign: 'center', fontFamily: 'var(--font-data)', fontSize: 10, color: textColor(val), fontWeight: 500, cursor: 'default' }}
+                          title={`${rowCol} × ${colCol}: ${val !== null ? val.toFixed(3) : 'N/A'}`}>
+                          {showValues ? (val !== null ? val.toFixed(2) : '—') : ''}
                         </div>
-                      </div>
-                    )
-                  })()}
-                </div>
-              )}
+                      )
+                    })}
+                  </>
+                ))}
+              </div>
+            </div>
+          )
+        })()}
+
+              {/* ── Null Distribution ── */}
+              {(() => {
+                const nullChart = charts.find(c => c.type === 'NULL_MATRIX')
+                if (!nullChart) return null
+                return (
+                  <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--color-border-light)' }}>
+                    <h4 style={{ fontFamily: 'var(--font-heading)', fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 14 }}>
+                      Null Distribution
+                    </h4>
+                    <NullMatrixChart
+                      columns={nullChart.config?.columns}
+                      nullPcts={nullChart.config?.null_pcts}
+                      flagged={nullChart.config?.flagged_columns}
+                    />
+                  </div>
+                )
+              })()}
+
+              {/* ── Dataset Health Radar ── */}
+              {(() => {
+                const radarChart = charts.find(c => c.type === 'RADAR')
+                if (!radarChart) return null
+                return (
+                  <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--color-border-light)', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                    <h4 style={{ fontFamily: 'var(--font-heading)', fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 14, alignSelf: 'flex-start' }}>
+                      {radarChart.title}
+                    </h4>
+                    <RadarChart
+                      dimensions={radarChart.config?.dimensions}
+                      scores={radarChart.config?.scores}
+                      axisMax={radarChart.config?.axis_max ?? 100}
+                    />
+                  </div>
+                )
+              })()}
+            </div>
+          )}
 
               {/* ── TEMPORAL ── */}
               {activeTab === 'Temporal' && (
@@ -572,6 +764,8 @@ export default function Visualization() {
                             if (tab) setActiveTab(tab)
                             if (c.type === 'BAR' || c.type === 'PIE') {
                               if (c.config?.x_col) setActiveBarCol(c.config.x_col)
+                            } else if (c.type === 'BOXPLOT') {
+                              if (c.config?.y_col) setActiveCol(c.config.y_col)
                             } else if (c.config?.x_col) {
                               setActiveCol(c.config.x_col)
                             }
