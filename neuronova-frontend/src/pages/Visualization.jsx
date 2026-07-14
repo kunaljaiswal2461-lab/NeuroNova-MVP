@@ -241,6 +241,74 @@ function ScatterSummaryCard({ chart, compact = false }) {
   )
 }
 
+function ScatterPlot({ chart, compact = false }) {
+  const cfg = chart.config ?? {}
+  const xs = cfg.sample_x
+  const ys = cfg.sample_y
+
+  if (!xs || !ys || xs.length === 0) {
+    return <ScatterSummaryCard chart={chart} compact={compact} />
+  }
+
+  const size = compact ? 200 : 320
+  const pad = 24
+  const xMin = Math.min(...xs), xMax = Math.max(...xs)
+  const yMin = Math.min(...ys), yMax = Math.max(...ys)
+  const xRange = (xMax - xMin) || 1
+  const yRange = (yMax - yMin) || 1
+  const toX = (v) => pad + ((v - xMin) / xRange) * (size - pad * 2)
+  const toY = (v) => (size - pad) - ((v - yMin) / yRange) * (size - pad * 2)
+
+  const r = cfg.best_r ?? cfg.pearson_r ?? 0
+  const abs_r = Math.abs(r)
+  const strengthColor = abs_r >= 0.85 ? '#E11D48' : abs_r >= 0.6 ? '#D97706' : 'var(--color-primary-indigo)'
+
+  // Simple linear trendline via least squares, for visual reference only
+  const n = xs.length
+  const sumX = xs.reduce((a, b) => a + b, 0)
+  const sumY = ys.reduce((a, b) => a + b, 0)
+  const sumXY = xs.reduce((a, x, i) => a + x * ys[i], 0)
+  const sumX2 = xs.reduce((a, x) => a + x * x, 0)
+  const denom = (n * sumX2 - sumX * sumX) || 1
+  const slope = (n * sumXY - sumX * sumY) / denom
+  const intercept = (sumY - slope * sumX) / n
+  const trendY1 = intercept + slope * xMin
+  const trendY2 = intercept + slope * xMax
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${size} ${size}`} width="100%" height={size} style={{ maxWidth: size }}>
+        {/* axes */}
+        <line x1={pad} y1={size - pad} x2={size - pad} y2={size - pad} stroke="var(--color-border)" strokeWidth="1" />
+        <line x1={pad} y1={pad} x2={pad} y2={size - pad} stroke="var(--color-border)" strokeWidth="1" />
+        {/* trendline */}
+        {cfg.show_trendline && (
+          <line x1={toX(xMin)} y1={toY(trendY1)} x2={toX(xMax)} y2={toY(trendY2)} stroke={strengthColor} strokeWidth="1.5" strokeDasharray="4 3" opacity="0.7" />
+        )}
+        {/* points */}
+        {xs.map((x, i) => (
+          <circle key={i} cx={toX(x)} cy={toY(ys[i])} r={compact ? 2 : 3} fill="var(--color-primary-indigo)" opacity="0.55" />
+        ))}
+      </svg>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+        <span style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)' }}>{cfg.x_label}</span>
+        <span style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)' }}>{cfg.y_label}</span>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
+        <span style={{ fontFamily: 'var(--font-data)', fontSize: 11, color: strengthColor, fontWeight: 700, textTransform: 'uppercase' }}>
+          {cfg.correlation_strength?.replace('_', ' ') ?? '—'} · {cfg.direction ?? ''}
+        </span>
+        <span style={{ fontFamily: 'var(--font-data)', fontSize: 11, color: 'var(--color-text-muted)' }}>r = {fmt(r, 3)}</span>
+      </div>
+      {!compact && (
+        <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--color-text-muted)', marginTop: 8 }}>
+          Showing {xs.length.toLocaleString()} sampled points · dashed line = linear trend
+        </p>
+      )}
+    </div>
+  )
+}
+
 // ── Timeseries (range/coverage summary — no aggregated series data available yet) ──
 function TimeseriesSummaryCard({ chart, compact = false }) {
   const cfg = chart.config ?? {}
@@ -540,7 +608,7 @@ export default function Visualization() {
                     if (section.key === 'SCATTER') {
                       return (
                         <GalleryCard key={chart.chart_id} title={chart.title}>
-                          <ScatterSummaryCard chart={chart} compact />
+                          <ScatterPlot chart chart={chart} compact />
                         </GalleryCard>
                       )
                     }
@@ -779,6 +847,26 @@ export default function Visualization() {
                     })()}
                   </div>
                 )}
+
+                    {activeTab === 'Dataset' && (() => {
+                      const scatters = charts.filter(c => c.type === 'SCATTER')
+                      if (scatters.length === 0) return null
+                      return (
+                        <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--color-border-light)' }}>
+                          <h4 style={{ fontFamily: 'var(--font-heading)', fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 14 }}>
+                            Strong Correlations
+                          </h4>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 16 }}>
+                            {scatters.map(chart => (
+                              <div key={chart.chart_id} className="card" style={{ padding: 16 }}>
+                                <div style={{ fontFamily: 'var(--font-data)', fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 10 }}>{chart.title}</div>
+                                <ScatterPlot chart={chart} />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })()}
 
                 {activeTab === 'Temporal' && (
                   <div>
