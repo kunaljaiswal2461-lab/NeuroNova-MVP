@@ -103,6 +103,8 @@ class Correlation(BaseModel):
     col_b: str
     pearson: float | None = None
     spearman: float | None = None
+    sample_x: list[float] | None = None 
+    sample_y: list[float] | None = None 
 
 
 class RelationshipSection(BaseModel):

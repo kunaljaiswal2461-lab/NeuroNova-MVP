@@ -14,6 +14,7 @@ from agentic_engine.profiler.report import Correlation, RelationshipSection
 
 _MIN_PAIRS = 5            # need this many non-null pairs to compute either coef
 _MAX_NUMERIC_COLS = 20    # cap O(n^2) explosion on wide datasets
+_MAX_SAMPLE_POINTS = 500  # cap scatter plot size — plotting all rows is pointless and slow
 
 
 def _safe(x: object) -> float | None:
@@ -26,6 +27,15 @@ def _safe(x: object) -> float | None:
     if math.isnan(f) or math.isinf(f):
         return None
     return round(f, 6)
+
+
+def _sample_points(pair: pl.DataFrame, a: str, b: str) -> tuple[list[float], list[float]]:
+    """Return a capped, randomly-sampled set of (x, y) pairs for scatter plotting."""
+    if pair.height > _MAX_SAMPLE_POINTS:
+        pair = pair.sample(n=_MAX_SAMPLE_POINTS, seed=42)
+    xs = [v for v in pair.get_column(a).to_list() if v is not None]
+    ys = [v for v in pair.get_column(b).to_list() if v is not None]
+    return xs, ys
 
 
 def profile_relationships(df: pl.DataFrame) -> RelationshipSection:
@@ -54,8 +64,18 @@ def profile_relationships(df: pl.DataFrame) -> RelationshipSection:
 
             if pearson is None and spearman is None:
                 continue
+
+            sample_x, sample_y = _sample_points(pair, a, b)
+
             out.append(
-                Correlation(col_a=a, col_b=b, pearson=pearson, spearman=spearman)
+                Correlation(
+                    col_a=a,
+                    col_b=b,
+                    pearson=pearson,
+                    spearman=spearman,
+                    sample_x=sample_x,
+                    sample_y=sample_y,
+                )
             )
 
     return RelationshipSection(correlations=out)
