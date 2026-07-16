@@ -207,6 +207,56 @@ function BarChartBody({ topValues, xLabel, yLabel = 'Count', compact = false, ma
   )
 }
 
+function PieChart({ values, totalCount, compact = false }) {
+  if (!values || values.length === 0) return null
+  const size = compact ? 140 : 220
+  const r = size / 2
+  const cx = r, cy = r
+  const total = totalCount ?? values.reduce((s, [, c]) => s + c, 0)
+
+  const COLORS = ['#1E3A5F', '#0D9488', '#D97706', '#7C3AED', '#E11D48', '#2D5A8E', '#7BA7CC', '#9CA3AF']
+
+  let cumulative = 0
+  const slices = values.map(([label, count], i) => {
+    const frac = total > 0 ? count / total : 0
+    const startAngle = cumulative * 2 * Math.PI - Math.PI / 2
+    cumulative += frac
+    const endAngle = cumulative * 2 * Math.PI - Math.PI / 2
+    const x1 = cx + r * Math.cos(startAngle)
+    const y1 = cy + r * Math.sin(startAngle)
+    const x2 = cx + r * Math.cos(endAngle)
+    const y2 = cy + r * Math.sin(endAngle)
+    const largeArc = frac > 0.5 ? 1 : 0
+    const path = `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} Z`
+    return { path, label, count, frac, color: COLORS[i % COLORS.length] }
+  })
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} style={{ display: 'block', margin: '0 auto' }}>
+        {slices.map((s, i) => (
+          <path key={i} d={s.path} fill={s.color} stroke="white" strokeWidth="1">
+            <title>{`${s.label}: ${s.count.toLocaleString()} (${(s.frac * 100).toFixed(1)}%)`}</title>
+          </path>
+        ))}
+      </svg>
+      <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {slices.slice(0, compact ? 5 : 10).map((s, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 9, height: 9, borderRadius: 2, background: s.color, flexShrink: 0 }} />
+            <span style={{ fontFamily: 'var(--font-body)', fontSize: compact ? 11 : 12, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+              {String(s.label)}
+            </span>
+            <span style={{ fontFamily: 'var(--font-data)', fontSize: compact ? 10 : 11, color: 'var(--color-text-muted)' }}>
+              {(s.frac * 100).toFixed(1)}%
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Scatter (correlation-strength summary — no raw point pairs available yet) ──
 function ScatterSummaryCard({ chart, compact = false }) {
   const cfg = chart.config ?? {}
@@ -363,6 +413,7 @@ const GALLERY_SECTIONS = [
   { key: 'HISTOGRAM', label: 'Histograms' },
   { key: 'BOXPLOT', label: 'Box Plots' },
   { key: 'BAR', label: 'Bar Charts' },
+  { key: 'PIE' , label: 'Pie Charts'},
   { key: 'SCATTER', label: 'Scatter (Correlations)' },
   { key: 'TIMESERIES', label: 'Time Series' },
 ]
@@ -520,17 +571,19 @@ export default function Visualization() {
           <div style={{ display: 'flex', background: 'var(--color-base)', border: '1px solid var(--color-border)', borderRadius: 8, padding: 3 }}>
             {['single', 'gallery'].map(mode => (
               <button key={mode} onClick={() => setViewMode(mode)} style={{
-                padding: '5px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
-                background: viewMode === mode ? 'white' : 'transparent',
-                boxShadow: viewMode === mode ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
-                fontFamily: 'var(--font-data)', fontSize: 11, fontWeight: 600,
-                color: viewMode === mode ? 'var(--color-primary-indigo)' : 'var(--color-text-muted)',
+                padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                background: viewMode === mode ? 'var(--color-primary-indigo)' : 'transparent',
+                boxShadow: viewMode === mode ? '0 1px 3px rgba(0,0,0,0.15)' : 'none',
+                fontFamily: 'var(--font-data)', fontSize: 11, fontWeight: 700,
+                color: viewMode === mode ? 'white' : 'var(--color-text-secondary)',
                 textTransform: 'uppercase', letterSpacing: '0.04em',
+                transition: 'background 150ms ease, color 150ms ease',
               }}>
                 {mode === 'single' ? 'Single View' : `Gallery (${totalGalleryCharts})`}
               </button>
             ))}
           </div>
+
           {viewMode === 'single' && activeTab === 'Numeric' && numericOptions.length > 0 && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--color-base)', border: '1px solid var(--color-border)', borderRadius: 8, padding: '6px 10px' }}>
               <span style={{ fontFamily: 'var(--font-heading)', fontSize: 10, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Column</span>
@@ -774,6 +827,18 @@ export default function Visualization() {
                     ) : (
                       <BarChartBody topValues={activeBarChart.config?.top_values} xLabel={activeBarChart.config?.x_label ?? 'Category'} yLabel={activeBarChart.config?.y_label ?? 'Count'} maxRows={12} />
                     )}
+                    {(() => {
+                      const activePie = charts.find(c => c.type === 'PIE' && (c.config?.col === activeBarCol))
+                      if (!activePie) return null
+                      return (
+                        <div style={{ marginTop: 24, paddingTop: 20, borderTop: '1px solid var(--color-border-light)' }}>
+                          <p style={{ fontFamily: 'var(--font-heading)', fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>
+                            Proportion — {activeBarCol}
+                          </p>
+                          <PieChart values={activePie.config?.values} totalCount={activePie.config?.total_count} />
+                        </div>
+                      )
+                    })()}
                     {barCharts.length > 1 && (
                       <div style={{ marginTop: 16, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         {barCharts.slice(0, 8).map((c, i) => {
