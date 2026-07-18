@@ -16,7 +16,20 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+# Headline used by insight_builder._empty_summary() for degraded reports.
 _DEGRADED_HEADLINE = "Insights unavailable"
+
+_TABLE_STYLE = TableStyle(
+    [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2c3e50")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f6f7")]),
+    ]
+)
 
 
 def _esc(value: object) -> str:
@@ -26,14 +39,16 @@ def _esc(value: object) -> str:
     return escape(str(value))
 
 
+def _styled_table(rows: list, col_widths: list) -> Table:
+    table = Table(rows, colWidths=col_widths, hAlign="LEFT")
+    table.setStyle(_TABLE_STYLE)
+    return table
+
+
 def _insights_degraded(insights: dict | None) -> bool:
     """True when insights are absent or the degraded placeholder payload."""
-    if not insights:
-        return True
-    summary = insights.get("executive_summary") or {}
-    if not summary:
-        return True
-    if summary.get("headline") == _DEGRADED_HEADLINE:
+    summary = (insights or {}).get("executive_summary") or {}
+    if not summary or summary.get("headline") == _DEGRADED_HEADLINE:
         return True
     return not any(
         summary.get(key)
@@ -111,22 +126,8 @@ def build_summary_pdf(
             [Paragraph(_esc(name).title(), cell), Paragraph(f"{value:.1f}", cell)]
             for name, value in components.items()
         ]
-        table = Table(rows, colWidths=[60 * mm, 30 * mm], hAlign="LEFT")
-        table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2c3e50")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 8),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f6f7")]),
-                ]
-            )
-        )
         story.append(Spacer(1, 2 * mm))
-        story.append(table)
+        story.append(_styled_table(rows, [60 * mm, 30 * mm]))
     story.append(Spacer(1, 6 * mm))
 
     # ── Executive Summary ─────────────────────────────────────────────────
@@ -159,32 +160,16 @@ def build_summary_pdf(
     if not findings:
         story.append(Paragraph("No findings recorded.", italic))
     else:
-        header = ["Severity", "Type", "Column", "Title"]
-        rows = [header]
-        for finding in findings:
-            rows.append(
-                [
-                    Paragraph(_esc(finding.get("severity")), cell),
-                    Paragraph(_esc(finding.get("type")), cell),
-                    Paragraph(_esc(finding.get("column") or "—"), cell),
-                    Paragraph(_esc(finding.get("title")), cell),
-                ]
-            )
-        table = Table(rows, colWidths=[20 * mm, 42 * mm, 30 * mm, 78 * mm], hAlign="LEFT")
-        table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2c3e50")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 8),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f6f7")]),
-                ]
-            )
-        )
-        story.append(table)
+        rows = [["Severity", "Type", "Column", "Title"]] + [
+            [
+                Paragraph(_esc(finding.get("severity")), cell),
+                Paragraph(_esc(finding.get("type")), cell),
+                Paragraph(_esc(finding.get("column") or "—"), cell),
+                Paragraph(_esc(finding.get("title")), cell),
+            ]
+            for finding in findings
+        ]
+        story.append(_styled_table(rows, [20 * mm, 42 * mm, 30 * mm, 78 * mm]))
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
