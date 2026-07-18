@@ -101,6 +101,11 @@ async function get(path) {
   return res.json()
 }
 
+async function getBlob(path) {
+  const res = await fetchWithIntercept(`${BASE_URL}${path}`, { headers: authHeaders() })
+  return res.blob()
+}
+
 async function post(path, body = {}) {
   const res = await fetchWithIntercept(`${BASE_URL}${path}`, {
     method: 'POST',
@@ -157,4 +162,4 @@ async function* streamSSE(path, body = {}) {
   }
 }
 
-export const api = { get, post, postForm, streamSSE }
+export const api = { get, getBlob, post, postForm, streamSSE }
