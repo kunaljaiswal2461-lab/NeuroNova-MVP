@@ -1,4 +1,5 @@
-import { NavLink } from 'react-router-dom'
+import { useState } from 'react'
+import { NavLink, Link } from 'react-router-dom'
 import { useDataset } from '../context/DatasetContext'
 
 const NAV_ITEMS = [
@@ -53,6 +54,8 @@ const NAV_ITEMS = [
 
 export default function Sidebar({ isMobileMenuOpen, setIsMobileMenuOpen }) {
   const { activeDataset } = useDataset()
+  const [isSupportOpen, setIsSupportOpen] = useState(false) // Added state for Support Menu
+
   const health = activeDataset?._health ?? null
 
   return (
@@ -71,27 +74,18 @@ export default function Sidebar({ isMobileMenuOpen, setIsMobileMenuOpen }) {
 
       {/* Wordmark */}
       <div style={{ padding: '20px 16px 12px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{
-            width: 28, height: 28, borderRadius: 6,
-            background: 'rgba(79,70,229,0.9)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            flexShrink: 0,
-          }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="3" /><path d="M3 12h3M18 12h3M12 3v3M12 18v3" />
-              <path d="M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" />
-            </svg>
-          </div>
+        <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none', cursor: 'pointer' }}>
+          <img 
+            src="/logo.png" 
+            alt="NeuroNova Logo" 
+            style={{ width: 28, height: 28, borderRadius: 6, flexShrink: 0, objectFit: 'cover' }} 
+          />
           <div>
             <div style={{ fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 15, color: 'white', letterSpacing: '-0.01em' }}>
               NeuroNova
             </div>
-            <div style={{ fontFamily: 'var(--font-body)', fontSize: 10, color: 'rgba(255,255,255,0.5)', letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 1 }}>
-              Enterprise
-            </div>
           </div>
-        </div>
+        </Link>
 
         {/* Active Dataset Chip */}
         <div style={{
@@ -109,7 +103,7 @@ export default function Sidebar({ isMobileMenuOpen, setIsMobileMenuOpen }) {
           onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.11)'}
           onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.07)'}
         >
-          <div style={{ width: 22, height: 22, borderRadius: 4, background: 'rgba(79,70,229,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <div style={{ width: 22, height: 22, borderRadius: 4, background: 'rgba(59,130,246,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
               <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="3" y1="15" x2="21" y2="15" /><line x1="9" y1="3" x2="9" y2="21" />
             </svg>
@@ -193,17 +187,61 @@ export default function Sidebar({ isMobileMenuOpen, setIsMobileMenuOpen }) {
         </div>
       </div>
 
-      {/* Bottom Actions */}
-      <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', padding: '8px 8px 12px' }}>
-        {[
-          { label: 'Settings', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> },
-          { label: 'Support', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> },
-        ].map(item => (
-          <button key={item.label} className="nav-item" style={{ fontSize: 13, gap: 8 }}>
-            <span style={{ width: 15, height: 15, flexShrink: 0 }}>{item.icon}</span>
-            {item.label}
+      {/* Bottom Actions - Unrolled to add dropdown logic */}
+      <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', padding: '8px 8px 12px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+        
+        {/* Settings Button */}
+        <button className="nav-item" style={{ fontSize: 13, gap: 8, display: 'flex', alignItems: 'center', width: '100%', background: 'transparent', border: 'none', color: 'rgba(255,255,255,0.65)', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer' }}>
+          <span style={{ width: 15, height: 15, flexShrink: 0 }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </span>
+          Settings
+        </button>
+
+        {/* Support Button & Dropdown */}
+        <div style={{ position: 'relative' }}>
+          {isSupportOpen && (
+            <div style={{
+              position: 'absolute',
+              bottom: '100%',
+              left: 0,
+              marginBottom: 8,
+              width: '100%',
+              minWidth: '160px',
+              background: 'rgba(15, 23, 42, 0.95)',
+              backdropFilter: 'blur(10px)',
+              border: '1px solid rgba(255,255,255,0.1)',
+              borderRadius: 8,
+              padding: '4px 0',
+              zIndex: 50,
+              boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.5)'
+            }}>
+              <Link 
+                to="/" 
+                style={{ display: 'block', padding: '8px 16px', fontSize: 13, color: 'white', textDecoration: 'none', fontFamily: 'var(--font-body)', transition: 'background 150ms' }}
+                onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+              >
+                Explore Website
+              </Link>
+              <div style={{ display: 'block', padding: '8px 16px', fontSize: 13, color: 'rgba(255,255,255,0.3)', cursor: 'not-allowed', fontFamily: 'var(--font-body)' }}>
+                Email Support (Soon)
+              </div>
+            </div>
+          )}
+
+          <button 
+            className="nav-item" 
+            onClick={() => setIsSupportOpen(!isSupportOpen)}
+            style={{ fontSize: 13, gap: 8, display: 'flex', alignItems: 'center', width: '100%', background: 'transparent', border: 'none', color: 'rgba(255,255,255,0.65)', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer' }}
+          >
+            <span style={{ width: 15, height: 15, flexShrink: 0 }}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            </span>
+            Support
           </button>
-        ))}
+        </div>
+
       </div>
     </aside>
   )

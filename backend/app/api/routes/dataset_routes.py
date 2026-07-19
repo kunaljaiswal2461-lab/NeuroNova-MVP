@@ -1,11 +1,14 @@
-from __future__ import annotations
-
+import re
 import uuid
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, Request, UploadFile, status
+from fastapi.responses import Response
 
-from app.core.dependencies import AuthRequired, DBSession, SettingsDep, StorageDep
+from app.core.config import get_settings
+from app.core.dependencies import AuthContext, DBSession, SettingsDep, StorageDep, get_auth_context
+from app.middlewares.rate_limiter import limiter
 from app.db.models.dataset import DatasetStatus
 from app.exceptions.custom_exceptions import NotFoundError
 from app.schemas.response_schemas import (
@@ -15,6 +18,7 @@ from app.schemas.response_schemas import (
     UploadAck,
 )
 from app.services import dataset_service
+from app.services.pdf_report_service import build_summary_pdf
 from agentic_engine.profiler.engine import load_report
 from agentic_engine.findings.persistence import load_findings_raw
 from agentic_engine.viz.persistence import load_viz_raw
@@ -27,7 +31,7 @@ from agentic_engine.workflows.profiling_pipeline import run_profiling
 router = APIRouter(
     prefix="/api/v1",
     tags=["datasets"],
-    dependencies=[AuthRequired],
+    dependencies=[AuthContext],  # accepts JWT Bearer or legacy X-API-Key
 )
 
 
@@ -37,12 +41,15 @@ router = APIRouter(
     status_code=status.HTTP_202_ACCEPTED,
     summary="Upload a dataset",
 )
+@limiter.limit(get_settings().rate_limit_upload)
 async def upload_dataset(
+    request: Request,
     background_tasks: BackgroundTasks,
     session: DBSession,
     storage: StorageDep,
     settings: SettingsDep,
     file: UploadFile = File(..., description="CSV / XLSX / JSON / Parquet"),
+    current_user=Depends(get_auth_context),
 ) -> UploadAck:
     record = await dataset_service.create_dataset_from_upload(
         upload=file,
@@ -50,6 +57,10 @@ async def upload_dataset(
         storage=storage,
         settings=settings,
     )
+    # Stamp the uploading user so we can trace which user owns which dataset
+    if current_user is not None:
+        record.user_id = current_user.id
+        await session.commit()
     background_tasks.add_task(run_profiling, record.id)
     return UploadAck.model_validate(record)
 
@@ -62,8 +73,12 @@ async def upload_dataset(
 async def get_dataset_status(
     dataset_id: uuid.UUID,
     session: DBSession,
+    current_user=Depends(get_auth_context),
 ) -> DatasetStatusResponse:
-    record = await dataset_service.get_dataset(session, dataset_id)
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
     return DatasetStatusResponse.model_validate(record)
 
 
@@ -76,9 +91,11 @@ async def list_datasets(
     session: DBSession,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    current_user=Depends(get_auth_context),
 ) -> DatasetList:
+    user_id = current_user.id if current_user is not None else None
     items, total = await dataset_service.list_datasets(
-        session, limit=limit, offset=offset
+        session, limit=limit, offset=offset, user_id=user_id
     )
     return DatasetList(
         items=[DatasetSummary.model_validate(it) for it in items],
@@ -94,8 +111,12 @@ async def list_datasets(
 async def get_dataset(
     dataset_id: uuid.UUID,
     session: DBSession,
+    current_user=Depends(get_auth_context),
 ) -> DatasetSummary:
-    record = await dataset_service.get_dataset(session, dataset_id)
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
     return DatasetSummary.model_validate(record)
 
 
@@ -107,8 +128,12 @@ async def get_dataset_profile(
     dataset_id: uuid.UUID,
     session: DBSession,
     settings: SettingsDep,
+    current_user=Depends(get_auth_context),
 ) -> dict[str, Any]:
-    record = await dataset_service.get_dataset(session, dataset_id)
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
     if record.status is not DatasetStatus.COMPLETE:
         raise NotFoundError(
             f"profile for dataset {dataset_id} is not ready",
@@ -143,8 +168,12 @@ async def get_dataset_findings(
         None,
         description="Filter findings for a specific column name",
     ),
+    current_user=Depends(get_auth_context),
 ) -> dict:
-    record = await dataset_service.get_dataset(session, dataset_id)
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
     if record.status is not DatasetStatus.COMPLETE:
         raise NotFoundError(
             f"findings for dataset {dataset_id} are not ready",
@@ -193,8 +222,12 @@ async def get_dataset_viz(
         None,
         description="Return only charts that involve this column",
     ),
+    current_user=Depends(get_auth_context),
 ) -> dict:
-    record = await dataset_service.get_dataset(session, dataset_id)
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
     if record.status is not DatasetStatus.COMPLETE:
         raise NotFoundError(
             f"viz for dataset {dataset_id} is not ready",
@@ -242,8 +275,12 @@ async def get_dataset_insights(
             "Omit to return the full report."
         ),
     ),
+    current_user=Depends(get_auth_context),
 ) -> dict[str, Any]:
-    record = await dataset_service.get_dataset(session, dataset_id)
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
     if record.status is not DatasetStatus.COMPLETE:
         raise NotFoundError(
             f"insights for dataset {dataset_id} are not ready",
@@ -280,6 +317,83 @@ async def get_dataset_insights(
     }
 
 
+def _summary_content_disposition(original_name: str) -> str:
+    """Build a safe RFC 6266 Content-Disposition header for the summary PDF.
+
+    Uploaded filenames are stored unsanitized, so the value may contain
+    path components, quotes, CR/LF (header injection), or non-Latin-1
+    characters (which would raise ``UnicodeEncodeError`` when Starlette
+    encodes headers). We strip path components and control characters,
+    emit an ASCII-only ``filename=`` fallback, and carry the real UTF-8
+    name in ``filename*=`` per RFC 6266 / RFC 8187.
+    """
+    # Drop any path components (both separators) and strip control chars.
+    base = re.split(r"[/\\]", original_name)[-1]
+    base = re.sub(r"[\x00-\x1f\x7f]", "", base).strip()
+    stem = base.rsplit(".", 1)[0].strip() or "summary"
+    filename = f"{stem}-summary.pdf"
+
+    # ASCII fallback: replace non-ASCII and quote/backslash chars.
+    ascii_fallback = re.sub(r'[^\x20-\x7e]|["\\]', "_", filename) or "summary.pdf"
+    # RFC 8187 ext-value for the real (UTF-8) name.
+    utf8_name = quote(filename, safe="")
+    return (
+        f'attachment; filename="{ascii_fallback}"; '
+        f"filename*=utf-8''{utf8_name}"
+    )
+
+
+@router.get(
+    "/datasets/{dataset_id}/summary.pdf",
+    summary="Download a PDF summary report for a profiled dataset",
+    response_class=Response,
+)
+async def download_dataset_summary_pdf(
+    dataset_id: uuid.UUID,
+    session: DBSession,
+    settings: SettingsDep,
+    current_user=Depends(get_auth_context),
+) -> Response:
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
+    if record.status is not DatasetStatus.COMPLETE:
+        raise NotFoundError(
+            f"summary for dataset {dataset_id} is not ready",
+            details={"status": record.status.value},
+        )
+    profile = load_report(dataset_id, settings)
+    if profile is None:
+        raise NotFoundError(
+            f"profile artifact missing for dataset {dataset_id}",
+            details={"dataset_id": str(dataset_id)},
+        )
+    findings_raw = load_findings_raw(dataset_id, settings)
+    insights_raw = load_insights_raw(dataset_id, settings)
+    metadata = {
+        "dataset_id": str(record.id),
+        "original_name": record.original_name,
+        "file_type": record.file_type.value,
+        "row_count": record.row_count,
+        "col_count": record.col_count,
+        "status": record.status.value,
+    }
+    pdf_bytes = build_summary_pdf(
+        metadata=metadata,
+        profile=profile,
+        findings=(findings_raw or {}).get("findings", []),
+        insights=insights_raw,
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": _summary_content_disposition(record.original_name),
+        },
+    )
+
+
 @router.post(
     "/datasets/{dataset_id}/retrieve",
     response_model=RetrievalResult,
@@ -290,6 +404,7 @@ async def retrieve_findings(
     query: RetrievalQuery,
     session: DBSession,
     settings: SettingsDep,
+    current_user=Depends(get_auth_context),
 ) -> RetrievalResult:
     """RAG-style retrieval endpoint backing Layer 7's chat agent.
 
@@ -298,7 +413,10 @@ async def retrieve_findings(
     Empty result with ``degraded=True`` if the dataset has no embeddings
     indexed yet (e.g. pipeline still running or OpenAI key absent).
     """
-    record = await dataset_service.get_dataset(session, dataset_id)
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
     if record.status is not DatasetStatus.COMPLETE:
         raise NotFoundError(
             f"dataset {dataset_id} is not ready for retrieval",

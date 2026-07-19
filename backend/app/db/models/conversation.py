@@ -99,6 +99,14 @@ class ConversationSessionRow(Base, TimestampMixin):
         Integer, nullable=False, default=0
     )
 
+    # nullable so existing sessions without a logged-in user still work
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     messages: Mapped[list["ChatMessageRow"]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",

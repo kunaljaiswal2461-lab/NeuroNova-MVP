@@ -49,7 +49,7 @@ ENV PYTHONUNBUFFERED=1 \
 COPY --chown=appuser:appuser backend/ .
 
 # Create data directory structure
-RUN mkdir -p data/viz && chown -R appuser:appuser /app
+RUN mkdir -p data/viz && chmod +x /app/entrypoint.sh && chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
@@ -60,4 +60,4 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["./entrypoint.sh"]

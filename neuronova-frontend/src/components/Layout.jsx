@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import Sidebar from './Sidebar'
+import { Link } from 'react-router-dom'
 import '../index.css'
 
 export default function Layout({ title, subtitle, actions, children }) {
@@ -55,7 +56,34 @@ export default function Layout({ title, subtitle, actions, children }) {
           </div>
           
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {/* Explore button - takes user back to landing page, stays logged in */}
+            <Link
+              to="/"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '8px 14px',
+                borderRadius: 8,
+                border: '1px solid var(--color-border)',
+                background: 'white',
+                color: 'var(--color-text-secondary)',
+                fontSize: 13,
+                fontWeight: 600,
+                textDecoration: 'none',
+                transition: 'background 150ms',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--color-base)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'white'}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15 18l-6-6 6-6" />
+              </svg>
+              Explore
+            </Link>
+
             {actions}
+
             {/* Bell */}
             <button style={{ width: 36, height: 36, borderRadius: 8, border: '1px solid var(--color-border)', background: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--color-text-secondary)', transition: 'background 150ms' }}
               onMouseEnter={e => e.currentTarget.style.background = 'var(--color-base)'}
@@ -66,8 +94,9 @@ export default function Layout({ title, subtitle, actions, children }) {
                 <path d="M13.73 21a2 2 0 0 1-3.46 0" />
               </svg>
             </button>
+
             {/* Avatar */}
-            <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'linear-gradient(135deg, #3525CD, #0D9488)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+            <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'linear-gradient(135deg, #3B82F6, #0F172A)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
               <span style={{ fontFamily: 'var(--font-heading)', fontSize: 12, fontWeight: 700, color: 'white' }}>N</span>
             </div>
           </div>

@@ -19,6 +19,9 @@ from agentic_engine.profiler.report import (
     SchemaSection,
 )
 
+from agentic_engine.profiler.confidence import confidence_score
+from agentic_engine.profiler.report import StatsSection
+
 
 _WEIGHTS = {
     "completeness": 0.30,
@@ -45,12 +48,45 @@ def _consistency(quality: QualitySection, schema: SchemaSection) -> float:
     return max(0.0, 100.0 - 100.0 * constant_cols / cols)
 
 
-def _cleanliness(quality: QualitySection) -> float:
+_SKEW_MIN_EFFECT = 1.0
+_SKEW_MAX_EFFECT = 5.0
+_SKEW_MAX_PENALTY = 40.0
+
+
+def _skew_penalty(quality: QualitySection, stats: StatsSection, row_count: int) -> float:
+    """Deduct cleanliness points for skewed numeric columns, scaled by confidence."""
+    skew_by_name = {
+        c.name: c.numeric.skew
+        for c in stats.columns
+        if c.numeric is not None and c.numeric.skew is not None
+    }
+    if not skew_by_name:
+        return 0.0
+
+    total_penalty = 0.0
+    n = len(skew_by_name)
+    for name, skew in skew_by_name.items():
+        abs_skew = abs(skew)
+        if abs_skew <= _SKEW_MIN_EFFECT:
+            continue
+        conf = confidence_score(
+            row_count=row_count,
+            effect=abs_skew,
+            min_effect=_SKEW_MIN_EFFECT,
+            max_effect=_SKEW_MAX_EFFECT,
+        )
+        severity = min(1.0, (abs_skew - _SKEW_MIN_EFFECT) / (_SKEW_MAX_EFFECT - _SKEW_MIN_EFFECT))
+        total_penalty += severity * conf * (_SKEW_MAX_PENALTY / n)
+
+    return min(_SKEW_MAX_PENALTY, total_penalty)
+
+
+def _cleanliness(quality: QualitySection, stats: StatsSection, row_count: int) -> float:
     outlier_cols = [c.outlier_pct for c in quality.columns if c.outlier_pct is not None]
-    if not outlier_cols:
-        return 100.0
-    mean_outlier = sum(outlier_cols) / len(outlier_cols)
-    return max(0.0, 100.0 - mean_outlier)
+    mean_outlier = sum(outlier_cols) / len(outlier_cols) if outlier_cols else 0.0
+    base = 100.0 - mean_outlier
+    base -= _skew_penalty(quality, stats, row_count)
+    return max(0.0, base)
 
 
 def _grade(score: float, settings: Settings) -> HealthGrade:
@@ -68,13 +104,14 @@ def _grade(score: float, settings: Settings) -> HealthGrade:
 def compute_health(
     schema: SchemaSection,
     quality: QualitySection,
+    stats: StatsSection,
     settings: Settings,
 ) -> HealthSection:
     components = {
         "completeness": round(_completeness(quality), 2),
         "uniqueness": round(_uniqueness(quality), 2),
         "consistency": round(_consistency(quality, schema), 2),
-        "cleanliness": round(_cleanliness(quality), 2),
+        "cleanliness": round(_cleanliness(quality, stats, schema.row_count), 2),
     }
     score = round(sum(components[k] * _WEIGHTS[k] for k in components), 2)
     return HealthSection(score=score, grade=_grade(score, settings), components=components)

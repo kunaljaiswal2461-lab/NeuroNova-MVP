@@ -14,16 +14,17 @@ each :class:`ChatStreamEvent` from the chat agent is encoded as one
 ``event: <type>\\ndata: <json>\\n\\n`` frame. The frontend's
 ``EventSource`` reads them in order and renders incrementally.
 """
-from __future__ import annotations
-
 import json
 import uuid
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Query, Request, status
 from fastapi.responses import Response, StreamingResponse
 
-from app.core.dependencies import AuthRequired, DBSession, SettingsDep
+from fastapi import Depends
+from app.core.config import get_settings
+from app.core.dependencies import AuthContext, DBSession, SettingsDep, get_auth_context
+from app.middlewares.rate_limiter import limiter
 from app.core.logging import get_logger
 from app.db.models.dataset import DatasetStatus
 from app.exceptions.custom_exceptions import NotFoundError
@@ -46,7 +47,7 @@ logger = get_logger("chat_routes")
 router = APIRouter(
     prefix="/api/v1",
     tags=["chat"],
-    dependencies=[AuthRequired],
+    dependencies=[AuthContext],  # accepts JWT Bearer or legacy X-API-Key
 )
 
 
@@ -58,15 +59,21 @@ router = APIRouter(
     status_code=status.HTTP_201_CREATED,
     summary="Create a chat session against a dataset",
 )
+@limiter.limit(get_settings().rate_limit_session_create)
 async def create_session(
+    request: Request,
     dataset_id: uuid.UUID,
     body: CreateSessionRequest,
     session: DBSession,
+    current_user=Depends(get_auth_context),
 ) -> SessionResponse:
     # Sessions can only be opened on datasets that have completed the
     # full pipeline — the chat agent depends on the profile, findings,
     # and (for RAG) the vector index all being on disk / in PG.
-    record = await dataset_service.get_dataset(session, dataset_id)
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
     if record.status is not DatasetStatus.COMPLETE:
         raise NotFoundError(
             f"dataset {dataset_id} is not ready for chat",
@@ -76,6 +83,7 @@ async def create_session(
         session_db=session,
         dataset_id=dataset_id,
         mode=body.mode,
+        user_id=current_user.id if current_user is not None else None,
     )
     return SessionResponse(session=created)
 
@@ -161,7 +169,9 @@ async def list_messages(
         },
     },
 )
+@limiter.limit(get_settings().rate_limit_chat_message)
 async def send_message(
+    request: Request,
     session_id: uuid.UUID,
     body: SendMessageRequest,
     session: DBSession,

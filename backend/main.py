@@ -8,12 +8,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware 
 from fastapi.staticfiles import StaticFiles
 
+from slowapi.errors import RateLimitExceeded
+
 from app.api.routes import api_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.session import dispose_engine
 from app.exceptions.handlers import register_exception_handlers
+from app.middlewares.rate_limiter import limiter, rate_limit_exceeded_handler
 from app.middlewares.request_id import RequestIDMiddleware
+from app.middlewares.security import RequestSizeLimitMiddleware, SecurityHeadersMiddleware
 from app.middlewares.timing import TimingMiddleware
 
 @asynccontextmanager
@@ -26,9 +30,17 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="NeuroNova API", lifespan=lifespan)
 
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+
+    # Middleware order: Starlette runs the *last-added* middleware first,
+    # so the request-size guard must be added LAST to inspect the raw
+    # request before anything else touches it.
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+    app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(TimingMiddleware)
     app.add_middleware(RequestIDMiddleware)
+    app.add_middleware(RequestSizeLimitMiddleware, max_bytes=settings.max_request_bytes)
 
     register_exception_handlers(app)
     app.include_router(api_router)
@@ -50,7 +62,7 @@ def create_app() -> FastAPI:
             
             for file in all_files:
                 if file.lower().endswith(('.png', '.jpg', '.jpeg', '.svg')):
-                    chart_urls.append(f"http://localhost:8000/viz/{file}")
+                    chart_urls.append(f"{settings.public_url}/viz/{file}")
         
         return {"charts": chart_urls}
 

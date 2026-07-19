@@ -60,6 +60,7 @@ async def create_session(
     session_db: AsyncSession,
     dataset_id: uuid.UUID,
     mode: ConversationMode = ConversationMode.AUTO,
+    user_id: uuid.UUID | None = None,
 ) -> ConversationSession:
     """Create a new conversation session for a dataset.
 
@@ -69,6 +70,7 @@ async def create_session(
     row = ConversationSessionRow(
         dataset_id=dataset_id,
         mode=ConversationModeDB(mode.value),
+        user_id=user_id,
     )
     session_db.add(row)
     await session_db.commit()

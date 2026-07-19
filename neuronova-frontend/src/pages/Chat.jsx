@@ -44,9 +44,13 @@ function QueryResultTable({ result }) {
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
         <thead>
           <tr style={{ background: 'var(--color-base)' }}>
-            {(columns ?? []).map(h => (
-              <th key={h} style={{ padding: '6px 10px', fontFamily: 'var(--font-heading)', fontSize: 10, fontWeight: 700, color: 'var(--color-text-muted)', textAlign: 'left', borderBottom: '1px solid var(--color-border)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{h}</th>
-            ))}
+            {(columns ?? []).map((h, i) => {
+              // Backend sends columns as [{name, dtype}, ...] objects; tolerate plain strings too
+              const name = typeof h === 'string' ? h : h?.name ?? `col_${i}`
+              return (
+                <th key={name} style={{ padding: '6px 10px', fontFamily: 'var(--font-heading)', fontSize: 10, fontWeight: 700, color: 'var(--color-text-muted)', textAlign: 'left', borderBottom: '1px solid var(--color-border)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{name}</th>
+              )
+            })}
           </tr>
         </thead>
         <tbody>
@@ -78,6 +82,8 @@ export default function Chat() {
   const [autoMode, setAutoMode] = useState(true)
   const [streaming, setStreaming] = useState(false)
   const [sessionError, setSessionError] = useState(null)
+  const [pdfLoading, setPdfLoading] = useState(false)
+  const [pdfError, setPdfError] = useState(null)
   const [tokenCount, setTokenCount] = useState(0)
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
@@ -121,13 +127,15 @@ export default function Chat() {
             : m
           ))
         } else if (event === 'citations') {
+          // Backend wraps payload as {"citations": [...]}, unwrap it
           setMessages(prev => prev.map(m => m.id === assistantId
-            ? { ...m, citations: data }
+            ? { ...m, citations: data.citations ?? data }
             : m
           ))
         } else if (event === 'query_result') {
+          // Backend wraps payload as {"query_result": {...}}, unwrap it
           setMessages(prev => prev.map(m => m.id === assistantId
-            ? { ...m, queryResult: data }
+            ? { ...m, queryResult: data.query_result ?? data }
             : m
           ))
         } else if (event === 'token') {
@@ -156,6 +164,27 @@ export default function Chat() {
       setStreaming(false)
     }
   }, [input, streaming, sessionId])
+
+  const handleGeneratePdf = useCallback(async () => {
+    if (!activeDatasetId || pdfLoading) return
+    setPdfLoading(true)
+    setPdfError(null)
+    try {
+      const blob = await api.getBlob(`/datasets/${activeDatasetId}/summary.pdf`)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${activeDataset?.original_name?.replace(/\.[^.]+$/, '') || 'dataset'}-summary.pdf`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      setPdfError(err.message || 'Failed to generate PDF')
+    } finally {
+      setPdfLoading(false)
+    }
+  }, [activeDatasetId, activeDataset, pdfLoading])
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
@@ -368,29 +397,42 @@ export default function Chat() {
           <div>
             <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Suggested Actions</p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {SUGGESTED_ACTIONS.map((a, i) => (
-                <button key={i}
-                  onClick={() => {
-                    if (a.label === 'Clear Session Context' && sessionId) {
-                      api.post(`/datasets/${activeDatasetId}/chat/sessions`, { mode: 'AUTO' })
-                        .then(res => { setSessionId(res.session?.session_id); setMessages([]) })
-                        .catch(console.error)
-                    }
-                  }}
-                  style={{
-                    padding: '8px 12px', background: 'white',
-                    border: `1px solid ${a.style === 'danger' ? 'var(--color-danger-border)' : 'var(--color-border)'}`,
-                    borderRadius: 8, fontFamily: 'var(--font-body)', fontSize: 12, fontWeight: 500,
-                    color: a.style === 'danger' ? 'var(--color-danger)' : 'var(--color-text-primary)',
-                    cursor: 'pointer', textAlign: 'left', transition: 'background 150ms',
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.background = a.style === 'danger' ? 'var(--color-danger-bg)' : 'var(--color-base)'}
-                  onMouseLeave={e => e.currentTarget.style.background = 'white'}
-                >
-                  {a.label}
-                </button>
-              ))}
+              {SUGGESTED_ACTIONS.map((a, i) => {
+                const isPdf = a.label === 'Generate PDF Summary'
+                const pdfDisabled = isPdf && (!activeDatasetId || pdfLoading)
+                return (
+                  <button key={i}
+                    onClick={() => {
+                      if (isPdf) {
+                        handleGeneratePdf()
+                      } else if (a.label === 'Clear Session Context' && sessionId) {
+                        api.post(`/datasets/${activeDatasetId}/chat/sessions`, { mode: 'AUTO' })
+                          .then(res => { setSessionId(res.session?.session_id); setMessages([]) })
+                          .catch(console.error)
+                      }
+                    }}
+                    disabled={pdfDisabled}
+                    style={{
+                      padding: '8px 12px', background: 'white',
+                      border: `1px solid ${a.style === 'danger' ? 'var(--color-danger-border)' : 'var(--color-border)'}`,
+                      borderRadius: 8, fontFamily: 'var(--font-body)', fontSize: 12, fontWeight: 500,
+                      color: a.style === 'danger' ? 'var(--color-danger)' : 'var(--color-text-primary)',
+                      cursor: pdfDisabled ? 'not-allowed' : 'pointer', textAlign: 'left', transition: 'background 150ms',
+                      opacity: pdfDisabled ? 0.5 : 1,
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.background = a.style === 'danger' ? 'var(--color-danger-bg)' : 'var(--color-base)'}
+                    onMouseLeave={e => e.currentTarget.style.background = 'white'}
+                  >
+                    {isPdf && pdfLoading ? 'Generating PDF…' : a.label}
+                  </button>
+                )
+              })}
             </div>
+            {pdfError && (
+              <div style={{ marginTop: 8, background: '#FFF1F2', border: '1px solid #FECDD3', borderRadius: 8, padding: '8px 12px', fontFamily: 'var(--font-body)', fontSize: 12, color: '#9F1239' }}>
+                {pdfError}
+              </div>
+            )}
           </div>
 
           {/* Session Stats */}

@@ -39,6 +39,21 @@ from agentic_engine.vector_store.indexer import build_index
 logger = get_logger("pipeline")
 
 
+# Global concurrency cap for the upload pipeline. Background-task fan-out
+# would otherwise be unbounded — three concurrent pipelines is enough to
+# keep CPU busy while still leaving headroom for the API event loop.
+_PIPELINE_SEMAPHORE: asyncio.Semaphore | None = None
+
+
+def _get_pipeline_semaphore() -> asyncio.Semaphore:
+    global _PIPELINE_SEMAPHORE
+    if _PIPELINE_SEMAPHORE is None:
+        _PIPELINE_SEMAPHORE = asyncio.Semaphore(
+            get_settings().max_concurrent_pipelines
+        )
+    return _PIPELINE_SEMAPHORE
+
+
 def _run_profile_sync(dataset_id, raw_path, file_type, settings):
     report = profile_dataset(
         dataset_id=dataset_id,
@@ -77,7 +92,10 @@ async def run_profiling(dataset_id: uuid.UUID) -> None:
     settings = get_settings()
     sessionmaker = get_sessionmaker()
 
-    async with sessionmaker() as session:
+    # Bound the number of pipelines running concurrently across all
+    # requests. Acquired before any DB / disk work begins so a backlog
+    # of uploads queues here rather than fanning out and starving CPU.
+    async with _get_pipeline_semaphore(), sessionmaker() as session:
         try:
             record = await dataset_service.get_dataset(session, dataset_id)
             await dataset_service.mark_status(
