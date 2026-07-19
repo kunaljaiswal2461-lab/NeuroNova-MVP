@@ -1,24 +1,60 @@
+import { useState } from 'react'
 import Sidebar from './Sidebar'
 import { Link } from 'react-router-dom'
 import '../index.css'
 
 export default function Layout({ title, subtitle, actions, children }) {
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
+
   return (
     <div className="app-layout">
-      <Sidebar />
+      {/* Mobile Overlay Background */}
+      <div 
+        className={`mobile-overlay ${isMobileMenuOpen ? 'active' : ''}`}
+        onClick={() => setIsMobileMenuOpen(false)}
+      />
+      
+      {/* FIX 1: Pass the state down to the Sidebar */}
+      <Sidebar 
+        isMobileMenuOpen={isMobileMenuOpen} 
+        setIsMobileMenuOpen={setIsMobileMenuOpen} 
+      />
+      
       <div className="main-content">
         {/* Top Bar */}
         <header className="topbar">
-          <div>
-            <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: 18, fontWeight: 700, color: 'var(--color-text-primary)', letterSpacing: '-0.01em' }}>
-              {title}
-            </h1>
-            {subtitle && (
-              <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-muted)', marginTop: 1 }}>
-                {subtitle}
-              </p>
-            )}
+          {/* FIX 2: Added a wrapper div to group the Hamburger and Titles */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            
+            {/* Hamburger Button (Hidden on Desktop via CSS) */}
+            <button 
+              className="hamburger-btn"
+              onClick={() => setIsMobileMenuOpen(true)}
+              style={{ 
+                display: 'flex', alignItems: 'center', justifyContent: 'center', 
+                width: 36, height: 36, borderRadius: 8, border: '1px solid var(--color-border)', 
+                background: 'white', cursor: 'pointer', color: 'var(--color-text-primary)' 
+              }}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="3" y1="12" x2="21" y2="12" />
+                <line x1="3" y1="6" x2="21" y2="6" />
+                <line x1="3" y1="18" x2="21" y2="18" />
+              </svg>
+            </button>
+
+            <div>
+              <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: 18, fontWeight: 700, color: 'var(--color-text-primary)', letterSpacing: '-0.01em' }}>
+                {title}
+              </h1>
+              {subtitle && (
+                <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-muted)', marginTop: 1 }}>
+                  {subtitle}
+                </p>
+              )}
+            </div>
           </div>
+          
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             {/* Explore button - takes user back to landing page, stays logged in */}
             <Link
