@@ -63,7 +63,6 @@ export default function Sidebar() {
       {/* Wordmark */}
       <div style={{ padding: '20px 16px 12px' }}>
         <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none', cursor: 'pointer' }}>
-          {/* Replaced the SVG container with the requested image file */}
           <img 
             src="/logo.png" 
             alt="NeuroNova Logo" 
@@ -73,7 +72,6 @@ export default function Sidebar() {
             <div style={{ fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 15, color: 'white', letterSpacing: '-0.01em' }}>
               NeuroNova
             </div>
-            {/* The "Enterprise" text block has been deleted from here */}
           </div>
         </Link>
 
@@ -211,7 +209,7 @@ export default function Sidebar() {
                 onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
               >
-                Explore NeuroNova 
+                Explore Website
               </Link>
               <div style={{ display: 'block', padding: '8px 16px', fontSize: 13, color: 'rgba(255,255,255,0.3)', cursor: 'not-allowed', fontFamily: 'var(--font-body)' }}>
                 Email Support (Soon)
