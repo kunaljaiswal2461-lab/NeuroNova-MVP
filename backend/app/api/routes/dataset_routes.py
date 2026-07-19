@@ -1,7 +1,10 @@
+import re
 import uuid
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, Request, UploadFile, status
+from fastapi.responses import Response
 
 from app.core.config import get_settings
 from app.core.dependencies import AuthContext, DBSession, SettingsDep, StorageDep, get_auth_context
@@ -15,6 +18,7 @@ from app.schemas.response_schemas import (
     UploadAck,
 )
 from app.services import dataset_service
+from app.services.pdf_report_service import build_summary_pdf
 from agentic_engine.profiler.engine import load_report
 from agentic_engine.findings.persistence import load_findings_raw
 from agentic_engine.viz.persistence import load_viz_raw
@@ -311,6 +315,83 @@ async def get_dataset_insights(
         "section": section_key,
         target: raw.get(target),
     }
+
+
+def _summary_content_disposition(original_name: str) -> str:
+    """Build a safe RFC 6266 Content-Disposition header for the summary PDF.
+
+    Uploaded filenames are stored unsanitized, so the value may contain
+    path components, quotes, CR/LF (header injection), or non-Latin-1
+    characters (which would raise ``UnicodeEncodeError`` when Starlette
+    encodes headers). We strip path components and control characters,
+    emit an ASCII-only ``filename=`` fallback, and carry the real UTF-8
+    name in ``filename*=`` per RFC 6266 / RFC 8187.
+    """
+    # Drop any path components (both separators) and strip control chars.
+    base = re.split(r"[/\\]", original_name)[-1]
+    base = re.sub(r"[\x00-\x1f\x7f]", "", base).strip()
+    stem = base.rsplit(".", 1)[0].strip() or "summary"
+    filename = f"{stem}-summary.pdf"
+
+    # ASCII fallback: replace non-ASCII and quote/backslash chars.
+    ascii_fallback = re.sub(r'[^\x20-\x7e]|["\\]', "_", filename) or "summary.pdf"
+    # RFC 8187 ext-value for the real (UTF-8) name.
+    utf8_name = quote(filename, safe="")
+    return (
+        f'attachment; filename="{ascii_fallback}"; '
+        f"filename*=utf-8''{utf8_name}"
+    )
+
+
+@router.get(
+    "/datasets/{dataset_id}/summary.pdf",
+    summary="Download a PDF summary report for a profiled dataset",
+    response_class=Response,
+)
+async def download_dataset_summary_pdf(
+    dataset_id: uuid.UUID,
+    session: DBSession,
+    settings: SettingsDep,
+    current_user=Depends(get_auth_context),
+) -> Response:
+    record = await dataset_service.get_dataset(
+        session, dataset_id,
+        user_id=current_user.id if current_user is not None else None,
+    )
+    if record.status is not DatasetStatus.COMPLETE:
+        raise NotFoundError(
+            f"summary for dataset {dataset_id} is not ready",
+            details={"status": record.status.value},
+        )
+    profile = load_report(dataset_id, settings)
+    if profile is None:
+        raise NotFoundError(
+            f"profile artifact missing for dataset {dataset_id}",
+            details={"dataset_id": str(dataset_id)},
+        )
+    findings_raw = load_findings_raw(dataset_id, settings)
+    insights_raw = load_insights_raw(dataset_id, settings)
+    metadata = {
+        "dataset_id": str(record.id),
+        "original_name": record.original_name,
+        "file_type": record.file_type.value,
+        "row_count": record.row_count,
+        "col_count": record.col_count,
+        "status": record.status.value,
+    }
+    pdf_bytes = build_summary_pdf(
+        metadata=metadata,
+        profile=profile,
+        findings=(findings_raw or {}).get("findings", []),
+        insights=insights_raw,
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": _summary_content_disposition(record.original_name),
+        },
+    )
 
 
 @router.post(
