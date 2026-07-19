@@ -61,7 +61,6 @@ export default function Sidebar() {
   return (
     <aside className="sidebar">
       {/* Wordmark */}
-{/* Wordmark */}
       <div style={{ padding: '20px 16px 12px' }}>
         <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none', cursor: 'pointer' }}>
           {/* Replaced the SVG container with the requested image file */}
@@ -94,7 +93,7 @@ export default function Sidebar() {
           onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.11)'}
           onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.07)'}
         >
-          <div style={{ width: 22, height: 22, borderRadius: 4, background: 'rgba(79,70,229,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <div style={{ width: 22, height: 22, borderRadius: 4, background: 'rgba(59,130,246,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
               <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="3" y1="15" x2="21" y2="15" /><line x1="9" y1="3" x2="9" y2="21" />
             </svg>
@@ -198,7 +197,7 @@ export default function Sidebar() {
               marginBottom: 8,
               width: '100%',
               minWidth: '160px',
-              background: 'rgba(15, 23, 42, 0.95)', // matches dark dashboard theme
+              background: 'rgba(15, 23, 42, 0.95)',
               backdropFilter: 'blur(10px)',
               border: '1px solid rgba(255,255,255,0.1)',
               borderRadius: 8,

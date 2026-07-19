@@ -43,7 +43,7 @@ def profile_dataset(
     quality = profile_quality(df)
     relationships = profile_relationships(df)
     semantic = profile_semantic(df)
-    health = compute_health(schema, quality, settings)
+    health = compute_health(schema, quality, stats ,settings)
 
     return ProfileReport(
         dataset_id=dataset_id,
