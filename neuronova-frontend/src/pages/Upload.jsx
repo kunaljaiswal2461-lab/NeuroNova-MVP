@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, memo, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Layout from '../components/Layout'
 import { api } from '../api/client'
@@ -60,6 +60,82 @@ function timeAgo(dateStr) {
   return `${Math.floor(hours / 24)}d ago`
 }
 
+// Memoized so the 2s pipeline-status poll (which only updates pipelineStatus /
+// progressPct) does not re-render this whole table on every tick. It re-renders
+// only when the datasets array or the callbacks actually change.
+const RecentDatasets = memo(function RecentDatasets({ datasets, onRefresh, onOpen }) {
+  return (
+    <div className="card">
+      <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 15, fontWeight: 600, color: 'var(--color-text-primary)' }}>Recent Datasets</h3>
+        <button className="btn btn-ghost-neutral btn-sm" onClick={onRefresh}>Refresh</button>
+      </div>
+
+      <table className="data-table" style={{ width: '100%' }}>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Rows</th>
+            <th>Cols</th>
+            <th>Status</th>
+            <th>Size</th>
+            <th>Uploaded</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {datasets.length === 0 ? (
+            <tr>
+              <td colSpan={7} style={{ textAlign: 'center', padding: '32px 16px' }}>
+                <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-muted)', marginBottom: 6 }}>No datasets yet</div>
+                <div style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-muted)', opacity: 0.7 }}>Upload a file above to get started</div>
+              </td>
+            </tr>
+          ) : (
+            datasets.map((ds) => {
+              const sc = STATUS_CONFIG[ds.status] || STATUS_CONFIG.QUEUED
+              const ext = (ds.file_type || 'CSV').toUpperCase().slice(0, 4)
+              return (
+                <tr key={ds.dataset_id}>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div style={{ width: 28, height: 28, borderRadius: 6, background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-primary-indigo)', flexShrink: 0 }}>
+                        {ext}
+                      </div>
+                      <span style={{ fontFamily: 'var(--font-data)', fontSize: 13, color: 'var(--color-text-primary)' }}>{ds.original_name}</span>
+                    </div>
+                  </td>
+                  <td><span style={{ fontFamily: 'var(--font-data)', fontSize: 13 }}>{ds.row_count?.toLocaleString() ?? '—'}</span></td>
+                  <td><span style={{ fontFamily: 'var(--font-data)', fontSize: 13 }}>{ds.col_count ?? '—'}</span></td>
+                  <td>
+                    <span style={{ background: sc.bg, color: sc.color, border: `1px solid ${sc.border}`, borderRadius: 'var(--radius-full)', padding: '3px 10px', fontFamily: 'var(--font-heading)', fontSize: 10, fontWeight: 700, letterSpacing: '0.05em' }}>
+                      {ds.status}
+                    </span>
+                  </td>
+                  <td><span style={{ fontFamily: 'var(--font-data)', fontSize: 12, color: 'var(--color-text-muted)' }}>{formatBytes(ds.size_bytes)}</span></td>
+                  <td style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-muted)' }}>{timeAgo(ds.uploaded_at)}</td>
+                  <td>
+                    {ds.status === 'COMPLETE' && (
+                      <button
+                        onClick={() => onOpen(ds)}
+                        style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'white', fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-secondary)', cursor: 'pointer', transition: 'all 150ms' }}
+                        onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-base)'; e.currentTarget.style.color = 'var(--color-text-primary)' }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'white'; e.currentTarget.style.color = 'var(--color-text-secondary)' }}
+                      >
+                        Open →
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              )
+            })
+          )}
+        </tbody>
+      </table>
+    </div>
+  )
+})
+
 export default function Upload() {
   const [dragActive, setDragActive] = useState(false)
   const [datasets, setDatasets] = useState([])
@@ -73,19 +149,24 @@ export default function Upload() {
   const { selectDataset } = useDataset()
   const navigate = useNavigate()
 
-  const fetchDatasets = async () => {
+  const fetchDatasets = useCallback(async () => {
     try {
       const data = await api.get('/datasets')
       setDatasets(data.items || [])
     } catch (err) {
       console.error('Failed to load datasets:', err)
     }
-  }
+  }, [])
+
+  const openDataset = useCallback((ds) => {
+    selectDataset(ds)
+    navigate('/explorer')
+  }, [selectDataset, navigate])
 
   useEffect(() => {
     fetchDatasets()
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
-  }, [])
+  }, [fetchDatasets])
 
   async function uploadFile(file) {
     setError(null)
@@ -109,8 +190,9 @@ export default function Upload() {
     pollRef.current = setInterval(async () => {
       try {
         const st = await api.get(`/datasets/${id}/status`)
-        setPipelineStatus(st.status)
-        setProgressPct(st.progress_pct ?? 0)
+        const pct = st.progress_pct ?? 0
+        setPipelineStatus(prev => (prev === st.status ? prev : st.status))
+        setProgressPct(prev => (prev === pct ? prev : pct))
         if (st.status === 'COMPLETE') {
           clearInterval(pollRef.current)
           setUploading(false)
@@ -269,74 +351,7 @@ export default function Upload() {
         )}
 
         {/* Recent Datasets */}
-        <div className="card">
-          <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 15, fontWeight: 600, color: 'var(--color-text-primary)' }}>Recent Datasets</h3>
-            <button className="btn btn-ghost-neutral btn-sm" onClick={fetchDatasets}>Refresh</button>
-          </div>
-
-          <table className="data-table" style={{ width: '100%' }}>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Rows</th>
-                <th>Cols</th>
-                <th>Status</th>
-                <th>Size</th>
-                <th>Uploaded</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {datasets.length === 0 ? (
-                <tr>
-                  <td colSpan={7} style={{ textAlign: 'center', padding: '32px 16px' }}>
-                    <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-muted)', marginBottom: 6 }}>No datasets yet</div>
-                    <div style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-muted)', opacity: 0.7 }}>Upload a file above to get started</div>
-                  </td>
-                </tr>
-              ) : (
-                datasets.map((ds) => {
-                  const sc = STATUS_CONFIG[ds.status] || STATUS_CONFIG.QUEUED
-                  const ext = (ds.file_type || 'CSV').toUpperCase().slice(0, 4)
-                  return (
-                    <tr key={ds.dataset_id}>
-                      <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                          <div style={{ width: 28, height: 28, borderRadius: 6, background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-primary-indigo)', flexShrink: 0 }}>
-                            {ext}
-                          </div>
-                          <span style={{ fontFamily: 'var(--font-data)', fontSize: 13, color: 'var(--color-text-primary)' }}>{ds.original_name}</span>
-                        </div>
-                      </td>
-                      <td><span style={{ fontFamily: 'var(--font-data)', fontSize: 13 }}>{ds.row_count?.toLocaleString() ?? '—'}</span></td>
-                      <td><span style={{ fontFamily: 'var(--font-data)', fontSize: 13 }}>{ds.col_count ?? '—'}</span></td>
-                      <td>
-                        <span style={{ background: sc.bg, color: sc.color, border: `1px solid ${sc.border}`, borderRadius: 'var(--radius-full)', padding: '3px 10px', fontFamily: 'var(--font-heading)', fontSize: 10, fontWeight: 700, letterSpacing: '0.05em' }}>
-                          {ds.status}
-                        </span>
-                      </td>
-                      <td><span style={{ fontFamily: 'var(--font-data)', fontSize: 12, color: 'var(--color-text-muted)' }}>{formatBytes(ds.size_bytes)}</span></td>
-                      <td style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-muted)' }}>{timeAgo(ds.uploaded_at)}</td>
-                      <td>
-                        {ds.status === 'COMPLETE' && (
-                          <button
-                            onClick={() => { selectDataset(ds); navigate('/explorer') }}
-                            style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'white', fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-secondary)', cursor: 'pointer', transition: 'all 150ms' }}
-                            onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-base)'; e.currentTarget.style.color = 'var(--color-text-primary)' }}
-                            onMouseLeave={e => { e.currentTarget.style.background = 'white'; e.currentTarget.style.color = 'var(--color-text-secondary)' }}
-                          >
-                            Open →
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+        <RecentDatasets datasets={datasets} onRefresh={fetchDatasets} onOpen={openDataset} />
       </div>
     </Layout>
   )

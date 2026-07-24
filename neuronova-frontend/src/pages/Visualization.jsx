@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import Layout from '../components/Layout'
 import { api } from '../api/client'
 import { useDataset } from '../context/DatasetContext'
@@ -16,6 +16,61 @@ function heatmapColor(val) {
 function textColor(val) {
   if (val === null || val === undefined) return '#9CA3AF'
   return Math.abs(val) >= 0.5 ? 'white' : '#1E3A5F'
+}
+
+// The correlation value (r) is always shown in each cell. For wide matrices
+// the cells get narrow, so shrink the font (and drop the leading zero) to keep
+// the digits legible instead of hiding them behind a low/high color alone.
+function heatmapCellFontSize(nCols) {
+  if (nCols > 14) return 8
+  if (nCols > 10) return 9
+  return 10
+}
+
+function heatmapCellLabel(val, nCols) {
+  if (val === null || val === undefined) return '—'
+  const fixed = val.toFixed(2)
+  // Compact form for dense grids: -0.95 -> -.95, 1.00 -> 1
+  if (nCols > 10) return fixed.replace(/^(-?)0\./, '$1.').replace(/^(-?)1\.00$/, '$11')
+  return fixed
+}
+
+// Shared correlation-matrix grid used by both the gallery and the Dataset tab.
+// `legendNote` is appended to the legend caption (the two sites word it slightly
+// differently).
+function CorrelationHeatmap({ heatmapChart, legendNote = '' }) {
+  const cols = heatmapChart.config?.columns ?? []
+  const matrix = heatmapChart.config?.matrix ?? {}
+  const cellFont = heatmapCellFontSize(cols.length)
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: `auto repeat(${cols.length}, 1fr)`, gap: 2, minWidth: cols.length * 48 }}>
+        <div />
+        {cols.map(c => (
+          <div key={c} style={{ fontFamily: 'var(--font-data)', fontSize: 9, color: 'var(--color-text-muted)', textAlign: 'center', padding: '0 0 4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c}>{c}</div>
+        ))}
+        {cols.map(rowCol => (
+          <>
+            <div key={`lbl-${rowCol}`} style={{ fontFamily: 'var(--font-data)', fontSize: 9, color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', paddingRight: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={rowCol}>{rowCol}</div>
+            {cols.map(colCol => {
+              const val = matrix[rowCol]?.[colCol] ?? null
+              return (
+                <div key={`${rowCol}-${colCol}`} style={{ background: heatmapColor(val), borderRadius: 3, padding: '8px 2px', textAlign: 'center', fontFamily: 'var(--font-data)', fontSize: cellFont, color: textColor(val), fontWeight: 500 }} title={`${rowCol} × ${colCol}: ${val !== null ? val.toFixed(3) : 'N/A'}`}>
+                  {heatmapCellLabel(val, cols.length)}
+                </div>
+              )
+            })}
+          </>
+        ))}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 16, justifyContent: 'center' }}>
+        <span style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)' }}>−1</span>
+        <div style={{ width: 140, height: 10, borderRadius: 5, background: 'linear-gradient(90deg, #1E3A5F, #EFF6FF, #1E3A5F)' }} />
+        <span style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)' }}>+1</span>
+        <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--color-text-muted)', marginLeft: 8 }}>darker = stronger correlation{legendNote}</span>
+      </div>
+    </div>
+  )
 }
 
 function fmt(v, decimals = 2) {
@@ -528,33 +583,37 @@ export default function Visualization() {
       .finally(() => setLoading(false))
   }, [activeDatasetId])
 
-  const histogramCharts = charts.filter(c => c.type === 'HISTOGRAM')
-  const boxplotCharts   = charts.filter(c => c.type === 'BOXPLOT')
-  const barCharts       = charts.filter(c => c.type === 'BAR')
-  const scatterCharts   = charts.filter(c => c.type === 'SCATTER')
-  const heatmapChart    = charts.find(c => c.type === 'HEATMAP') ?? null
-  const timeseriesCharts= charts.filter(c => c.type === 'TIMESERIES')
+  const histogramCharts = useMemo(() => charts.filter(c => c.type === 'HISTOGRAM'), [charts])
+  const boxplotCharts   = useMemo(() => charts.filter(c => c.type === 'BOXPLOT'), [charts])
+  const barCharts       = useMemo(() => charts.filter(c => c.type === 'BAR'), [charts])
+  const scatterCharts   = useMemo(() => charts.filter(c => c.type === 'SCATTER'), [charts])
+  const heatmapChart    = useMemo(() => charts.find(c => c.type === 'HEATMAP') ?? null, [charts])
+  const timeseriesCharts= useMemo(() => charts.filter(c => c.type === 'TIMESERIES'), [charts])
 
-  const activeHistogram = histogramCharts.find(c => c.config?.x_col === activeCol || c.columns?.[0] === activeCol) ?? null
+  const activeHistogram = useMemo(() => histogramCharts.find(c => c.config?.x_col === activeCol || c.columns?.[0] === activeCol) ?? null, [histogramCharts, activeCol])
   const stats = activeHistogram?.config?.stats ?? null
-  const activeBoxplot = boxplotCharts.find(c => c.config?.y_col === activeCol || c.columns?.[0] === activeCol) ?? null
-  const activeBarChart = barCharts.find(c => c.config?.x_col === activeBarCol || c.columns?.[0] === activeBarCol) ?? null
+  const activeBoxplot = useMemo(() => boxplotCharts.find(c => c.config?.y_col === activeCol || c.columns?.[0] === activeCol) ?? null, [boxplotCharts, activeCol])
+  const activeBarChart = useMemo(() => barCharts.find(c => c.config?.x_col === activeBarCol || c.columns?.[0] === activeBarCol) ?? null, [barCharts, activeBarCol])
 
-  const skippedByName = Object.fromEntries(skippedColumns.map(s => [s.column_name, s]))
+  const skippedByName = useMemo(() => Object.fromEntries(skippedColumns.map(s => [s.column_name, s])), [skippedColumns])
 
-  const numericRenderedCols = histogramCharts.map(c => c.config?.x_col ?? c.columns?.[0]).filter(Boolean)
-  const numericSkippedCols = skippedColumns.filter(s => s.intended_chart_type === 'HISTOGRAM' || s.intended_chart_type === 'NONE').map(s => s.column_name)
-  const numericOptions = [
-    ...numericRenderedCols.map(c => ({ name: c, skipped: false })),
-    ...numericSkippedCols.map(c => ({ name: c, skipped: true })),
-  ]
+  const numericOptions = useMemo(() => {
+    const numericRenderedCols = histogramCharts.map(c => c.config?.x_col ?? c.columns?.[0]).filter(Boolean)
+    const numericSkippedCols = skippedColumns.filter(s => s.intended_chart_type === 'HISTOGRAM' || s.intended_chart_type === 'NONE').map(s => s.column_name)
+    return [
+      ...numericRenderedCols.map(c => ({ name: c, skipped: false })),
+      ...numericSkippedCols.map(c => ({ name: c, skipped: true })),
+    ]
+  }, [histogramCharts, skippedColumns])
 
-  const categoricalRenderedCols = barCharts.map(c => c.config?.x_col ?? c.columns?.[0]).filter(Boolean)
-  const categoricalSkippedCols = skippedColumns.filter(s => s.intended_chart_type === 'BAR' || s.intended_chart_type === 'NONE').map(s => s.column_name)
-  const categoricalOptions = [
-    ...categoricalRenderedCols.map(c => ({ name: c, skipped: false })),
-    ...categoricalSkippedCols.filter(c => !categoricalRenderedCols.includes(c)).map(c => ({ name: c, skipped: true })),
-  ]
+  const categoricalOptions = useMemo(() => {
+    const categoricalRenderedCols = barCharts.map(c => c.config?.x_col ?? c.columns?.[0]).filter(Boolean)
+    const categoricalSkippedCols = skippedColumns.filter(s => s.intended_chart_type === 'BAR' || s.intended_chart_type === 'NONE').map(s => s.column_name)
+    return [
+      ...categoricalRenderedCols.map(c => ({ name: c, skipped: false })),
+      ...categoricalSkippedCols.filter(c => !categoricalRenderedCols.includes(c)).map(c => ({ name: c, skipped: true })),
+    ]
+  }, [barCharts, skippedColumns])
 
   const activeColIsSkipped = activeCol != null && skippedByName[activeCol] != null
   const activeBarColIsSkipped = activeBarCol != null && skippedByName[activeBarCol] != null
@@ -685,40 +744,7 @@ export default function Visualization() {
                 Correlation Heatmap
               </h3>
               <div className="card" style={{ padding: 20 }}>
-                {(() => {
-                  const cols = heatmapChart.config?.columns ?? []
-                  const matrix = heatmapChart.config?.matrix ?? {}
-                  const showValues = heatmapChart.config?.show_values ?? cols.length <= 10
-                  return (
-                    <div style={{ overflowX: 'auto' }}>
-                      <div style={{ display: 'grid', gridTemplateColumns: `auto repeat(${cols.length}, 1fr)`, gap: 2, minWidth: cols.length * 48 }}>
-                        <div />
-                        {cols.map(c => (
-                          <div key={c} style={{ fontFamily: 'var(--font-data)', fontSize: 9, color: 'var(--color-text-muted)', textAlign: 'center', padding: '0 0 4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c}>{c}</div>
-                        ))}
-                        {cols.map(rowCol => (
-                          <>
-                            <div key={`lbl-${rowCol}`} style={{ fontFamily: 'var(--font-data)', fontSize: 9, color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', paddingRight: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={rowCol}>{rowCol}</div>
-                            {cols.map(colCol => {
-                              const val = matrix[rowCol]?.[colCol] ?? null
-                              return (
-                                <div key={`${rowCol}-${colCol}`} style={{ background: heatmapColor(val), borderRadius: 3, padding: '8px 2px', textAlign: 'center', fontFamily: 'var(--font-data)', fontSize: 10, color: textColor(val), fontWeight: 500 }} title={`${rowCol} × ${colCol}: ${val !== null ? val.toFixed(3) : 'N/A'}`}>
-                                  {showValues ? (val !== null ? val.toFixed(2) : '—') : ''}
-                                </div>
-                              )
-                            })}
-                          </>
-                        ))}
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 16, justifyContent: 'center' }}>
-                        <span style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)' }}>−1</span>
-                        <div style={{ width: 140, height: 10, borderRadius: 5, background: 'linear-gradient(90deg, #1E3A5F, #EFF6FF, #1E3A5F)' }} />
-                        <span style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)' }}>+1</span>
-                        <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--color-text-muted)', marginLeft: 8 }}>darker = stronger correlation (either direction)</span>
-                      </div>
-                    </div>
-                  )
-                })()}
+                <CorrelationHeatmap heatmapChart={heatmapChart} legendNote=" (either direction)" />
               </div>
             </div>
           )}
@@ -860,34 +886,9 @@ export default function Visualization() {
                         <p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-muted)' }}>{loading ? 'Loading…' : 'No correlation data'}</p>
                         {!loading && <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-muted)', opacity: 0.7, marginTop: 4 }}>Requires ≥ 3 numeric columns</p>}
                       </div>
-                    ) : (() => {
-                      const cols = heatmapChart.config?.columns ?? []
-                      const matrix = heatmapChart.config?.matrix ?? {}
-                      const showValues = heatmapChart.config?.show_values ?? cols.length <= 10
-                      return (
-                        <div style={{ overflowX: 'auto' }}>
-                          <div style={{ display: 'grid', gridTemplateColumns: `auto repeat(${cols.length}, 1fr)`, gap: 2, minWidth: cols.length * 48 }}>
-                            <div />
-                            {cols.map(c => <div key={c} style={{ fontFamily: 'var(--font-data)', fontSize: 9, color: 'var(--color-text-muted)', textAlign: 'center', padding: '0 0 4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c}>{c}</div>)}
-                            {cols.map(rowCol => (
-                              <>
-                                <div key={`lbl-${rowCol}`} style={{ fontFamily: 'var(--font-data)', fontSize: 9, color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', paddingRight: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={rowCol}>{rowCol}</div>
-                                {cols.map(colCol => {
-                                  const val = matrix[rowCol]?.[colCol] ?? null
-                                  return <div key={`${rowCol}-${colCol}`} style={{ background: heatmapColor(val), borderRadius: 3, padding: '8px 2px', textAlign: 'center', fontFamily: 'var(--font-data)', fontSize: 10, color: textColor(val), fontWeight: 500 }} title={`${rowCol} × ${colCol}: ${val !== null ? val.toFixed(3) : 'N/A'}`}>{showValues ? (val !== null ? val.toFixed(2) : '—') : ''}</div>
-                                })}
-                              </>
-                            ))}
-                          </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 16, justifyContent: 'center' }}>
-                            <span style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)' }}>−1</span>
-                            <div style={{ width: 140, height: 10, borderRadius: 5, background: 'linear-gradient(90deg, #1E3A5F, #EFF6FF, #1E3A5F)' }} />
-                            <span style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)' }}>+1</span>
-                            <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--color-text-muted)', marginLeft: 8 }}>darker = stronger correlation</span>
-                          </div>
-                        </div>
-                      )
-                    })()}
+                    ) : (
+                      <CorrelationHeatmap heatmapChart={heatmapChart} />
+                    )}
 
                     {(() => {
                       const nullChart = charts.find(c => c.type === 'NULL_MATRIX')
