@@ -1,9 +1,11 @@
+import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import './index.css'
 
 import { AuthProvider } from './context/AuthContext'
 import { DatasetProvider } from './context/DatasetContext'
 import { ProtectedRoute } from './components/ProtectedRoute'
+import { warmBackend } from './api/warmup'
 
 import Landing from './pages/Landing'
 import Upload from './pages/Upload'
@@ -19,6 +21,10 @@ import ForgotPassword from './pages/ForgotPassword'
 import ResetPassword from './pages/ResetPassword'
 
 export default function App() {
+  useEffect(() => {
+    warmBackend()
+  }, [])
+
   return (
     <BrowserRouter>
       <AuthProvider>

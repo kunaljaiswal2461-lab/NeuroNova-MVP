@@ -36,6 +36,9 @@ test_*.py
 progress
 scratch/
 
+# Committed backend tests are exempt from the test_*.py scratch rule above
+!backend/tests/**/test_*.py
+
 # Frontend
 node_modules/
 dist/
