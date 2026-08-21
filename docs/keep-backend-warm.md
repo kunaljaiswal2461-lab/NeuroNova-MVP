@@ -97,3 +97,5 @@ status, timeout) so it can never affect the UI or the user's session. If
 `VITE_API_BASE_URL` is relative, it logs a console warning explaining that the
 ping cannot reach the Render backend, but still fires the request (useful in
 local dev with a proxy).
+
+likely
