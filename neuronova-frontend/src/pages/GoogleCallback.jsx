@@ -1,35 +1,45 @@
-import { useEffect, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { authApi } from '../api/auth';
 
 export default function GoogleCallback() {
   const navigate = useNavigate();
   const { setSession } = useAuth();
-  const [searchParams] = useSearchParams();
   const [error, setError] = useState('');
+  const handledCallback = useRef(false);
 
   useEffect(() => {
-    const queryError = searchParams.get('error');
+    if (handledCallback.current) return;
+    handledCallback.current = true;
+
+    const queryParams = new URLSearchParams(window.location.search);
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+
+    console.info('Google OAuth callback received', {
+      pathname: window.location.pathname,
+      hasQuery: Boolean(window.location.search),
+      hasHash: Boolean(window.location.hash),
+      queryParameterNames: [...queryParams.keys()],
+      hashParameterNames: [...hashParams.keys()],
+    });
+
+    // Strip callback data immediately so credentials never linger in the URL or history.
+    window.history.replaceState(null, '', window.location.pathname);
+
+    const queryError = queryParams.get('error');
     if (queryError) {
       setError(queryError);
       return;
     }
 
-    const hash = window.location.hash.startsWith('#')
-      ? window.location.hash.slice(1)
-      : window.location.hash;
-    const params = new URLSearchParams(hash);
-    const accessToken = params.get('access_token');
-    const refreshToken = params.get('refresh_token');
+    const accessToken = hashParams.get('access_token') ?? queryParams.get('access_token');
+    const refreshToken = hashParams.get('refresh_token') ?? queryParams.get('refresh_token');
 
     if (!accessToken || !refreshToken) {
       setError('Missing tokens in OAuth callback.');
       return;
     }
-
-    // Strip the fragment so tokens don't linger in the URL bar / history.
-    window.history.replaceState(null, '', window.location.pathname);
 
     (async () => {
       try {
@@ -44,7 +54,7 @@ export default function GoogleCallback() {
         setError(err.message || 'Failed to complete Google sign-in.');
       }
     })();
-  }, [navigate, searchParams, setSession]);
+  }, [navigate, setSession]);
 
   if (error) {
     return (
