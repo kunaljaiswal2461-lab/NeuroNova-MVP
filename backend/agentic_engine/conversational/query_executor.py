@@ -487,6 +487,13 @@ def schema_snapshot_from_profile(profile_columns: list[dict[str, Any]]) -> list[
     """
     pared: list[dict[str, Any]] = []
     for col in profile_columns:
+        if col.get("schema_truncated"):
+            pared.append({
+                "schema_truncated": True,
+                "included_column_count": col["included_column_count"],
+                "total_column_count": col["total_column_count"],
+            })
+            continue
         entry: dict[str, Any] = {
             "name": col["name"],
             "dtype": col.get("dtype") or col.get("polars_dtype") or "Unknown",
