@@ -25,6 +25,7 @@ what the user saw.
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -52,11 +53,11 @@ from agentic_engine.conversational.query_executor import (
     schema_snapshot_from_profile,
 )
 from agentic_engine.conversational.rag_answerer import stream_rag_answer
-from agentic_engine.findings.persistence import load_findings_raw
 from agentic_engine.llm_engine.base_llm import LLMClient, LLMUnavailable, StreamDelta
 from agentic_engine.llm_engine.models import TokenUsage
 from agentic_engine.llm_engine.openai_client import build_client
-from agentic_engine.profiler.engine import load_report
+from agentic_engine.profiler.engine import load_profile_report
+from agentic_engine.profiler.report import ProfileReport
 from agentic_engine.vector_store.embedder import Embedder, build_embedder
 
 
@@ -133,7 +134,18 @@ async def stream_chat_turn(
     # so the LLM doesn't see it twice (once as history, once as ``user``).
     history_for_llm = manager.history_for_prompt(history_messages[:-1])
 
-    profile_columns, overview = _load_dataset_context(dataset_record, settings)
+    try:
+        profile_columns, overview = await asyncio.to_thread(
+            _load_dataset_context, dataset_record, settings
+        )
+    except DatasetProfileUnavailable as exc:
+        async for event in _refuse_profile_unavailable(
+            session_db=session_db,
+            session_id=session_id,
+            reason=str(exc),
+        ):
+            yield event
+        return
 
     # ── 4. Classify intent. ──────────────────────────────────────────────
     schema_snapshot = schema_snapshot_from_profile(profile_columns)
@@ -292,6 +304,11 @@ async def _run_rag_branch(
         if delta.finished:
             token_usage.add(delta.input_tokens, delta.output_tokens)
             content = "".join(buffered_text).strip()
+            # A missing LLM produces a user-visible fallback answer rather
+            # than an exception, but it is still a degraded turn.
+            if llm is None:
+                degraded = True
+                degraded_reason = "LLM client is not configured"
             if not content:
                 # RAG layer can return zero text deltas in degraded paths
                 # — keep the assistant turn non-empty so the transcript
@@ -443,6 +460,29 @@ async def _refuse_not_ready(
     yield _done_event(assistant_msg, None, None)
 
 
+async def _refuse_profile_unavailable(
+    *,
+    session_db: AsyncSession,
+    session_id: uuid.UUID,
+    reason: str,
+) -> AsyncIterator[ChatStreamEvent]:
+    """Persist a clear degraded response before streaming any refusal event."""
+    assistant_msg = await _persist_assistant(
+        session_db=session_db,
+        session_id=session_id,
+        content=reason,
+        mode_used=None,
+        intent=None,
+        citations=[],
+        query_result=None,
+        token_usage=None,
+        degraded=True,
+        degraded_reason="dataset profile unavailable",
+    )
+    yield _event(ChatStreamEventType.TOKEN, {"text": reason})
+    yield _done_event(assistant_msg, None, None)
+
+
 # ── persistence helpers ─────────────────────────────────────────────────────
 
 async def _persist_assistant(
@@ -478,77 +518,118 @@ async def _persist_assistant(
 
 # ── dataset context loading ─────────────────────────────────────────────────
 
-def _load_dataset_context(dataset_record, settings):
-    import json
-    from pathlib import Path
+_SCHEMA_CONTEXT_COLUMN_LIMIT = 200
 
-    # 1. Locate and load the JSON profile safely
-    profile_path = Path(settings.profiles_dir) / f"{dataset_record.id}_profile.json"
-    
-    if not profile_path.exists():
-        return [], {}
-        
-    with open(profile_path, "r", encoding="utf-8") as f:
-        profile = json.load(f)
 
-    # 2. Safely map semantic types using dictionary brackets
-    semantic_by_name = {}
-    semantic_data = profile.get("semantic", {})
-    if isinstance(semantic_data, dict):
-        for s in semantic_data.get("columns", []):
-            if isinstance(s, dict) and s.get("name"):
-                semantic_by_name[s.get("name")] = s.get("semantic_type")
+class DatasetProfileUnavailable(RuntimeError):
+    """Raised when a completed dataset has no usable persisted profile."""
 
-    # 3. Safely parse schema columns
-    profile_columns = []
-    
-    # Check both "schema_" and "schema" just in case Pydantic renamed it
-    schema_data = profile.get("schema_", profile.get("schema", {}))
-    
-    if isinstance(schema_data, dict):
-        for col in schema_data.get("columns", []):
-            if not isinstance(col, dict):
-                continue
-                
-            col_name = col.get("name", "unknown_column")
-            
-            # Bulletproof dictionary building - NO DOT NOTATION ALLOWED HERE
-            col_summary = {
-                "name": col_name,
-                "type": col.get("type", col.get("datatype", "unknown")),
-                "description": col.get("description", ""),
-                "semantic_type": semantic_by_name.get(col_name, "UNKNOWN"),
-                "missing_count": col.get("missing_count", 0),
-                "unique_count": col.get("unique_count", 0),
-                "mean": col.get("mean"),
-                "min": col.get("min"),
-                "max": col.get("max"),
-                "skewness": col.get("skewness")
+
+def _load_dataset_context(
+    dataset_record: DatasetRecord, settings: Settings
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Create compact chat context from the canonical persisted profile.
+
+    The profile model owns both its path and JSON shape. This deliberately
+    returns schema and aggregate profile facts only; raw dataset rows never
+    enter either the query or RAG prompt.
+    """
+    try:
+        profile = load_profile_report(dataset_record.id, settings)
+    except Exception as exc:
+        logger.error(
+            "chat.profile_invalid",
+            dataset_id=str(dataset_record.id),
+            error=str(exc),
+        )
+        raise DatasetProfileUnavailable(
+            "The dataset profile is invalid. Please re-upload the dataset before chatting."
+        ) from exc
+
+    if profile is None:
+        raise DatasetProfileUnavailable(
+            "The dataset profile is unavailable. Please re-upload the dataset before chatting."
+        )
+
+    return _schema_snapshot(profile), _overview_snapshot(profile)
+
+
+def _schema_snapshot(profile: ProfileReport) -> list[dict[str, Any]]:
+    """Return typed column metadata plus safe aggregate quality facts."""
+    semantic_by_name = {
+        tag.name: tag.semantic_type for tag in profile.semantic.columns
+    }
+    stats_by_name = {stat.name: stat for stat in profile.stats.columns}
+    quality_by_name = {quality.name: quality for quality in profile.quality.columns}
+
+    columns: list[dict[str, Any]] = []
+    all_columns = profile.schema_.columns
+    for column in all_columns[:_SCHEMA_CONTEXT_COLUMN_LIMIT]:
+        quality = quality_by_name.get(column.name)
+        stats = stats_by_name.get(column.name)
+        snapshot: dict[str, Any] = {
+            "name": column.name,
+            # Use Polars' actual dtype for code generation while retaining the
+            # profile's logical dtype for descriptive consumers.
+            "dtype": column.polars_dtype,
+            "logical_dtype": column.dtype,
+            "polars_dtype": column.polars_dtype,
+            "nullable": column.nullable,
+            "semantic_type": semantic_by_name.get(column.name, "UNKNOWN"),
+        }
+        if stats is not None:
+            snapshot["inferred_kind"] = stats.inferred_kind
+            if stats.categorical is not None:
+                snapshot["cardinality"] = stats.categorical.cardinality
+        if quality is not None:
+            snapshot["null_pct"] = quality.null_pct
+            snapshot["is_constant"] = quality.is_constant
+        columns.append(snapshot)
+    if len(all_columns) > _SCHEMA_CONTEXT_COLUMN_LIMIT:
+        columns.append(
+            {
+                "schema_truncated": True,
+                "included_column_count": _SCHEMA_CONTEXT_COLUMN_LIMIT,
+                "total_column_count": len(all_columns),
             }
-            profile_columns.append(col_summary)
-            
-    # 4. Safely extract overview/general stats
-    overview = profile.get("overview", profile.get("general", {}))
-    if not isinstance(overview, dict):
-        overview = {}
-
-    return profile_columns, overview
+        )
+    return columns
 
 
-def _summarise_findings_for_overview(
-    dataset_id: uuid.UUID, settings: Settings
-) -> dict[str, int]:
-    """Compact severity counts for the overview block (no titles)."""
-    raw = load_findings_raw(dataset_id, settings)
-    if raw is None:
-        return {"total": 0, "high": 0, "medium": 0, "low": 0}
-    findings = raw.get("findings", [])
-    counts = {"total": len(findings), "high": 0, "medium": 0, "low": 0}
-    for f in findings:
-        sev = (f.get("severity") or "").lower()
-        if sev in counts:
-            counts[sev] += 1
-    return counts
+def _overview_snapshot(profile: ProfileReport) -> dict[str, Any]:
+    """Return a bounded RAG overview derived solely from aggregate facts."""
+    semantic_counts: dict[str, int] = {}
+    for tag in profile.semantic.columns:
+        semantic_counts[tag.semantic_type] = (
+            semantic_counts.get(tag.semantic_type, 0) + 1
+        )
+
+    null_columns = sum(
+        1 for column in profile.quality.columns if column.null_pct > 0
+    )
+    constant_columns = sum(
+        1 for column in profile.quality.columns if column.is_constant
+    )
+    kind_counts: dict[str, int] = {}
+    for column in profile.stats.columns:
+        kind_counts[column.inferred_kind] = (
+            kind_counts.get(column.inferred_kind, 0) + 1
+        )
+
+    return {
+        "row_count": profile.schema_.row_count,
+        "column_count": profile.schema_.col_count,
+        "health": {
+            "score": profile.health.score,
+            "grade": profile.health.grade,
+            "components": profile.health.components,
+        },
+        "duplicate_row_pct": profile.quality.duplicate_row_pct,
+        "columns_with_nulls": null_columns,
+        "constant_columns": constant_columns,
+        "semantic_type_counts": semantic_counts,
+        "inferred_kind_counts": kind_counts,
+    }
 
 
 # ── event builders ──────────────────────────────────────────────────────────
