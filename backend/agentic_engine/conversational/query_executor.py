@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import datetime as _dt
+import decimal as _decimal
 import time
 import uuid
 from typing import Any
@@ -47,6 +49,15 @@ from agentic_engine.conversational.models import (
     QueryResult,
 )
 from agentic_engine.conversational.prompts import query_codegen
+from agentic_engine.conversational.query_allowlist import (
+    ALLOWED_METHODS as _ALLOWED_METHODS,
+    ALLOWED_NAMES as _ALLOWED_NAMES,
+    ALLOWED_NODE_TYPES as _ALLOWED_NODE_TYPES,
+    ALLOWED_PL_ATTRIBUTES as _ALLOWED_PL_ATTRIBUTES,
+    ALLOWED_PL_FUNCTIONS as _ALLOWED_PL_FUNCTIONS,
+    FORBIDDEN_KEYWORD_VALUES as _FORBIDDEN_KEYWORD_VALUES,
+)
+from agentic_engine.conversational.query_compat import normalise_expression
 from agentic_engine.llm_engine.base_llm import LLMClient, LLMUnavailable
 from agentic_engine.profiler.loader import UnreadableDatasetError, load_dataset
 
@@ -55,103 +66,17 @@ logger = get_logger("conversational.query")
 
 
 # ── AST whitelist ────────────────────────────────────────────────────────────
+#
+# The whitelist itself lives in :mod:`query_allowlist` so the codegen
+# prompt and this validator share one definition. Default-deny is the key
+# property — we never trust the model to stay on the path; the AST is the
+# enforcement boundary.
 
-# Only these AST node *types* may appear anywhere in the expression. Any
-# other node type causes validation to fail. Default-deny is the key
-# property here — we never trust the model to stay on the path; the AST
-# is the enforcement boundary.
-_ALLOWED_NODE_TYPES: frozenset[type[ast.AST]] = frozenset({
-    ast.Expression,
-    ast.Call,
-    ast.Attribute,
-    ast.Name,
-    ast.Load,
-    ast.Constant,
-    ast.List,
-    ast.Tuple,
-    ast.Dict,
-    ast.Set,
-    ast.Subscript,
-    ast.Slice,
-    ast.Index,            # legacy slice in older Python versions
-    ast.BinOp,
-    ast.UnaryOp,
-    ast.BoolOp,
-    ast.Compare,
-    ast.keyword,
-    # Arithmetic / comparison / boolean operators — these are *operator*
-    # nodes, not expressions; whitelisted explicitly so e.g. `**` (power,
-    # could be costly with large floats) is not implicitly allowed.
-    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod, ast.FloorDiv,
-    ast.USub, ast.UAdd,
-    ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
-    ast.In, ast.NotIn,
-    ast.And, ast.Or, ast.Not,
-    ast.BitAnd, ast.BitOr, ast.BitXor, ast.Invert,
-})
-
-# Names that may appear as standalone identifiers. ``True`` / ``False`` /
-# ``None`` are represented as ``ast.Constant`` post-3.8 so they don't
-# need to be listed here.
-_ALLOWED_NAMES: frozenset[str] = frozenset({"df", "pl"})
-
-# Polars module-level functions exposed to the model. Anything not in
-# this set called as ``pl.<x>(...)`` is rejected — this is the strongest
-# guard, because the model could otherwise reach ``pl.read_csv`` or
-# ``pl.scan_parquet`` to read arbitrary files.
-_ALLOWED_PL_FUNCTIONS: frozenset[str] = frozenset({
-    "col", "lit", "when",
-    "sum", "mean", "median", "min", "max", "count", "n_unique",
-    "first", "last",
-    "all", "any",
-    "concat_str", "concat_list",
-    "int_range",
-})
-
-# Polars dtype names that may appear as ``pl.<DType>`` (e.g. for
-# ``cast(pl.Float64)``). These are referenced as Attributes but not
-# called, so we list them separately and accept them at Attribute time.
-_ALLOWED_PL_DTYPES: frozenset[str] = frozenset({
-    "Float64", "Float32",
-    "Int64", "Int32", "Int16", "Int8",
-    "UInt64", "UInt32", "UInt16", "UInt8",
-    "Boolean", "Utf8", "String",
-    "Date", "Datetime", "Time", "Duration",
-    "List", "Array", "Struct", "Categorical", "Object", "Null",
-})
-
-# All identifiers permitted as ``pl.<x>`` regardless of whether they are
-# called or just referenced.
-_ALLOWED_PL_ATTRIBUTES: frozenset[str] = _ALLOWED_PL_FUNCTIONS | _ALLOWED_PL_DTYPES
-
-# Methods that may be called on a DataFrame / Series / Expr. We do not
-# distinguish between them in the AST — Polars chains are uniform — so
-# the union is one set. The bias is read-only and small.
-_ALLOWED_METHODS: frozenset[str] = frozenset({
-    # DataFrame read-only ops
-    "filter", "select", "with_columns", "sort", "head", "tail", "limit",
-    "slice", "drop", "drop_nulls", "unique", "rename",
-    "group_by", "groupby", "agg",
-    "describe", "n_unique", "row_count",
-    "to_dict",
-    # DataFrame read-only properties
-    "shape", "columns", "dtypes", "height", "width",
-    # Aggregations (also valid on Series + Expr)
-    "sum", "mean", "median", "min", "max", "count", "value_counts",
-    "std", "var", "quantile",
-    # Expression / column ops
-    "alias", "cast", "is_null", "is_not_null", "is_in", "between",
-    "gt", "lt", "ge", "le", "eq", "ne",
-    "and_", "or_", "not_",
-    "then", "otherwise",
-    # Namespaces
-    "str", "dt",
-    # Common .str.* / .dt.* methods that are read-only
-    "contains", "starts_with", "ends_with",
-    "to_lowercase", "to_uppercase", "len_chars", "len_bytes",
-    "year", "month", "day", "weekday", "hour", "minute", "second",
-    "to_date", "to_datetime",
-})
+# One LLM repair round is allowed when the first expression is rejected
+# by the validator or fails at runtime. The model is shown the exact
+# failure and the grammar, which resolves the vast majority of
+# API-drift mistakes without a second user round-trip.
+MAX_CODEGEN_ATTEMPTS = 2
 
 
 class QueryValidationError(Exception):
@@ -262,6 +187,20 @@ def validate_expression(expression: str) -> ast.Expression:
                 if isinstance(arg, ast.Starred):
                     raise QueryValidationError("starred args not allowed")
 
+            # Keyword values that turn a read-only method into a memory
+            # amplifier (``join(how="cross")``, ``sample(with_replacement=True)``).
+            if isinstance(func, ast.Attribute):
+                forbidden = _FORBIDDEN_KEYWORD_VALUES.get(func.attr, {})
+                for kw in node.keywords:
+                    if (
+                        kw.arg in forbidden
+                        and isinstance(kw.value, ast.Constant)
+                        and kw.value.value == forbidden[kw.arg]
+                    ):
+                        raise QueryValidationError(
+                            f"disallowed argument: {func.attr}({kw.arg}={kw.value.value!r})"
+                        )
+
         if isinstance(node, ast.Subscript):
             # df["col"] is fine; df[some_expr] is rejected — we want
             # column names to be literal so the generated code is
@@ -271,6 +210,17 @@ def validate_expression(expression: str) -> ast.Expression:
                 slice_value = slice_value.value  # type: ignore[attr-defined]
             if isinstance(slice_value, ast.Slice):
                 continue
+            if isinstance(slice_value, ast.Tuple):
+                # ``df[0, "col"]`` / ``df[0, 0]`` — every element must be a
+                # literal or slice so the access stays auditable.
+                if all(
+                    isinstance(elt, (ast.Constant, ast.Slice))
+                    for elt in slice_value.elts
+                ):
+                    continue
+                raise QueryValidationError(
+                    "subscript keys must be literal constants"
+                )
             if not isinstance(slice_value, ast.Constant):
                 raise QueryValidationError(
                     "subscript keys must be literal constants"
@@ -280,6 +230,18 @@ def validate_expression(expression: str) -> ast.Expression:
 
 
 # ── execution ────────────────────────────────────────────────────────────────
+
+class _QueryFailure(Exception):
+    """Internal: a validation or runtime failure that is eligible for one
+    LLM repair round. Carries the (normalised) expression that failed so
+    the repair prompt can show the model exactly what went wrong."""
+
+    def __init__(self, expression: str, error: str, *, elapsed_ms: float = 0.0):
+        super().__init__(error)
+        self.expression = expression
+        self.error = error
+        self.elapsed_ms = elapsed_ms
+
 
 async def execute_query(
     message: str,
@@ -297,43 +259,149 @@ async def execute_query(
     modes (no LLM, AST rejection, runtime error, timeout, file
     unreadable) are encoded in the ``error`` field so the chat agent can
     surface them as a degraded turn.
+
+    Flow per attempt: codegen → legacy-API normalisation → AST
+    validation → sandboxed eval → render. If validation or eval fails on
+    the first attempt, the model is given the failing expression and the
+    exact error once (:data:`MAX_CODEGEN_ATTEMPTS`) and the loop repeats.
+    Timeouts and unreadable datasets are not retried — a second identical
+    attempt cannot fix either.
     """
     settings = settings or get_settings()
 
-    # ── 1. Codegen. ────────────────────────────────────────────────────
     if llm is None:
         return QueryResult(
             expression="",
             error="LLM client is not configured; cannot generate query",
         )
 
-    try:
-        codegen = await llm.chat_json(
-            model=settings.openai_chat_model,
-            system=query_codegen.SYSTEM,
-            user=query_codegen.build_user(
+    # The dataset is loaded lazily, once, and shared across attempts.
+    frame: pl.DataFrame | None = None
+
+    async def _frame() -> pl.DataFrame:
+        nonlocal frame
+        if frame is None:
+            frame = await asyncio.to_thread(load_dataset, raw_path, file_type)
+        return frame
+
+    previous_failure: _QueryFailure | None = None
+    last_result: QueryResult | None = None
+
+    for attempt in range(1, MAX_CODEGEN_ATTEMPTS + 1):
+        # ── 1. Codegen (or repair). ────────────────────────────────────
+        if previous_failure is None:
+            user_prompt = query_codegen.build_user(
+                message, schema_snapshot, history=history,
+            )
+        else:
+            user_prompt = query_codegen.build_repair_user(
                 message,
                 schema_snapshot,
+                failed_expression=previous_failure.expression,
+                error=previous_failure.error,
                 history=history,
-            ),
-            max_tokens=600,
-            temperature=0.1,
-        )
-    except LLMUnavailable as exc:
-        logger.warning("query.codegen_failed", error=str(exc))
-        return QueryResult(
-            expression="",
-            error=f"codegen unavailable: {exc}",
-        )
+            )
+        try:
+            codegen = await llm.chat_json(
+                model=settings.openai_chat_model,
+                system=query_codegen.SYSTEM,
+                user=user_prompt,
+                max_tokens=600,
+                temperature=0.1 if attempt == 1 else 0.0,
+            )
+        except LLMUnavailable as exc:
+            logger.warning("query.codegen_failed", error=str(exc), attempt=attempt)
+            if last_result is not None:
+                # Repair call failed — report the original, more useful error.
+                return last_result
+            return QueryResult(
+                expression="",
+                error=f"codegen unavailable: {exc}",
+                attempts=attempt,
+            )
 
-    expression = (codegen.content_json.get("expression") or "").strip()
-    if not expression:
-        return QueryResult(
-            expression="",
-            error="codegen returned no expression",
-        )
+        raw_expression = (codegen.content_json.get("expression") or "").strip()
+        if not raw_expression:
+            last_result = QueryResult(
+                expression="",
+                error="codegen returned no expression",
+                attempts=attempt,
+            )
+            previous_failure = _QueryFailure("", last_result.error or "")
+            continue
 
-    # ── 2. AST validation. ─────────────────────────────────────────────
+        # ── 2. Legacy-API normalisation + AST validation. ─────────────
+        normalised = normalise_expression(raw_expression)
+        expression = normalised.expression
+        if normalised.changed:
+            logger.info(
+                "query.normalised",
+                original=raw_expression,
+                expression=expression,
+                rewrites=normalised.rewrites,
+            )
+
+        try:
+            result = await _validate_and_run(
+                expression,
+                frame_loader=_frame,
+                rewrites=normalised.rewrites,
+                attempt=attempt,
+            )
+        except UnreadableDatasetError as exc:
+            logger.warning("query.unreadable_dataset", error=str(exc))
+            return QueryResult(
+                expression=expression,
+                error=f"could not load dataset: {exc}",
+                attempts=attempt,
+                rewrites=normalised.rewrites,
+            )
+        except _QueryTimeout as exc:
+            return QueryResult(
+                expression=expression,
+                elapsed_ms=exc.elapsed_ms,
+                error=exc.error,
+                attempts=attempt,
+                rewrites=normalised.rewrites,
+            )
+        except _QueryFailure as exc:
+            last_result = QueryResult(
+                expression=expression,
+                elapsed_ms=exc.elapsed_ms,
+                error=exc.error,
+                attempts=attempt,
+                rewrites=normalised.rewrites,
+            )
+            previous_failure = exc
+            continue
+
+        return result
+
+    assert last_result is not None  # loop always sets it before falling through
+    return last_result
+
+
+class _QueryTimeout(Exception):
+    def __init__(self, error: str, elapsed_ms: float):
+        super().__init__(error)
+        self.error = error
+        self.elapsed_ms = elapsed_ms
+
+
+async def _validate_and_run(
+    expression: str,
+    *,
+    frame_loader: Any,
+    rewrites: list[str],
+    attempt: int,
+) -> QueryResult:
+    """Validate, compile, evaluate and render one candidate expression.
+
+    Raises :class:`_QueryFailure` for repairable failures (AST rejection,
+    compile error, runtime exception, unsupported result type),
+    :class:`_QueryTimeout` for wall-clock overrun, and lets
+    :class:`UnreadableDatasetError` propagate.
+    """
     try:
         tree = validate_expression(expression)
     except QueryValidationError as exc:
@@ -341,32 +409,16 @@ async def execute_query(
             "query.rejected_by_ast",
             expression=expression,
             error=str(exc),
+            attempt=attempt,
         )
-        return QueryResult(
-            expression=expression,
-            error=f"rejected by AST validator: {exc}",
-        )
+        raise _QueryFailure(expression, f"rejected by AST validator: {exc}")
 
-    # ── 3. Load the dataset (always re-read; the executor is stateless). ─
-    try:
-        df = await asyncio.to_thread(load_dataset, raw_path, file_type)
-    except UnreadableDatasetError as exc:
-        logger.warning("query.unreadable_dataset", error=str(exc))
-        return QueryResult(
-            expression=expression,
-            error=f"could not load dataset: {exc}",
-        )
+    df = await frame_loader()
 
-    # ── 4. Compile + sandboxed eval inside a thread with a timeout. ────
     try:
         compiled = compile(tree, filename="<nl-query>", mode="eval")
     except (SyntaxError, ValueError) as exc:
-        # Belt-and-braces — validate_expression caught most of this, but
-        # compile() can still reject (e.g. recursion depth).
-        return QueryResult(
-            expression=expression,
-            error=f"compile failed: {exc}",
-        )
+        raise _QueryFailure(expression, f"compile failed: {exc}")
 
     started = time.perf_counter()
     try:
@@ -376,15 +428,9 @@ async def execute_query(
         )
     except asyncio.TimeoutError:
         elapsed = (time.perf_counter() - started) * 1000.0
-        logger.warning(
-            "query.timeout",
-            expression=expression,
-            elapsed_ms=elapsed,
-        )
-        return QueryResult(
-            expression=expression,
-            elapsed_ms=elapsed,
-            error=f"query exceeded {QUERY_TIMEOUT_SECONDS}s timeout",
+        logger.warning("query.timeout", expression=expression, elapsed_ms=elapsed)
+        raise _QueryTimeout(
+            f"query exceeded {QUERY_TIMEOUT_SECONDS}s timeout", elapsed,
         )
     except Exception as exc:
         # Polars wraps a wide variety of column-not-found / dtype-mismatch
@@ -396,17 +442,19 @@ async def execute_query(
             expression=expression,
             elapsed_ms=elapsed,
             error=str(exc),
+            attempt=attempt,
         )
-        return QueryResult(
-            expression=expression,
-            elapsed_ms=elapsed,
-            error=f"execution failed: {exc}",
+        raise _QueryFailure(
+            expression, f"execution failed: {exc}", elapsed_ms=elapsed,
         )
 
     elapsed = (time.perf_counter() - started) * 1000.0
-
-    # ── 5. Coerce to (columns, rows). ──────────────────────────────────
-    return _render(expression, result, elapsed_ms=elapsed)
+    rendered = _render(expression, result, elapsed_ms=elapsed)
+    rendered.attempts = attempt
+    rendered.rewrites = list(rewrites)
+    if rendered.error is not None:
+        raise _QueryFailure(expression, rendered.error, elapsed_ms=elapsed)
+    return rendered
 
 
 def _eval_sandboxed(compiled: Any, df: pl.DataFrame) -> Any:
@@ -415,6 +463,9 @@ def _eval_sandboxed(compiled: Any, df: pl.DataFrame) -> Any:
     Built-ins are stripped via ``{"__builtins__": {}}`` so even if the
     AST whitelist were bypassed, the sandbox would still refuse access
     to ``open``, ``__import__``, ``eval``, etc.
+
+    A ``LazyFrame`` result is collected here so the work stays inside
+    the timeout-guarded thread.
     """
     globals_ = {
         "__builtins__": {},
@@ -422,32 +473,70 @@ def _eval_sandboxed(compiled: Any, df: pl.DataFrame) -> Any:
         "df": df,
     }
     locals_: dict[str, Any] = {}
-    return eval(compiled, globals_, locals_)  # noqa: S307 — sandboxed, see above
+    result = eval(compiled, globals_, locals_)  # noqa: S307 — sandboxed, see above
+    if isinstance(result, pl.LazyFrame):
+        result = result.collect()
+    return result
+
+
+_SCALAR_TYPES: tuple[type, ...] = (
+    int, float, str, bool, type(None),
+    _dt.date, _dt.datetime, _dt.time, _dt.timedelta, _decimal.Decimal,
+)
 
 
 def _render(expression: str, result: Any, *, elapsed_ms: float) -> QueryResult:
     """Convert the eval output into a :class:`QueryResult`.
 
-    Handles three result shapes that real Polars chains can produce:
+    Handles the result shapes that real Polars chains produce:
       * ``pl.DataFrame`` — normal case; pass through with truncation.
       * ``pl.Series``    — wrap as a single-column DataFrame.
-      * scalar (int / float / str / bool) — wrap as one-row, one-col.
+      * scalar (int / float / str / bool / None / date / Decimal …) — e.g.
+        from ``df.select(...).item()`` or ``df["x"].sum()``; wrap as
+        one-row, one-col.
+      * list / tuple of scalars — e.g. ``df.shape`` or ``df.columns``;
+        wrap as a single ``result`` column.
+      * dict — e.g. ``df.to_dict(as_series=False)`` or ``df.schema``;
+        wrap as a DataFrame when the shape allows.
 
-    Anything else (e.g. a tuple) is rejected as an error rather than
-    silently dropped so the user gets a real failure message.
+    Anything else is rejected as an error rather than silently dropped so
+    the user gets a real failure message (and the repair round a chance
+    to fix it).
     """
     df: pl.DataFrame
-    if isinstance(result, pl.DataFrame):
-        df = result
-    elif isinstance(result, pl.Series):
-        df = result.to_frame()
-    elif isinstance(result, (int, float, str, bool)):
-        df = pl.DataFrame({"result": [result]})
-    else:
+    try:
+        if isinstance(result, pl.DataFrame):
+            df = result
+        elif isinstance(result, pl.Series):
+            df = result.to_frame()
+        elif isinstance(result, _SCALAR_TYPES):
+            df = pl.DataFrame({"result": [result]})
+        elif isinstance(result, (list, tuple)) and all(
+            isinstance(item, _SCALAR_TYPES) for item in result
+        ):
+            df = pl.Series("result", list(result), strict=False).to_frame()
+        elif isinstance(result, dict):
+            if all(isinstance(v, (list, pl.Series)) for v in result.values()):
+                df = pl.DataFrame(result)
+            else:
+                df = pl.DataFrame(
+                    {"key": list(result.keys()),
+                     "value": [str(v) for v in result.values()]}
+                )
+        else:
+            return QueryResult(
+                expression=expression,
+                elapsed_ms=elapsed_ms,
+                error=(
+                    f"unsupported result type: {type(result).__name__}; "
+                    "the expression must evaluate to a DataFrame, Series or scalar"
+                ),
+            )
+    except Exception as exc:  # defensive: odd shapes from Polars constructors
         return QueryResult(
             expression=expression,
             elapsed_ms=elapsed_ms,
-            error=f"unsupported result type: {type(result).__name__}",
+            error=f"could not render result: {exc}",
         )
 
     total_rows = df.height

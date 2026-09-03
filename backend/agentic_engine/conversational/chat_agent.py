@@ -395,7 +395,13 @@ async def _run_query_branch(
 def _summarise_query_result(result: QueryResult) -> str:
     """One-line caption rendered alongside the result table."""
     if not result.is_ok:
-        return f"Could not run the query: {result.error}"
+        attempts = (
+            f" after {result.attempts} attempts" if result.attempts > 1 else ""
+        )
+        return (
+            f"Could not run the query{attempts}: {result.error}. "
+            "Try rephrasing the question or naming the exact columns."
+        )
     if result.row_count == 0:
         return "Ran the query — no rows matched."
     suffix = (
