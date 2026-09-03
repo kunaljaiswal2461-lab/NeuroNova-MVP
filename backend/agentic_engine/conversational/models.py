@@ -119,6 +119,11 @@ class QueryResult(BaseModel):
     truncated: bool = False
     elapsed_ms: float = Field(ge=0.0, default=0.0)
     error: str | None = None
+    # Provenance for the executed expression: how many codegen attempts
+    # were needed (1 = first try, 2 = repaired after a failure) and which
+    # legacy-API renames the compatibility layer applied, if any.
+    attempts: int = Field(ge=1, default=1)
+    rewrites: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(arbitrary_types_allowed=False)
 
