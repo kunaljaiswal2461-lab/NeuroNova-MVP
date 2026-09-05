@@ -12,7 +12,7 @@ export default function DatasetRoute({ children }) {
 
   const failed = activeDataset?.status === 'FAILED'
   return (
-    <Layout title="Dataset processing" subtitle={activeDataset?.original_name}>
+    <Layout className="dataset-workflow" title="Dataset processing" subtitle={activeDataset?.original_name}>
       <div className="card card-pad" style={{ maxWidth: 820 }}>
         <h2>{activeDataset ? stageLabel(activeDataset.status) : 'No Dataset Selected'}</h2>
         <p role="status" style={{ margin: '12px 0' }}>

@@ -2,9 +2,9 @@ import Sidebar from './Sidebar'
 import { Link } from 'react-router-dom'
 import '../index.css'
 
-export default function Layout({ title, subtitle, actions, children }) {
+export default function Layout({ title, subtitle, actions, children, className = '' }) {
   return (
-    <div className="app-layout">
+    <div className={`app-layout ${className}`}>
       <Sidebar />
       <div className="main-content">
         {/* Top Bar */}

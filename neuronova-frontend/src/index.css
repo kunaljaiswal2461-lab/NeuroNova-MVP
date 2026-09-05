@@ -919,6 +919,12 @@ input, textarea, select { font-family: inherit; }
 }
 
 /* --- Responsive --- */
+.dataset-workflow .main-content { min-width: 0; }
+.dataset-workflow .topbar > div:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 768px) {
   .text-display-lg { font-size: 32px; }
   .hero-section { padding: var(--space-12) var(--space-4); }
@@ -926,4 +932,13 @@ input, textarea, select { font-family: inherit; }
   .grid-2, .grid-3 { grid-template-columns: 1fr; }
   .sidebar { transform: translateX(-100%); }
   .main-content { margin-left: 0; }
+  .dataset-workflow .topbar {
+    height: auto;
+    min-height: var(--topbar-height);
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 12px var(--space-6);
+  }
+  .dataset-workflow .topbar > div:first-child { flex-basis: 100%; }
+  .dataset-workflow .topbar > div:last-child { flex-wrap: wrap; }
 }

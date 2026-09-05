@@ -144,6 +144,20 @@ it('shows FAILED with reupload action and no continued polls', async () => {
   expect(context.datasetReady).toBe(false)
 })
 
+it('shows an already-failed dataset with its message and progress without polling', async () => {
+  const failed = { dataset_id: 'fl', status: 'FAILED', progress_pct: 30, response: undefined,
+    error_message: 'Processing was interrupted. Please upload the dataset again.', original_name: 'fail.csv' }
+  setup(<DatasetRoute><p>Analytics</p></DatasetRoute>, '/explorer')
+  await select(failed)
+  await settle()
+  expect(screen.getByText(/Processing was interrupted\./)).toBeTruthy()
+  expect(screen.getByRole('heading', { name: 'Failed' })).toBeTruthy()
+  expect(screen.getByRole('link', { name: 'Upload dataset again' })).toBeTruthy()
+  await act(async () => vi.advanceTimersByTimeAsync(15000))
+  expect(api.get.mock.calls.filter(([path]) => path.endsWith('/status'))).toHaveLength(0)
+  expect(context.datasetReady).toBe(false)
+})
+
 it('keeps queued status during retry notices and distinguishes unavailable from FAILED', async () => {
   let statusOptions
   api.get.mockImplementation((path, options) => {

@@ -164,6 +164,7 @@ export default function Upload() {
 
   return (
     <Layout
+      className="dataset-workflow"
       title="Upload Center"
       subtitle="Upload a dataset to begin AI-powered analysis"
       actions={
@@ -175,11 +176,11 @@ export default function Upload() {
         </button>
       }
     >
-      <div style={{ maxWidth: 860, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div style={{ width: '100%', minWidth: 0, maxWidth: 860, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 20 }}>
 
         {error && (
-          <div role="alert" style={{ background: '#FFF1F2', border: '1px solid #FECDD3', borderRadius: 8, padding: '12px 16px', fontFamily: 'var(--font-body)', fontSize: 13, color: '#9F1239' }}>
-            {error}
+          <div role="alert" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, background: '#FFF1F2', border: '1px solid #FECDD3', borderRadius: 8, padding: '12px 16px', fontFamily: 'var(--font-body)', fontSize: 13, color: '#9F1239' }}>
+            <span>{error}</span>
             <button className="btn btn-ghost-neutral btn-sm" onClick={handleClick} disabled={uploading}>Choose a file to retry</button>
           </div>
         )}
@@ -207,7 +208,7 @@ export default function Upload() {
           <p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-secondary)', marginBottom: 16 }}>
             or click to browse · max 20 MB
           </p>
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 8 }}>
             {['CSV', 'XLSX', 'JSON', 'PARQUET'].map(fmt => (
               <span key={fmt} style={{ padding: '4px 10px', background: 'white', border: '1px solid var(--color-border)', borderRadius: 4, fontFamily: 'var(--font-data)', fontSize: 11, color: 'var(--color-text-secondary)' }}>
                 {fmt}
@@ -219,8 +220,8 @@ export default function Upload() {
         {/* Pipeline Progress */}
         {pipelineStatus && (
           <div className="card card-pad anim-fade-up">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <div style={{ minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere' }}>
                 <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 15, fontWeight: 600, color: 'var(--color-text-primary)' }}>
                   Processing Pipeline
                 </h3>
@@ -299,6 +300,7 @@ export default function Upload() {
           </div>
 
           {listError && <p role="status" style={{ padding: '12px 20px' }}>{listError}</p>}
+          <div style={{ overflowX: 'auto' }}>
           <table className="data-table" style={{ width: '100%' }}>
             <thead>
               <tr>
@@ -360,6 +362,7 @@ export default function Upload() {
               )}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
     </Layout>
