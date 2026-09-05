@@ -2,7 +2,8 @@ from __future__ import annotations
 from dotenv import load_dotenv
 load_dotenv()
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+import asyncio
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware 
@@ -19,12 +20,23 @@ from app.middlewares.rate_limiter import limiter, rate_limit_exceeded_handler
 from app.middlewares.request_id import RequestIDMiddleware
 from app.middlewares.security import RequestSizeLimitMiddleware, SecurityHeadersMiddleware
 from app.middlewares.timing import TimingMiddleware
+from app.services.stale_dataset_reconciler import run_stale_dataset_reconciler
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
-    yield
-    await dispose_engine()
+    reconciler = asyncio.create_task(
+        run_stale_dataset_reconciler(), name="stale-dataset-reconciler",
+    )
+    try:
+        yield
+    finally:
+        reconciler.cancel()
+        try:
+            with suppress(asyncio.CancelledError):
+                await reconciler
+        finally:
+            await dispose_engine()
 
 def create_app() -> FastAPI:
     settings = get_settings()

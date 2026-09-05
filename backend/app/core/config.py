@@ -41,7 +41,7 @@ class Settings(BaseSettings):
 
     storage_backend: Literal["local", "s3"] = "local"
     data_dir: Path = BASE_DIR / "data"
-    max_upload_bytes: int = 100 * 1024 * 1024
+    max_upload_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
 
     openai_api_key: str = ""
     openai_chat_model: str = "gpt-4o"
@@ -65,13 +65,14 @@ class Settings(BaseSettings):
     rate_limit_interpret: str = "20/hour"
     rate_limit_session_create: str = "20/hour"
     rate_limit_global: str = "200/hour"
-    max_concurrent_pipelines: int = 3
+    max_concurrent_pipelines: int = Field(default=1, gt=0)
 
     # --- upload abuse protection ---
     max_upload_rows: int = 5_000_000
 
     # --- request size + security ---
-    max_request_bytes: int = 110 * 1024 * 1024
+    # One MiB of headroom for multipart headers around the pilot file limit.
+    max_request_bytes: int = Field(default=21 * 1024 * 1024, gt=0)
 
     # --- frontend ---
     frontend_url: str = "http://localhost:5173"

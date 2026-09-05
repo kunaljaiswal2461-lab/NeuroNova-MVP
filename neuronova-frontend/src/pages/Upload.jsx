@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Layout from '../components/Layout'
 import { api } from '../api/client'
 import { useDataset } from '../context/DatasetContext'
+import { isTerminalStatus, stageLabel, validateUpload } from '../context/datasetStatus'
 
 const STATUS_CONFIG = {
   COMPLETE:  { bg: '#ECFDF5', color: '#065F46', border: '#A7F3D0' },
@@ -17,6 +18,7 @@ const STATUS_CONFIG = {
 }
 
 const PIPELINE_STEPS = [
+  { key: 'UPLOADING', label: 'Uploading dataset' },
   { key: 'UPLOADED',  label: 'Dataset registered' },
   { key: 'QUEUED',    label: 'Queued for processing' },
   { key: 'PROFILING', label: 'Running profiler (schema, stats, quality…)' },
@@ -64,69 +66,77 @@ export default function Upload() {
   const [dragActive, setDragActive] = useState(false)
   const [datasets, setDatasets] = useState([])
   const [uploading, setUploading] = useState(false)
-  const [uploadedName, setUploadedName] = useState('')
-  const [pipelineStatus, setPipelineStatus] = useState(null)
-  const [progressPct, setProgressPct] = useState(0)
   const [error, setError] = useState(null)
+  const [listError, setListError] = useState(null)
   const fileRef = useRef(null)
-  const pollRef = useRef(null)
-  const { selectDataset } = useDataset()
+  const uploadRef = useRef(null)
+  const listRef = useRef(null)
+  const { activeDataset, activeDatasetId, selectDataset, clearDataset, statusMessage } = useDataset()
   const navigate = useNavigate()
+  const pipelineStatus = activeDataset?.status
+  const uploadedName = activeDataset?.original_name
+  const progressPct = pipelineStatus === 'COMPLETE' ? 100 : Math.min(100, Math.max(0, activeDataset?.progress_pct ?? 0))
+  const terminal = isTerminalStatus(pipelineStatus)
 
-  const fetchDatasets = async () => {
+  const fetchDatasets = useCallback(async () => {
+    listRef.current?.abort()
+    const controller = new AbortController()
+    listRef.current = controller
     try {
-      const data = await api.get('/datasets')
+      const data = await api.get('/datasets', { signal: controller.signal,
+        onRetry: message => { if (!controller.signal.aborted) setListError(message) } })
+      if (controller.signal.aborted) return
       setDatasets(data.items || [])
+      setListError(null)
     } catch (err) {
-      console.error('Failed to load datasets:', err)
+      if (!controller.signal.aborted) setListError(err.message)
     }
-  }
+  }, [])
 
   useEffect(() => {
     fetchDatasets()
-    return () => { if (pollRef.current) clearInterval(pollRef.current) }
-  }, [])
+    return () => listRef.current?.abort()
+  }, [fetchDatasets, activeDatasetId, terminal])
+
+  useEffect(() => () => {
+    // Aborting an upload only stops this browser request, not a server job that
+    // may already have accepted it. Ignore late acknowledgements after exit.
+    if (uploadRef.current) {
+      uploadRef.current.abort()
+      clearDataset()
+    }
+  }, [clearDataset])
 
   async function uploadFile(file) {
+    if (uploadRef.current) return
+    const validationError = validateUpload(file)
+    if (validationError) {
+      setError(validationError)
+      return
+    }
+    const controller = new AbortController()
+    uploadRef.current = controller
     setError(null)
     setUploading(true)
-    setUploadedName(file.name)
-    setPipelineStatus('UPLOADED')
-    setProgressPct(0)
+    // Lock analytics immediately instead of leaving an older COMPLETE selection.
+    selectDataset({ status: 'UPLOADING', original_name: file.name, progress_pct: 0 })
     try {
       const form = new FormData()
       form.append('file', file)
-      const ack = await api.postForm('/upload', form)
-      startPolling(ack.dataset_id)
+      const ack = await api.postForm('/upload', form, { signal: controller.signal })
+      if (controller.signal.aborted) return
+      selectDataset({ ...ack, original_name: file.name, size_bytes: file.size,
+        status: ack.status || 'QUEUED', progress_pct: 0 })
     } catch (err) {
-      setError('Upload failed: ' + err.message)
-      setUploading(false)
-    }
-  }
-
-  function startPolling(id) {
-    if (pollRef.current) clearInterval(pollRef.current)
-    pollRef.current = setInterval(async () => {
-      try {
-        const st = await api.get(`/datasets/${id}/status`)
-        setPipelineStatus(st.status)
-        setProgressPct(st.progress_pct ?? 0)
-        if (st.status === 'COMPLETE') {
-          clearInterval(pollRef.current)
-          setUploading(false)
-          const ds = await api.get(`/datasets/${id}`)
-          selectDataset(ds)
-          fetchDatasets()
-        } else if (st.status === 'FAILED') {
-          clearInterval(pollRef.current)
-          setUploading(false)
-          setError(st.error_message || 'Pipeline failed. Check backend logs.')
-          fetchDatasets()
-        }
-      } catch (err) {
-        console.error('Poll error:', err)
+      if (controller.signal.aborted) return
+      clearDataset()
+      setError(err.message)
+    } finally {
+      if (!controller.signal.aborted) {
+        uploadRef.current = null
+        setUploading(false)
       }
-    }, 2000)
+    }
   }
 
   const handleDrop = (e) => {
@@ -144,12 +154,12 @@ export default function Upload() {
 
   const handleDragOver = (e) => { e.preventDefault(); setDragActive(true) }
   const handleDragLeave = () => setDragActive(false)
-  const handleClick = () => fileRef.current?.click()
+  const handleClick = () => { if (!uploadRef.current) fileRef.current?.click() }
 
   const currentIdx = PIPELINE_STEPS.findIndex(s => s.key === pipelineStatus)
   const steps = PIPELINE_STEPS.map((s, i) => ({
     ...s,
-    status: i < currentIdx ? 'complete' : i === currentIdx ? 'active' : 'pending',
+    status: pipelineStatus === 'COMPLETE' || i < currentIdx ? 'complete' : i === currentIdx ? 'active' : 'pending',
   }))
 
   return (
@@ -157,7 +167,7 @@ export default function Upload() {
       title="Upload Center"
       subtitle="Upload a dataset to begin AI-powered analysis"
       actions={
-        <button className="btn btn-primary" onClick={handleClick} style={{ gap: 6 }}>
+        <button className="btn btn-primary" onClick={handleClick} disabled={uploading} style={{ gap: 6 }}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
           </svg>
@@ -168,8 +178,9 @@ export default function Upload() {
       <div style={{ maxWidth: 860, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 20 }}>
 
         {error && (
-          <div style={{ background: '#FFF1F2', border: '1px solid #FECDD3', borderRadius: 8, padding: '12px 16px', fontFamily: 'var(--font-body)', fontSize: 13, color: '#9F1239' }}>
+          <div role="alert" style={{ background: '#FFF1F2', border: '1px solid #FECDD3', borderRadius: 8, padding: '12px 16px', fontFamily: 'var(--font-body)', fontSize: 13, color: '#9F1239' }}>
             {error}
+            <button className="btn btn-ghost-neutral btn-sm" onClick={handleClick} disabled={uploading}>Choose a file to retry</button>
           </div>
         )}
 
@@ -181,7 +192,7 @@ export default function Upload() {
           onDragLeave={handleDragLeave}
           onClick={handleClick}
         >
-          <input ref={fileRef} type="file" style={{ display: 'none' }} accept=".csv,.xlsx,.json,.parquet" onChange={handleFileChange} />
+          <input ref={fileRef} type="file" aria-label="Upload dataset" disabled={uploading} style={{ display: 'none' }} accept=".csv,.xlsx,.json,.parquet" onChange={handleFileChange} />
 
           <div style={{ width: 52, height: 52, borderRadius: '50%', background: '#EFF6FF', border: '1px solid #BFDBFE', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary-indigo)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -191,10 +202,10 @@ export default function Upload() {
           </div>
 
           <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 6 }}>
-            {dragActive ? 'Drop your dataset here' : uploading ? 'Processing…' : 'Drop your dataset here'}
+            {dragActive ? 'Drop your dataset here' : uploading ? 'Uploading…' : 'Drop your dataset here'}
           </h3>
           <p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-secondary)', marginBottom: 16 }}>
-            or click to browse · max 100MB
+            or click to browse · max 20 MB
           </p>
           <div style={{ display: 'flex', justifyContent: 'center', gap: 8 }}>
             {['CSV', 'XLSX', 'JSON', 'PARQUET'].map(fmt => (
@@ -225,14 +236,26 @@ export default function Upload() {
                       <div style={{ width: 6, height: 6, borderRadius: '50%', background: sc.color, animation: 'pulse-dot 1.5s ease-in-out infinite' }} />
                     )}
                     <span style={{ fontFamily: 'var(--font-heading)', fontSize: 11, fontWeight: 700, color: sc.color, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                      {pipelineStatus}
+                      {stageLabel(pipelineStatus)}
                     </span>
                   </div>
                 )
               })()}
             </div>
 
-            <div style={{ height: 4, background: 'var(--color-border-light)', borderRadius: 2, marginBottom: 20, overflow: 'hidden' }}>
+            <p role="status" style={{ marginBottom: 12, fontSize: 13 }}>
+              {stageLabel(pipelineStatus)}{pipelineStatus !== 'UPLOADING' && ` · ${progressPct}%`}
+              {pipelineStatus === 'QUEUED' && ' — Waiting for an available processing slot.'}
+              {pipelineStatus === 'UPLOADING' && ' — If you leave now, check Recent Datasets before uploading again.'}
+            </p>
+            {statusMessage && <p role="status" style={{ marginBottom: 12 }}>{statusMessage}</p>}
+            {pipelineStatus === 'FAILED' && (
+              <div role="alert" style={{ marginBottom: 16 }}>
+                <p>{activeDataset.error_message || 'Processing failed. Please upload the dataset again.'}</p>
+                <button className="btn btn-primary btn-sm" onClick={handleClick}>Upload dataset again</button>
+              </div>
+            )}
+            <div role="progressbar" aria-label="Dataset processing progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPct} style={{ height: 4, background: 'var(--color-border-light)', borderRadius: 2, marginBottom: 20, overflow: 'hidden' }}>
               <div style={{ height: '100%', width: `${progressPct}%`, background: pipelineStatus === 'FAILED' ? 'var(--color-danger)' : 'var(--color-primary-indigo)', borderRadius: 2, transition: 'width 600ms ease' }} />
             </div>
 
@@ -249,8 +272,8 @@ export default function Upload() {
                   }}>
                     {step.label}
                   </span>
-                  {step.status === 'active' && (
-                    <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-data)', fontSize: 11, color: 'var(--color-primary-indigo)' }}>Running…</span>
+                  {step.status === 'active' && pipelineStatus !== 'COMPLETE' && (
+                    <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-data)', fontSize: 11, color: 'var(--color-primary-indigo)' }}>{pipelineStatus === 'QUEUED' ? 'Waiting…' : 'Running…'}</span>
                   )}
                   {step.status === 'complete' && (
                     <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-data)', fontSize: 11, color: 'var(--color-success)' }}>Done</span>
@@ -275,6 +298,7 @@ export default function Upload() {
             <button className="btn btn-ghost-neutral btn-sm" onClick={fetchDatasets}>Refresh</button>
           </div>
 
+          {listError && <p role="status" style={{ padding: '12px 20px' }}>{listError}</p>}
           <table className="data-table" style={{ width: '100%' }}>
             <thead>
               <tr>
@@ -296,7 +320,8 @@ export default function Upload() {
                   </td>
                 </tr>
               ) : (
-                datasets.map((ds) => {
+                datasets.map((record) => {
+                  const ds = record.dataset_id === activeDatasetId ? { ...record, ...activeDataset } : record
                   const sc = STATUS_CONFIG[ds.status] || STATUS_CONFIG.QUEUED
                   const ext = (ds.file_type || 'CSV').toUpperCase().slice(0, 4)
                   return (
@@ -319,16 +344,15 @@ export default function Upload() {
                       <td><span style={{ fontFamily: 'var(--font-data)', fontSize: 12, color: 'var(--color-text-muted)' }}>{formatBytes(ds.size_bytes)}</span></td>
                       <td style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-muted)' }}>{timeAgo(ds.uploaded_at)}</td>
                       <td>
-                        {ds.status === 'COMPLETE' && (
-                          <button
-                            onClick={() => { selectDataset(ds); navigate('/explorer') }}
+                        <button
+                            disabled={uploading}
+                            onClick={() => { selectDataset(ds); if (ds.status === 'COMPLETE') navigate('/explorer') }}
                             style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'white', fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-secondary)', cursor: 'pointer', transition: 'all 150ms' }}
                             onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-base)'; e.currentTarget.style.color = 'var(--color-text-primary)' }}
                             onMouseLeave={e => { e.currentTarget.style.background = 'white'; e.currentTarget.style.color = 'var(--color-text-secondary)' }}
                           >
-                            Open →
-                          </button>
-                        )}
+                            {ds.status === 'COMPLETE' ? 'Open →' : ds.status === 'FAILED' ? 'View failure' : 'View progress'}
+                        </button>
                       </td>
                     </tr>
                   )
