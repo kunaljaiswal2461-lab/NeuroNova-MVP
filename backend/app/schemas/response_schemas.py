@@ -40,6 +40,8 @@ class DatasetSummary(BaseModel):
     file_type: FileType
     size_bytes: int
     status: DatasetStatus
+    progress_pct: int = 0
+    error_message: str | None = None
     row_count: int | None = None
     col_count: int | None = None
     uploaded_at: datetime | None = None

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { NavLink, Link } from 'react-router-dom'
 import { useDataset } from '../context/DatasetContext'
+import { stageLabel } from '../context/datasetStatus'
 
 const NAV_ITEMS = [
   {
@@ -53,7 +54,7 @@ const NAV_ITEMS = [
 ]
 
 export default function Sidebar() {
-  const { activeDataset } = useDataset()
+  const { activeDataset, datasetReady } = useDataset()
   const [isSupportOpen, setIsSupportOpen] = useState(false) // Added state for Support Menu
 
   const health = activeDataset?._health ?? null
@@ -103,7 +104,7 @@ export default function Sidebar() {
                   {activeDataset.original_name}
                 </div>
                 <div style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>
-                  {activeDataset.row_count?.toLocaleString() ?? '—'} rows · {activeDataset.col_count ?? '—'} cols
+                  {datasetReady ? `${activeDataset.row_count?.toLocaleString() ?? '—'} rows · ${activeDataset.col_count ?? '—'} cols` : stageLabel(activeDataset.status)}
                 </div>
               </>
             ) : (
@@ -127,7 +128,14 @@ export default function Sidebar() {
 
       {/* Navigation */}
       <nav style={{ padding: '0 8px', flex: 1 }}>
-        {NAV_ITEMS.map(item => (
+        {NAV_ITEMS.map(item => item.to !== '/upload' && !datasetReady ? (
+          <button key={item.to} type="button" disabled aria-disabled="true" className="nav-item"
+            title="Available when dataset processing is complete"
+            style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 12px', marginBottom: 2, borderRadius: 8, border: 'none', background: 'transparent', color: 'rgba(255,255,255,0.35)', fontSize: 14, fontFamily: 'var(--font-body)', fontWeight: 500, cursor: 'not-allowed' }}>
+            <span style={{ width: 16, height: 16, flexShrink: 0 }}>{item.icon}</span>
+            {item.label}
+          </button>
+        ) : (
           <NavLink
             key={item.to}
             to={item.to}

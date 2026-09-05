@@ -64,7 +64,7 @@ const PRICING = [
     price: '$99',
     period: '/mo',
     desc: 'For data teams who collaborate on enterprise datasets.',
-    features: ['50 datasets / month', 'Up to 100MB per file', 'All file formats', 'Shared workspace', 'Priority support', 'Dataset memory'],
+    features: ['50 datasets / month', 'Up to 20 MB per file', 'All file formats', 'Shared workspace', 'Priority support', 'Dataset memory'],
     cta: 'Start Free Trial',
     featured: true,
   },

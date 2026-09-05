@@ -41,7 +41,7 @@ function findingToFlag(f) {
 }
 
 export default function Explorer() {
-  const { activeDatasetId, activeDataset, selectDataset } = useDataset()
+  const { activeDatasetId, activeDataset, updateDataset } = useDataset()
   const [searchQuery, setSearchQuery] = useState('')
   const [mounted, setMounted] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -54,25 +54,27 @@ export default function Explorer() {
 
   useEffect(() => {
     if (!activeDatasetId) return
+    const controller = new AbortController()
+    const options = { signal: controller.signal }
     setLoading(true)
     setError(null)
     Promise.all([
-      api.get(`/datasets/${activeDatasetId}/profile`),
-      api.get(`/datasets/${activeDatasetId}/findings?severity=HIGH`),
-      api.get(`/datasets/${activeDatasetId}/viz`).catch(() => ({ skipped_columns: [] })),
+      api.get(`/datasets/${activeDatasetId}/profile`, options),
+      api.get(`/datasets/${activeDatasetId}/findings?severity=HIGH`, options),
+      api.get(`/datasets/${activeDatasetId}/viz`, options).catch(() => ({ skipped_columns: [] })),
     ])
       .then(([prof, findingsResp, vizResp]) => {
+        if (controller.signal.aborted) return
         setProfile(prof)
         setAnomalyFlags((findingsResp.findings ?? []).slice(0, 6).map(findingToFlag))
         setSkippedVizCols(new Set((vizResp.skipped_columns ?? []).map(s => s.column_name)))
         // push health into context so Sidebar can show it
-        if (activeDataset) {
-          selectDataset({ ...activeDataset, _health: prof.health })
-        }
+        updateDataset(activeDatasetId, { _health: prof.health })
       })
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false))
-  }, [activeDatasetId])
+      .catch(err => { if (!controller.signal.aborted) setError(err.message) })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
+  }, [activeDatasetId, updateDataset])
 
   // Build merged column rows
   const schemaColumns = (() => {
