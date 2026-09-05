@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
-import { useLocation } from 'react-router-dom'
+import { matchPath, useLocation } from 'react-router-dom'
 import { api } from '../api/client'
 import { isDatasetComplete, isTerminalStatus, pollDatasetStatus } from './datasetStatus'
 
@@ -35,7 +35,8 @@ export function DatasetProvider({ children }) {
 
   useEffect(() => {
     const dataset = datasetRef.current
-    if (!activeDatasetId || !WORKSPACE_PATHS.includes(pathname)) return
+    // Match the router's case-insensitive, trailing-slash-tolerant routes.
+    if (!activeDatasetId || !WORKSPACE_PATHS.some(path => matchPath(path, pathname))) return
     if (isTerminalStatus(dataset?.status)) return
     const cancel = pollDatasetStatus({
       id: activeDatasetId,

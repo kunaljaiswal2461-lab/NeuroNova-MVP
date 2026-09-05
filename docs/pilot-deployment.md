@@ -39,6 +39,16 @@ lock: multiple workers/replicas each allow their own active pipeline. A second
 accepted upload remains `QUEUED` while the first owns the existing semaphore.
 This is not a durable queue and there is no automatic retry/replay of uploads.
 
+## Frontend deployment
+
+Keep `VITE_API_BASE_URL=https://<your-render-service>.onrender.com/api/v1`
+configured for both Production and Preview environments in Vercel, then rebuild
+the frontend. Vercel's current `vercel.json` only routes to `index.html`; it does
+not proxy API requests. The relative `/api/v1` URL used by the local Vite preview
+depends on its development proxy and must not replace this deployed setting.
+Check that `/api/v1/health` on the configured backend returns JSON with
+`"status": "ok"`, not merely an HTTP 200 HTML app shell.
+
 ## Interrupted profiling cleanup
 
 An application-lifespan task starts a DB-only reconciliation pass at startup

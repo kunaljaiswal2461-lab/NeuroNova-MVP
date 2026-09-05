@@ -83,9 +83,6 @@ async function validateResponse(res) {
     const detail = response.error?.message || response.detail || response.message
     if (typeof detail === 'string') message = detail
     else if (Array.isArray(detail)) message = detail.map(item => item.msg || 'Invalid input').join('; ')
-  } else {
-    // Consume error bodies under the deadline, without exposing proxy HTML.
-    await res.text()
   }
   if (/failed to fetch|networkerror|load failed/i.test(message)) message = UNAVAILABLE_MESSAGE
   throw Object.assign(new Error(message), { status: res.status, response })

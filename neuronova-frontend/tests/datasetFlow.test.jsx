@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { MemoryRouter, useNavigate } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api } from '../src/api/client'
 import { DatasetProvider, useDataset } from '../src/context/DatasetContext'
@@ -73,13 +73,13 @@ it('ignores upload acknowledgement after page unmount and aborts the request', a
   expect(api.get.mock.calls.filter(([path]) => path.endsWith('/status'))).toHaveLength(0)
 })
 
-it.each(['/explorer', '/insights', '/visualization', '/chat'])('guards direct route %s, then auto-unlocks only on COMPLETE', async path => {
+it.each(['/explorer', '/insights', '/visualization', '/chat', '/explorer/', '/EXPLORER', '/EXPLORER/'])('guards direct route %s, then auto-unlocks only on COMPLETE', async path => {
   const artifactFetch = vi.fn()
   function Analytics() { useEffect(() => { artifactFetch() }, []); return <p>Analytics content</p> }
   api.get.mockImplementation(url => Promise.resolve(url.endsWith('/status')
     ? { ...queued, status: 'PROFILING', progress_pct: 30 }
     : { ...queued, status: 'COMPLETE', row_count: 25, col_count: 3 }))
-  setup(<DatasetRoute><Analytics /></DatasetRoute>, path)
+  setup(<Routes><Route path={path.toLowerCase().replace(/\/+$/, '')} element={<DatasetRoute><Analytics /></DatasetRoute>} /></Routes>, path)
   await select(queued)
   expect(artifactFetch).not.toHaveBeenCalled()
   for (const name of ['Explorer', 'Insights', 'Visualization', 'Chat']) {
@@ -94,11 +94,11 @@ it.each(['/explorer', '/insights', '/visualization', '/chat'])('guards direct ro
   expect(context.datasetReady).toBe(true)
 })
 
-it('shares polling across consumers and cancels on dataset switch and page exit', async () => {
+it.each(['/upload', '/upload/', '/EXPLORER/'])('shares polling across consumers and cancels on dataset switch and exit from %s', async path => {
   let resolveOld
   api.get.mockImplementation(path => path.includes('/first/')
     ? new Promise(resolve => { resolveOld = resolve }) : Promise.resolve(queued))
-  setup(<><Sidebar /><DatasetRoute><p>Ready</p></DatasetRoute></>)
+  setup(<><Sidebar /><DatasetRoute><p>Ready</p></DatasetRoute></>, path)
   await select({ ...queued, dataset_id: 'first' })
   const oldSignal = api.get.mock.calls[0][1].signal
   await select(queued)
@@ -187,4 +187,28 @@ it('uses only reupload after failure, without automatically replaying POST', asy
   await act(async () => vi.advanceTimersByTimeAsync(15000))
   expect(api.postForm).toHaveBeenCalledTimes(1)
   expect(screen.getByRole('button', { name: 'Choose a file to retry' }).disabled).toBe(false)
+})
+
+
+it.each(['/upload/', '/UPLOAD', '/UPLOAD/'])('polls an acknowledged upload on %s and auto-unlocks navigation', async path => {
+  api.postForm.mockResolvedValue(queued)
+  setup(<Routes><Route path="/upload" element={<Upload />} /></Routes>, path)
+  chooseFile(100)
+  await settle()
+  expect(context.activeDatasetId).toBe('new')
+  expect(api.get.mock.calls.filter(([url]) => url.endsWith('/status'))).toHaveLength(1)
+  expect(screen.getByRole('button', { name: 'Explorer' }).disabled).toBe(true)
+  api.get.mockImplementation(url => Promise.resolve(url === '/datasets'
+    ? { items: [] } : { ...queued, status: 'COMPLETE', progress_pct: 100 }))
+  await act(async () => vi.advanceTimersByTimeAsync(5000))
+  expect(context.datasetReady).toBe(true)
+  expect(screen.getByRole('link', { name: 'Explorer' })).toBeTruthy()
+  expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('100')
+})
+
+it.each(['/explorer/extra', '/uploading'])('does not poll outside a matching workspace route: %s', async path => {
+  setup(<Probe />, path)
+  await select(queued)
+  await act(async () => vi.advanceTimersByTimeAsync(15000))
+  expect(api.get).not.toHaveBeenCalled()
 })

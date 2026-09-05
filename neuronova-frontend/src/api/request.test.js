@@ -124,6 +124,29 @@ test('a successful retry still validates its final HTTP error', async () => {
   assert.equal(calls, 2)
 })
 
+test('a stalled non-JSON 404 body is not consumed or retried', async () => {
+  let calls = 0
+  let bodyReads = 0
+  let requestSignal
+  const { api } = harness(async (_url, { signal }) => {
+    calls++
+    requestSignal = signal
+    const response = new Response(new ReadableStream(), {
+      status: 404,
+      headers: { 'Content-Type': 'text/html' },
+    })
+    response.text = () => { bodyReads++; return new Promise(() => {}) }
+    return response
+  }, { readTimeoutMs: 10 })
+  await assert.rejects(api.get('/missing'), {
+    status: 404,
+    message: 'Request failed (404). Please try again.',
+  })
+  assert.equal(calls, 1)
+  assert.equal(bodyReads, 0)
+  assert.equal(requestSignal.aborted, true)
+})
+
 test('413 middleware and upload validation messages are preserved without retries', async () => {
   for (const payload of [
     { error: 'payload_too_large', message: 'request body exceeds maximum allowed size', max_bytes: 22020096 },
