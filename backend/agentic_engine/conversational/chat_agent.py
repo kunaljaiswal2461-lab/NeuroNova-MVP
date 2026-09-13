@@ -371,7 +371,12 @@ async def _run_query_branch(
 
     yield _event(
         ChatStreamEventType.QUERY_RESULT,
-        {"query_result": query_result.model_dump(mode="json")},
+        {
+            "query_result": query_result.model_dump(mode="json"),
+            # QueryResult.expression is the exact expression passed to the
+            # AST validator and sandboxed executor, including failed runs.
+            "generated_code": query_result.expression or None,
+        },
     ), None
 
     # Compose a terse natural-language summary client-side. We
@@ -519,6 +524,10 @@ async def _persist_assistant(
         token_usage=token_usage,
         commit=True,
     )
+    # The persistence layer reconstructs this from QueryResult.expression on
+    # transcript reads. Set it here too so the live SSE response carries the
+    # same display-only value without changing prompt history.
+    message.generated_code = (query_result.expression or None) if query_result else None
     return message
 
 
@@ -660,6 +669,7 @@ def _done_event(
         "session_id": str(assistant_message.session_id),
         "degraded": assistant_message.degraded,
         "degraded_reason": assistant_message.degraded_reason,
+        "generated_code": assistant_message.generated_code,
     }
     if intent is not None:
         payload["intent"] = intent.model_dump(mode="json")

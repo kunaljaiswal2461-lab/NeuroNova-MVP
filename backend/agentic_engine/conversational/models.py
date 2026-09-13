@@ -153,6 +153,10 @@ class ChatMessage(BaseModel):
     intent: IntentDecision | None = None
     citations: list[RagCitation] = Field(default_factory=list)
     query_result: QueryResult | None = None
+    # Display-only provenance for QUERY turns. This is deliberately kept out
+    # of ``history_for_prompt`` so generated query code is never sent back to
+    # the LLM on later turns.
+    generated_code: str | None = None
     token_usage: TokenUsage | None = None
 
     # True when the turn completed but in a degraded mode (e.g. retriever

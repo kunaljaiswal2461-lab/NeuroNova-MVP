@@ -280,6 +280,48 @@ async def test_query_chat_uses_uploaded_profile_columns_for_codegen(
 
 
 @pytest.mark.asyncio
+async def test_query_mode_response_includes_generated_code(monkeypatch, settings_with_key):
+    dataset_id = uuid.uuid4()
+    record = _record(dataset_id)
+    save_report(_profile(dataset_id), settings_with_key)
+    settings_with_key.raw_dir.mkdir(parents=True, exist_ok=True)
+    (settings_with_key.raw_dir / record.filename).write_text(
+        "uploaded_revenue,uploaded_region\n10,North\n20,South\n",
+        encoding="utf-8",
+    )
+    session, saved, _ = await _install_chat_fakes(
+        monkeypatch,
+        dataset_id=dataset_id,
+        record=record,
+        mode=ConversationMode.QUERY,
+    )
+    expression = "df.select(pl.col('uploaded_revenue').sum().alias('total'))"
+    llm = FakeStreamingLLM(
+        json_responses=[{"expression": expression, "explanation": "Sum revenue."}]
+    )
+
+    events = [
+        event
+        async for event in stream_chat_turn(
+            session_id=session.session_id,
+            user_message="What is the total uploaded revenue?",
+            session_db=object(),
+            settings=settings_with_key,
+            llm=llm,
+            embedder=None,
+        )
+    ]
+
+    query_event = next(
+        event for event in events if event.event is ChatStreamEventType.QUERY_RESULT
+    )
+    assert isinstance(query_event.data["generated_code"], str)
+    assert query_event.data["generated_code"]
+    assert "df" in query_event.data["generated_code"]
+    assert saved[-1].generated_code == query_event.data["generated_code"]
+
+
+@pytest.mark.asyncio
 async def test_rag_chat_receives_profile_overview(monkeypatch, settings_with_key):
     dataset_id = uuid.uuid4()
     record = _record(dataset_id)
@@ -316,6 +358,36 @@ async def test_rag_chat_receives_profile_overview(monkeypatch, settings_with_key
     assert any(event.event is ChatStreamEventType.CITATIONS for event in events)
     assert events[-1].event is ChatStreamEventType.DONE
     assert events[-1].data["degraded"] is False
+
+
+@pytest.mark.asyncio
+async def test_rag_mode_response_has_no_generated_code(monkeypatch, settings_with_key):
+    dataset_id = uuid.uuid4()
+    record = _record(dataset_id)
+    save_report(_profile(dataset_id), settings_with_key)
+    session, saved, _ = await _install_chat_fakes(
+        monkeypatch,
+        dataset_id=dataset_id,
+        record=record,
+        mode=ConversationMode.RAG,
+    )
+    install_fake_retriever(monkeypatch, FakeRetrieverConfig(hits=[]))
+    llm = FakeStreamingLLM(stream_chunks=[["The dataset is healthy."]])
+
+    events = [
+        event
+        async for event in stream_chat_turn(
+            session_id=session.session_id,
+            user_message="Explain the dataset health.",
+            session_db=object(),
+            settings=settings_with_key,
+            llm=llm,
+            embedder=None,
+        )
+    ]
+
+    assert saved[-1].generated_code is None
+    assert events[-1].data["generated_code"] is None
 
 
 @pytest.mark.asyncio

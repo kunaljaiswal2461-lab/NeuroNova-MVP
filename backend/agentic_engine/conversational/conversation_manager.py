@@ -277,6 +277,10 @@ def _row_to_message(row: ChatMessageRow) -> ChatMessage:
         intent=intent,
         citations=citations,
         query_result=query_result,
+        # ``expression`` is the exact normalised string that the query
+        # executor validated and compiled. It remains display-only: prompt
+        # history is built solely from ``content`` above.
+        generated_code=(query_result.expression or None) if query_result else None,
         token_usage=token_usage,
         degraded=row.degraded,
         degraded_reason=row.degraded_reason,
