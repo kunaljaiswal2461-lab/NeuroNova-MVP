@@ -76,6 +76,10 @@ class Settings(BaseSettings):
 
     # --- frontend ---
     frontend_url: str = "http://localhost:5173"
+    # Comma-separated browser origins permitted to receive OAuth callbacks.
+    # Keep the deployed custom domain here; OAuth never falls back to a Vercel
+    # deployment URL.
+    frontend_allowed_origins: str = "http://localhost:5173,https://tryneuronova.in"
     public_url: str = "http://localhost:8000"
 
     # --- email (SMTP) ---
