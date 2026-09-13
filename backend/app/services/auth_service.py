@@ -139,14 +139,18 @@ async def verify_email(db: AsyncSession, settings: Settings, token: str) -> User
     return user
 
 
-async def forgot_password(db: AsyncSession, settings: Settings, email: str) -> None:
+async def forgot_password(
+    db: AsyncSession, settings: Settings, email: str, frontend_url: str | None = None
+) -> None:
     user = await db.scalar(select(User).where(User.email == email.lower()))
     if not user:
         return  # don't leak whether the email exists
     token = create_one_time_token(
         str(user.id), "password_reset", settings.jwt_secret_key, expire_hours=1
     )
-    await email_service.send_password_reset_email(settings, user.email, user.name, token)
+    await email_service.send_password_reset_email(
+        settings, user.email, user.name, token, frontend_url=frontend_url
+    )
 
 
 async def reset_password(

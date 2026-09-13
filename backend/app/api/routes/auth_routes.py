@@ -86,6 +86,7 @@ class LogoutRequest(BaseModel):
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
+    frontend_origin: str | None = None
 
 
 class ResetPasswordRequest(BaseModel):
@@ -181,7 +182,12 @@ async def forgot_password(
     request: Request, body: ForgotPasswordRequest, db: DBSession, settings: SettingsDep
 ):
     """Send a password-reset email. Always returns 202 to avoid leaking email existence."""
-    await auth_service.forgot_password(db, settings, body.email)
+    frontend_url = (
+        _validated_frontend_origin(body.frontend_origin, settings)
+        if body.frontend_origin
+        else settings.frontend_url
+    )
+    await auth_service.forgot_password(db, settings, body.email, frontend_url)
     return {"message": "if that email is registered, a reset link has been sent"}
 
 

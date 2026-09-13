@@ -14,9 +14,13 @@ async def send_verification_email(
 
 
 async def send_password_reset_email(
-    settings: Settings, to_email: str, name: str, token: str
+    settings: Settings,
+    to_email: str,
+    name: str,
+    token: str,
+    frontend_url: str | None = None,
 ) -> None:
-    reset_url = f"{settings.frontend_url}/auth/reset-password?token={token}"
+    reset_url = f"{frontend_url or settings.frontend_url}/auth/reset-password?token={token}"
     await _send(settings, to_email, "Reset your NeuroNova password", _reset_html(name, reset_url))
 
 

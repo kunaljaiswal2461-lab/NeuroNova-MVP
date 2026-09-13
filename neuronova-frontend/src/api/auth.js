@@ -75,7 +75,7 @@ export const authApi = {
     const res = await fetch(`${BASE_URL}/auth/forgot-password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email })
+      body: JSON.stringify({ email, frontend_origin: window.location.origin })
     });
     if (!res.ok) throw new Error('Failed to request password reset');
     return res.json();
