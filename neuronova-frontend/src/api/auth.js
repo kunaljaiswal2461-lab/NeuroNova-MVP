@@ -82,7 +82,10 @@ export const authApi = {
   },
 
   googleStart: async () => {
-    const res = await fetch(`${BASE_URL}/auth/google`);
+    // Preserve the host the user actually opened (custom domain or local dev)
+    // instead of relying on a backend-side deployment URL.
+    const query = new URLSearchParams({ frontend_origin: window.location.origin });
+    const res = await fetch(`${BASE_URL}/auth/google?${query}`);
     if (!res.ok) throw new Error('Failed to start Google sign-in');
     return res.json(); // { url } or { error }
   },
