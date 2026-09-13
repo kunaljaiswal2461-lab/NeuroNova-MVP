@@ -73,6 +73,41 @@ function QueryResultTable({ result }) {
   )
 }
 
+function GeneratedCodeBlock({ code }) {
+  const [expanded, setExpanded] = useState(false)
+
+  if (code == null) return null
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <button
+        type="button"
+        onClick={() => setExpanded(value => !value)}
+        aria-expanded={expanded}
+        style={{
+          height: 28, display: 'inline-flex', alignItems: 'center', gap: 5,
+          padding: '0 9px', background: 'transparent', border: '1px solid var(--color-border)',
+          borderRadius: 6, fontFamily: 'var(--font-body)', fontSize: 12,
+          color: 'var(--color-text-secondary)', cursor: 'pointer',
+        }}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" />
+        </svg>
+        {expanded ? 'Hide code' : 'Show code'}
+      </button>
+      {expanded && (
+        <pre style={{
+          margin: '8px 0 0', padding: '12px 16px', overflowX: 'auto',
+          background: 'var(--color-base)', border: '0.5px solid var(--color-border)',
+          borderRadius: 8, fontFamily: 'var(--font-data)', fontSize: 13,
+          lineHeight: 1.5, color: 'var(--color-text-primary)', whiteSpace: 'pre',
+        }}>{code}</pre>
+      )}
+    </div>
+  )
+}
+
 export default function Chat() {
   const location = useLocation()
   const { activeDatasetId, activeDataset } = useDataset()
@@ -112,7 +147,7 @@ export default function Chat() {
 
     const userMsg = { id: Date.now(), role: 'user', text: input }
     const assistantId = Date.now() + 1
-    const assistantMsg = { id: assistantId, role: 'assistant', text: '', mode: null, conf: null, citations: [], queryResult: null, streaming: true }
+    const assistantMsg = { id: assistantId, role: 'assistant', text: '', mode: null, conf: null, citations: [], queryResult: null, generatedCode: null, streaming: true }
 
     setMessages(prev => [...prev, userMsg, assistantMsg])
     setInput('')
@@ -135,7 +170,11 @@ export default function Chat() {
         } else if (event === 'query_result') {
           // Backend wraps payload as {"query_result": {...}}, unwrap it
           setMessages(prev => prev.map(m => m.id === assistantId
-            ? { ...m, queryResult: data.query_result ?? data }
+            ? {
+                ...m,
+                queryResult: data.query_result ?? data,
+                generatedCode: data.generated_code ?? data.query_result?.expression ?? null,
+              }
             : m
           ))
         } else if (event === 'token') {
@@ -145,7 +184,10 @@ export default function Chat() {
           ))
           setTokenCount(t => t + 1)
         } else if (event === 'done') {
-          setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, streaming: false } : m))
+          setMessages(prev => prev.map(m => m.id === assistantId
+            ? { ...m, streaming: false, generatedCode: data.generated_code ?? m.generatedCode }
+            : m
+          ))
           break
         } else if (event === 'error') {
           setMessages(prev => prev.map(m => m.id === assistantId
@@ -289,6 +331,7 @@ export default function Chat() {
                             {msg.streaming && <span style={{ display: 'inline-block', width: 8, height: 14, background: 'var(--color-primary-indigo)', marginLeft: 2, borderRadius: 1, verticalAlign: 'text-bottom', animation: 'pulse-dot 0.8s ease-in-out infinite' }} />}
                           </p>
                           {msg.queryResult && <QueryResultTable result={msg.queryResult} />}
+                          <GeneratedCodeBlock code={msg.generatedCode} />
                           {msg.citations?.length > 0 && (
                             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                               {msg.citations.map((c, ci) => (
