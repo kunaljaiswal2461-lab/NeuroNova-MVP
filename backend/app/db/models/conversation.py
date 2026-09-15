@@ -169,6 +169,9 @@ class ChatMessageRow(Base):
         Boolean, nullable=False, default=False
     )
     degraded_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    unsupported: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
 
     # Token counts denormalised onto the row (instead of a nested JSON
     # under ``intent``) so per-session cost roll-ups are a single SQL

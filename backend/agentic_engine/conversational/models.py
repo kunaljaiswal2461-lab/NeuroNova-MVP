@@ -157,6 +157,9 @@ class ChatMessage(BaseModel):
     # of ``history_for_prompt`` so generated query code is never sent back to
     # the LLM on later turns.
     generated_code: str | None = None
+    # True when QUERY mode reached the deliberate capability boundary rather
+    # than attempting a free-form-code fallback.
+    unsupported: bool = False
     token_usage: TokenUsage | None = None
 
     # True when the turn completed but in a degraded mode (e.g. retriever

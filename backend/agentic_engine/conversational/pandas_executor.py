@@ -1,8 +1,8 @@
 """Placeholder for an NL→Pandas execution path.
 
 The MVP's NL-query branch is implemented in ``query_executor.py`` against
-Polars, with its own AST whitelist, sandboxed eval, and wall-clock
-timeout. A separate Pandas executor does NOT exist in this codebase.
+Polars through a structured QueryPlan and deterministic compiler. A separate
+Pandas executor does NOT exist in this codebase.
 
 Per the security implementation plan: when a feature being secured does
 not yet exist, ship a clearly labelled placeholder that raises rather
@@ -27,8 +27,8 @@ from typing import Any
 _PLACEHOLDER_MESSAGE = (
     "NL→Pandas execution is not implemented in this build. "
     "The active NL-query path uses Polars and lives in "
-    "agentic_engine.conversational.query_executor.execute_query. "
-    "If a Pandas executor is added, it must enforce AST whitelist, "
+    "agentic_engine.conversational.query_executor.execute_query_plan. "
+    "If a Pandas executor is added, it must use a structured query plan, "
     "a 10s thread timeout, 10k-row result truncation, and a sandbox "
     "with builtins stripped."
 )

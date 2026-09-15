@@ -134,6 +134,7 @@ async def append_message(
     query_result: QueryResult | None = None,
     degraded: bool = False,
     degraded_reason: str | None = None,
+    unsupported: bool = False,
     token_usage: TokenUsage | None = None,
     commit: bool = True,
 ) -> ChatMessage:
@@ -160,6 +161,7 @@ async def append_message(
         query_result=query_result.model_dump(mode="json") if query_result else None,
         degraded=degraded,
         degraded_reason=degraded_reason,
+        unsupported=unsupported,
         token_input=token_usage.input_tokens if token_usage else None,
         token_output=token_usage.output_tokens if token_usage else None,
     )
@@ -284,6 +286,7 @@ def _row_to_message(row: ChatMessageRow) -> ChatMessage:
         token_usage=token_usage,
         degraded=row.degraded,
         degraded_reason=row.degraded_reason,
+        unsupported=row.unsupported,
     )
 
 

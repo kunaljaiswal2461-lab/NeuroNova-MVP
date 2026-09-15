@@ -49,7 +49,7 @@ from agentic_engine.conversational.models import (
     RagCitation,
 )
 from agentic_engine.conversational.query_executor import (
-    execute_query,
+    execute_query_plan,
     schema_snapshot_from_profile,
 )
 from agentic_engine.conversational.rag_answerer import stream_rag_answer
@@ -135,7 +135,7 @@ async def stream_chat_turn(
     history_for_llm = manager.history_for_prompt(history_messages[:-1])
 
     try:
-        profile_columns, overview = await asyncio.to_thread(
+        profile_columns, overview, profile = await asyncio.to_thread(
             _load_dataset_context, dataset_record, settings
         )
     except DatasetProfileUnavailable as exc:
@@ -204,6 +204,7 @@ async def stream_chat_turn(
                 user_message=user_message,
                 dataset_record=dataset_record,
                 profile_columns=profile_columns,
+                profile=profile,
                 history=history_for_llm,
                 settings=settings,
                 llm=eff_llm,
@@ -211,7 +212,14 @@ async def stream_chat_turn(
                 if event is not None:
                     yield event
                 if finalisation is not None:
-                    query_result, content, token_usage, degraded, reason = finalisation
+                    (
+                        query_result,
+                        content,
+                        token_usage,
+                        degraded,
+                        reason,
+                        unsupported,
+                    ) = finalisation
                     assistant_msg = await _persist_assistant(
                         session_db=session_db,
                         session_id=session_id,
@@ -223,6 +231,7 @@ async def stream_chat_turn(
                         token_usage=token_usage,
                         degraded=degraded,
                         degraded_reason=reason,
+                        unsupported=unsupported,
                     )
                     yield _done_event(assistant_msg, intent, token_usage)
     except Exception as exc:  # pragma: no cover — top-level safety net
@@ -345,6 +354,7 @@ async def _run_query_branch(
     user_message: str,
     dataset_record: DatasetRecord,
     profile_columns: list[dict[str, Any]],
+    profile: ProfileReport,
     history: list[dict[str, str]],
     settings: Settings,
     llm: LLMClient | None,
@@ -359,46 +369,47 @@ async def _run_query_branch(
     raw_path = settings.raw_dir / dataset_record.filename
     schema_snapshot = schema_snapshot_from_profile(profile_columns)
 
-    query_result: QueryResult = await execute_query(
+    execution = await execute_query_plan(
         user_message,
         raw_path=raw_path,
         file_type=dataset_record.file_type,
+        profile=profile,
         schema_snapshot=schema_snapshot,
         history=history,
         llm=llm,
         settings=settings,
     )
 
-    yield _event(
-        ChatStreamEventType.QUERY_RESULT,
-        {
-            "query_result": query_result.model_dump(mode="json"),
-            # QueryResult.expression is the exact expression passed to the
-            # AST validator and sandboxed executor, including failed runs.
-            "generated_code": query_result.expression or None,
-        },
-    ), None
+    query_result = execution.query_result
+    if query_result is not None:
+        yield _event(
+            ChatStreamEventType.QUERY_RESULT,
+            {
+                "query_result": query_result.model_dump(mode="json"),
+                "generated_code": query_result.expression or None,
+            },
+        ), None
 
     # Compose a terse natural-language summary client-side. We
     # deliberately don't make a second LLM call here — the table is the
     # answer; the prose is just a one-line caption.
-    summary = _summarise_query_result(query_result)
+    summary = execution.reply or _summarise_query_result(query_result)
     yield _event(ChatStreamEventType.TOKEN, {"text": summary}), None
-
-    degraded = not query_result.is_ok
-    degraded_reason = query_result.error if degraded else None
 
     yield None, (
         query_result,
         summary,
-        TokenUsage(),  # cost is captured per-call inside execute_query if needed later
-        degraded,
-        degraded_reason,
+        execution.token_usage,
+        execution.degraded,
+        execution.degraded_reason,
+        execution.unsupported,
     )
 
 
-def _summarise_query_result(result: QueryResult) -> str:
+def _summarise_query_result(result: QueryResult | None) -> str:
     """One-line caption rendered alongside the result table."""
+    if result is None:
+        return "No direct-query result was produced."
     if not result.is_ok:
         attempts = (
             f" after {result.attempts} attempts" if result.attempts > 1 else ""
@@ -508,6 +519,7 @@ async def _persist_assistant(
     token_usage: TokenUsage | None,
     degraded: bool,
     degraded_reason: str | None,
+    unsupported: bool = False,
 ) -> ChatMessage:
     """Persist the assistant turn and commit the whole transaction."""
     message = await manager.append_message(
@@ -521,6 +533,7 @@ async def _persist_assistant(
         query_result=query_result,
         degraded=degraded,
         degraded_reason=degraded_reason,
+        unsupported=unsupported,
         token_usage=token_usage,
         commit=True,
     )
@@ -528,6 +541,7 @@ async def _persist_assistant(
     # transcript reads. Set it here too so the live SSE response carries the
     # same display-only value without changing prompt history.
     message.generated_code = (query_result.expression or None) if query_result else None
+    message.unsupported = unsupported
     return message
 
 
@@ -542,7 +556,7 @@ class DatasetProfileUnavailable(RuntimeError):
 
 def _load_dataset_context(
     dataset_record: DatasetRecord, settings: Settings
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any], ProfileReport]:
     """Create compact chat context from the canonical persisted profile.
 
     The profile model owns both its path and JSON shape. This deliberately
@@ -566,7 +580,7 @@ def _load_dataset_context(
             "The dataset profile is unavailable. Please re-upload the dataset before chatting."
         )
 
-    return _schema_snapshot(profile), _overview_snapshot(profile)
+    return _schema_snapshot(profile), _overview_snapshot(profile), profile
 
 
 def _schema_snapshot(profile: ProfileReport) -> list[dict[str, Any]]:
@@ -670,6 +684,7 @@ def _done_event(
         "degraded": assistant_message.degraded,
         "degraded_reason": assistant_message.degraded_reason,
         "generated_code": assistant_message.generated_code,
+        "unsupported": assistant_message.unsupported,
     }
     if intent is not None:
         payload["intent"] = intent.model_dump(mode="json")

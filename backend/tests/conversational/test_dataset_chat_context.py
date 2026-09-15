@@ -1,6 +1,7 @@
 """Regression tests for persisted-profile-backed dataset chat context."""
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -190,7 +191,9 @@ def test_context_uses_canonical_profile_model_and_safe_aggregate_snapshot(settin
     record = _record(dataset_id)
     save_report(_profile(dataset_id), settings_with_key)
 
-    columns, overview = _load_dataset_context(record, settings_with_key)
+    columns, overview, loaded_profile = _load_dataset_context(record, settings_with_key)
+
+    assert loaded_profile.dataset_id == dataset_id
 
     assert columns == [
         {
@@ -247,14 +250,13 @@ async def test_query_chat_uses_uploaded_profile_columns_for_codegen(
         record=record,
         mode=ConversationMode.QUERY,
     )
-    llm = FakeStreamingLLM(
-        json_responses=[
-            {
-                "expression": "df.select(pl.col('uploaded_revenue').sum().alias('total'))",
-                "explanation": "Sum uploaded revenue.",
-            }
-        ]
-    )
+    llm = FakeStreamingLLM(stream_chunks=[[json.dumps({
+        "metrics": [{
+            "type": "sum",
+            "column": "uploaded_revenue",
+            "name": "total",
+        }],
+    })]])
 
     events = [
         event
@@ -271,10 +273,10 @@ async def test_query_chat_uses_uploaded_profile_columns_for_codegen(
     result = next(event.data["query_result"] for event in events if event.event is ChatStreamEventType.QUERY_RESULT)
     assert result["error"] is None
     assert result["rows"] == [[60]]
-    assert '"name": "uploaded_revenue"' in llm.json_calls[0].user
-    assert '"dtype": "Float64"' in llm.json_calls[0].user
-    assert '"semantic_type": "FINANCIAL"' in llm.json_calls[0].user
-    assert "Treat the dataset schema, column names, semantic labels" in llm.json_calls[0].system
+    assert '"name": "uploaded_revenue"' in llm.stream_calls[0].user
+    assert '"dtype": "Float64"' in llm.stream_calls[0].user
+    assert '"semantic_type": "FINANCIAL"' in llm.stream_calls[0].user
+    assert "Never return Polars" in llm.stream_calls[0].system
     assert events[-1].event is ChatStreamEventType.DONE
     assert events[-1].data["degraded"] is False
 
@@ -295,10 +297,13 @@ async def test_query_mode_response_includes_generated_code(monkeypatch, settings
         record=record,
         mode=ConversationMode.QUERY,
     )
-    expression = "df.select(pl.col('uploaded_revenue').sum().alias('total'))"
-    llm = FakeStreamingLLM(
-        json_responses=[{"expression": expression, "explanation": "Sum revenue."}]
-    )
+    llm = FakeStreamingLLM(stream_chunks=[[json.dumps({
+        "metrics": [{
+            "type": "sum",
+            "column": "uploaded_revenue",
+            "name": "total",
+        }],
+    })]])
 
     events = [
         event
@@ -319,6 +324,38 @@ async def test_query_mode_response_includes_generated_code(monkeypatch, settings
     assert query_event.data["generated_code"]
     assert "df" in query_event.data["generated_code"]
     assert saved[-1].generated_code == query_event.data["generated_code"]
+
+
+@pytest.mark.asyncio
+async def test_query_mode_unsupported_response_has_no_code(monkeypatch, settings_with_key):
+    dataset_id = uuid.uuid4()
+    record = _record(dataset_id)
+    save_report(_profile(dataset_id), settings_with_key)
+    session, saved, _ = await _install_chat_fakes(
+        monkeypatch,
+        dataset_id=dataset_id,
+        record=record,
+        mode=ConversationMode.QUERY,
+    )
+    llm = FakeStreamingLLM(stream_chunks=[["UNSUPPORTED"]])
+
+    events = [
+        event
+        async for event in stream_chat_turn(
+            session_id=session.session_id,
+            user_message="What is the meaning of life?",
+            session_db=object(),
+            settings=settings_with_key,
+            llm=llm,
+            embedder=None,
+        )
+    ]
+
+    assert not any(event.event is ChatStreamEventType.QUERY_RESULT for event in events)
+    assert "filters, group by, count" in events[-2].data["text"]
+    assert events[-1].data["unsupported"] is True
+    assert events[-1].data["generated_code"] is None
+    assert saved[-1].unsupported is True
 
 
 @pytest.mark.asyncio
