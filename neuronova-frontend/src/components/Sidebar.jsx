@@ -187,13 +187,13 @@ export default function Sidebar({ isOpen = false, onClose = () => {} }) {
       {/* Bottom Actions - Unrolled to add dropdown logic */}
       <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', padding: '8px 8px 12px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
         
-        {/* Settings Button */}
-        <button className="nav-item" style={{ fontSize: 13, gap: 8, display: 'flex', alignItems: 'center', width: '100%', background: 'transparent', border: 'none', color: 'rgba(255,255,255,0.65)', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer' }}>
+        {/* Settings */}
+        <NavLink to="/settings" onClick={onClose} className="nav-item" style={{ fontSize: 13, gap: 8, display: 'flex', alignItems: 'center', width: '100%', color: 'rgba(255,255,255,0.65)', padding: '8px 12px', borderRadius: '8px', textDecoration: 'none', cursor: 'pointer' }}>
           <span style={{ width: 15, height: 15, flexShrink: 0 }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </span>
           Settings
-        </button>
+        </NavLink>
 
         {/* Support Button & Dropdown */}
         <div style={{ position: 'relative' }}>

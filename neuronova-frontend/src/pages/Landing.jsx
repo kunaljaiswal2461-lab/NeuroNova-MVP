@@ -5,6 +5,30 @@ import DatasetExplorerDemo from '../components/landing/DatasetExplorerDemo'
 
 const NAV_LINKS = ['Product', 'How It Works', 'Use Cases']
 
+const TECHNOLOGIES = [
+  { name: 'Powered by' },
+  {
+    name: 'LangChain',
+    href: 'https://docs.langchain.com/oss/python/langchain/overview',
+  },
+  {
+    name: 'LangGraph',
+    href: 'https://docs.langchain.com/oss/python/langgraph/overview',
+  },
+  {
+    name: 'OpenAI',
+    href: 'https://platform.openai.com/docs/quickstart/make-your-first-api-request',
+  },
+  {
+    name: 'pgvector',
+    href: 'https://github.com/pgvector/pgvector',
+  },
+  {
+    name: 'Python',
+    href: 'https://docs.python.org/3/',
+  },
+]
+
 // Replaced emojis with crisp SVG icons (using Lucide/Heroicons style)
 const FEATURES = [
   {
@@ -180,18 +204,34 @@ export default function Landing() {
 
       {/* ── Integration Banner ── */}
       <div style={{ borderTop: '1px solid #E2E8F0', borderBottom: '1px solid #E2E8F0', padding: '32px 24px', backgroundColor: '#F8FAFC', display: 'flex', justifyContent: 'center', gap: 'clamp(24px, 5vw, 64px)', flexWrap: 'wrap', alignItems: 'center' }}>
-        {['Powered by', 'LangChain', 'LangGraph', 'OpenAI', 'pgvector', 'Python'].map((tech, i) => (
-          <span key={tech} style={{ 
-            fontSize: i === 0 ? 12 : 16, 
-            fontWeight: i === 0 ? 600 : 700, 
-            color: i === 0 ? '#94A3B8' : '#cbd5e1', 
-            textTransform: i === 0 ? 'uppercase' : 'none', 
+        {TECHNOLOGIES.map(({ name, href }, i) => {
+          const style = {
+            fontSize: i === 0 ? 12 : 16,
+            fontWeight: i === 0 ? 600 : 700,
+            color: i === 0 ? '#94A3B8' : '#cbd5e1',
+            textTransform: i === 0 ? 'uppercase' : 'none',
             letterSpacing: i === 0 ? '1px' : '-0.02em',
-            filter: i !== 0 ? 'grayscale(100%)' : 'none'
-          }}>
-            {tech}
-          </span>
-        ))}
+            filter: i !== 0 ? 'grayscale(100%)' : 'none',
+          }
+
+          if (!href) {
+            return <span key={name} style={style}>{name}</span>
+          }
+
+          return (
+            <a
+              key={name}
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={`Read ${name} documentation`}
+              title={`Read ${name} documentation`}
+              style={{ ...style, cursor: 'pointer' }}
+            >
+              {name}
+            </a>
+          )
+        })}
       </div>
 
       {/* ── 7-Layer Pipeline ── */}

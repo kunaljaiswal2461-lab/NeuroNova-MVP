@@ -14,20 +14,22 @@ Endpoints:
   GET    /api/v1/auth/google/callback   — handle Google OAuth callback
 """
 from urllib.parse import urlencode, urlsplit
+from typing import Literal
 
 import httpx
 import structlog
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from jose import JWTError
 from pydantic import BaseModel, EmailStr, Field
 
-from app.core.dependencies import DBSession, SettingsDep, get_current_user
+from app.core.dependencies import DBSession, SettingsDep, StorageDep, get_current_user
 from app.core.limiter import limiter
 from app.core.security import create_one_time_token, decode_one_time_token
 from app.db.models.user import User
 from app.exceptions.custom_exceptions import UnauthorizedError
 from app.services import auth_service
+from app.services import account_service
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -96,6 +98,12 @@ class ResetPasswordRequest(BaseModel):
 
 class UpdateProfileRequest(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=256)
+
+
+class DeleteAccountRequest(BaseModel):
+    confirmation: Literal["DELETE"] = Field(
+        description='Must be the exact value "DELETE" to permanently remove the account.'
+    )
 
 
 class UserResponse(BaseModel):
@@ -219,6 +227,26 @@ async def update_me(
         await db.commit()
         await db.refresh(current_user)
     return UserResponse.from_user(current_user)
+
+
+@router.delete("/me", status_code=204)
+@limiter.limit("2/hour")
+async def delete_me(
+    request: Request,
+    body: DeleteAccountRequest,
+    db: DBSession,
+    storage: StorageDep,
+    settings: SettingsDep,
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    """Permanently delete the authenticated user's account and owned data."""
+    await account_service.delete_account(
+        session=db,
+        storage=storage,
+        settings=settings,
+        user=current_user,
+    )
+    return Response(status_code=204)
 
 
 # ── Google OAuth 2.0 ──────────────────────────────────────────────────────────

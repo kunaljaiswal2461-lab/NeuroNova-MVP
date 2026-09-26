@@ -176,6 +176,19 @@ test('POST never replays network failures, timeouts or transient HTTP errors', a
   }
 })
 
+test('DELETE sends the confirmation payload once and handles a 204 response', async () => {
+  let captured
+  const { api } = harness(async (_url, init) => {
+    captured = init
+    return new Response(null, { status: 204 })
+  })
+
+  assert.equal(await api.delete('/auth/me', { confirmation: 'DELETE' }), null)
+  assert.equal(captured.method, 'DELETE')
+  assert.equal(captured.headers.Authorization, 'Bearer old')
+  assert.equal(captured.body, JSON.stringify({ confirmation: 'DELETE' }))
+})
+
 test('upload uses a longer deadline, preserves multipart headers and reports uncertain failure', async () => {
   let calls = 0
   const form = new FormData()
