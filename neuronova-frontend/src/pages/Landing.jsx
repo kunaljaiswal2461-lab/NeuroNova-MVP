@@ -2,6 +2,7 @@ import { Link, Navigate } from 'react-router-dom'
 import { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import DatasetExplorerDemo from '../components/landing/DatasetExplorerDemo'
+import neuralPathway from '../assets/neural-pathway.png'
 
 const NAV_LINKS = ['Product', 'How It Works', 'Use Cases']
 
@@ -235,8 +236,8 @@ export default function Landing() {
       </div>
 
       {/* ── 7-Layer Pipeline ── */}
-      <section id="product" style={{ background: '#FFFFFF', borderBottom: '1px solid #E2E8F0', padding: '100px 24px' }}>
-        <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+      <section id="product" className="landing-pipeline-section">
+        <div className="landing-pipeline-inner">
           <div style={{ textAlign: 'center', marginBottom: 48 }}>
             <p style={{ color: '#3B82F6', fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 8 }}>The Intelligence Engine</p>
             <h2 style={{ color: '#0F172A', fontSize: 32, fontWeight: 800, marginBottom: 12, letterSpacing: '-0.03em' }}>7 Layers of Data Understanding</h2>
@@ -245,7 +246,9 @@ export default function Landing() {
             </p>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 1, background: '#E2E8F0', borderRadius: 12, overflow: 'hidden' }}>
+          <div className="landing-pipeline-scene">
+            <img className="landing-pipeline-neuron" src={neuralPathway} alt="" aria-hidden="true" />
+            <div className="landing-pipeline-grid">
             {[
               { num: '01', label: 'Upload', status: '✅', desc: 'CSV, XLSX, JSON, Parquet. Async validation.' },
               { num: '02', label: 'Profiling', status: '✅', desc: 'Schema, stats, 6 sub-profilers.' },
@@ -257,11 +260,22 @@ export default function Landing() {
             ].map((layer, i) => (
               <div key={i} style={{ background: i === 6 ? '#EFF6FF' : '#FFFFFF', padding: '24px 16px', textAlign: 'center' }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: '#94A3B8', marginBottom: 12 }}>{layer.num}</div>
-                <div style={{ fontSize: 20, marginBottom: 8 }}>{layer.status}</div>
+                <div className="landing-pipeline-icon" aria-hidden="true">
+                  {i === 6 ? (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 11.5a8.4 8.4 0 0 1-1.6 4.9A8.5 8.5 0 0 1 12.5 20a8.4 8.4 0 0 1-4.9-1.6L3 20l1.6-4.6A8.4 8.4 0 0 1 3 10.5 8.5 8.5 0 0 1 6.6 3.6 8.4 8.4 0 0 1 11.5 2h1A8.5 8.5 0 0 1 21 10.5Z" />
+                    </svg>
+                  ) : (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="m5 12 4 4L19 6" />
+                    </svg>
+                  )}
+                </div>
                 <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A', marginBottom: 8, letterSpacing: '-0.02em' }}>{layer.label}</div>
                 <div style={{ fontSize: 12, color: '#64748B', lineHeight: 1.5 }}>{layer.desc}</div>
               </div>
             ))}
+            </div>
           </div>
         </div>
       </section>
