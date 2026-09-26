@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import DatasetExplorerDemo from '../components/landing/DatasetExplorerDemo'
 
-const NAV_LINKS = ['Product', 'How It Works', 'Use Cases', 'Pricing']
+const NAV_LINKS = ['Product', 'How It Works', 'Use Cases']
 
 // Replaced emojis with crisp SVG icons (using Lucide/Heroicons style)
 const FEATURES = [
@@ -48,36 +48,6 @@ const COMPARISON = [
   { feature: 'Statistical Profiling', neuronova: true, ydata: true, chatgpt: false },
   { feature: 'Relationship Intelligence', neuronova: true, ydata: false, chatgpt: false },
   { feature: 'Persistent Dataset Memory', neuronova: true, ydata: false, chatgpt: false },
-]
-
-const PRICING = [
-  {
-    tier: 'Analyst',
-    price: '$29',
-    period: '/mo',
-    desc: 'For individual data analysts who need fast, trustworthy EDA.',
-    features: ['5 datasets / month', 'Up to 10MB per file', 'AI Insights & Chat', 'CSV & Excel support', '7-day finding history'],
-    cta: 'Start Free Trial',
-    featured: false,
-  },
-  {
-    tier: 'Team',
-    price: '$99',
-    period: '/mo',
-    desc: 'For data teams who collaborate on enterprise datasets.',
-    features: ['50 datasets / month', 'Up to 20 MB per file', 'All file formats', 'Shared workspace', 'Priority support', 'Dataset memory'],
-    cta: 'Start Free Trial',
-    featured: true,
-  },
-  {
-    tier: 'Enterprise',
-    price: 'Custom',
-    period: '',
-    desc: 'For organizations with large-scale data intelligence needs.',
-    features: ['Unlimited datasets', 'Up to 1GB per file', 'On-premise deployment', 'SSO & audit logs', 'Dedicated support', 'Custom integrations'],
-    cta: 'Contact Sales',
-    featured: false,
-  },
 ]
 
 const SCHEMA_PREVIEW_ROWS = [
@@ -261,7 +231,6 @@ export default function Landing() {
         <div style={{ maxWidth: 1100, margin: '0 auto' }}>
           <div style={{ textAlign: 'center', marginBottom: 64 }}>
             <p style={{ fontSize: 12, fontWeight: 700, color: '#3B82F6', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 8 }}>Why NeuroNova</p>
-            <h2 style={{ fontSize: 32, fontWeight: 800, color: '#0F172A', marginBottom: 16, letterSpacing: '-0.03em' }}>The moat is real</h2>
             <p style={{ fontSize: 16, color: '#64748B', maxWidth: 500, margin: '0 auto' }}>
               Differentiators that can't be replicated with a ChatGPT wrapper.
             </p>
@@ -321,83 +290,11 @@ export default function Landing() {
       <section style={{ padding: '100px 24px', backgroundColor: '#F8FAFC', borderTop: '1px solid #E2E8F0' }}>
         <div style={{ maxWidth: 800, margin: '0 auto', textAlign: 'center' }}>
           <p style={{ fontSize: 12, fontWeight: 700, color: '#3B82F6', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 8 }}>The Team</p>
-          <h2 style={{ fontSize: 32, fontWeight: 800, color: '#0F172A', marginBottom: 24, letterSpacing: '-0.03em' }}>Built by AI Specialists</h2>
           <p style={{ fontSize: 18, color: '#64748B', lineHeight: 1.6, marginBottom: 32 }}>
                   NeuroNova isn't just another dashboard — it's an AI Analyst that reads, understands, 
                   and explains your data the way a human analyst would, minus the wait. 
                   Built by engineers who believe data intelligence should be automatic, not manual. 
           </p>
-        </div>
-      </section>
-
-      {/* ── Pricing ── */}
-      <section id="pricing" style={{ backgroundColor: '#FFFFFF', padding: '100px 24px', borderTop: '1px solid #E2E8F0' }}>
-        <div style={{ maxWidth: 1000, margin: '0 auto' }}>
-          <div style={{ textAlign: 'center', marginBottom: 64 }}>
-            <h2 style={{ fontSize: 32, fontWeight: 800, color: '#0F172A', letterSpacing: '-0.03em' }}>Simple, transparent pricing</h2>
-          </div>
-
-          <div className="landing-pricing-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 32 }}>
-            {PRICING.map((plan, i) => (
-              <div key={i} style={{ 
-                backgroundColor: plan.featured ? '#0F172A' : '#FFFFFF',
-                border: plan.featured ? 'none' : '1px solid #E2E8F0',
-                padding: '48px 32px',
-                borderRadius: 24,
-                position: 'relative',
-                boxShadow: plan.featured ? '0 20px 40px -10px rgba(0,0,0,0.2)' : '0 10px 30px -10px rgba(0,0,0,0.05)',
-                transition: 'transform 200ms ease, box-shadow 200ms ease'
-              }}
-                onMouseEnter={e => {
-                  console.log('Hover Fired');
-                  e.currentTarget.style.transform= 'translateY(-6px)';
-                  e.currentTarget.style.boxShadow= plan.featured
-                    ? '0 30px 50px -10px rgba(0,0,0,0.3)'
-                    : '0 20px 40px -10px rgba(0,0,0,0.08)';
-                }}
-                onMouseLeave={e => {
-                  e.currentTarget.style.transform='translateY(0)';
-                  e.currentTarget.style.boxShadow=plan.featured
-                    ? '0 20px 40px -10px rgba(0,0,0,0.2)'
-                    : '0 10px 30px -10px rgba(0,0,0,0.05)';
-                }}
-              >
-                {plan.featured && (
-                  <div style={{ position: 'absolute', top: -12, left: '50%', transform: 'translateX(-50%)', background: '#3B82F6', color: '#FFFFFF', borderRadius: '999px', padding: '6px 16px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    Most Popular
-                  </div>
-                )}
-                <h3 style={{ fontSize: 24, fontWeight: 700, color: plan.featured ? '#FFFFFF' : '#0F172A', marginBottom: 12, letterSpacing: '-0.02em' }}>{plan.tier}</h3>
-                <p style={{ fontSize: 15, color: plan.featured ? '#94A3B8' : '#64748B', marginBottom: 32, minHeight: 48, lineHeight: 1.5 }}>{plan.desc}</p>
-                <div style={{ marginBottom: 32 }}>
-                  <span style={{ fontSize: 48, fontWeight: 800, color: plan.featured ? '#FFFFFF' : '#0F172A', letterSpacing: '-0.04em' }}>{plan.price}</span>
-                  <span style={{ fontSize: 16, color: plan.featured ? '#94A3B8' : '#64748B', marginLeft: 6 }}>{plan.period}</span>
-                </div>
-                <Link to="/register" style={{ 
-                  justifyContent: 'center', 
-                  marginBottom: 40, 
-                  display: 'flex',
-                  padding: '16px',
-                  borderRadius: '12px',
-                  fontWeight: 600,
-                  textDecoration: 'none',
-                  backgroundColor: plan.featured ? '#3B82F6' : '#F8FAFC',
-                  color: plan.featured ? '#FFFFFF' : '#0F172A',
-                  border: plan.featured ? 'none' : '1px solid #E2E8F0'
-                }}>
-                  {plan.cta}
-                </Link>
-                <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
-                  {plan.features.map((feat, j) => (
-                    <li key={j} style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 15, color: plan.featured ? '#CBD5E1' : '#475569' }}>
-                      <span style={{ color: '#3B82F6', fontWeight: 700 }}>✓</span>
-                      {feat}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
         </div>
       </section>
 
@@ -426,7 +323,7 @@ export default function Landing() {
           </div>
           <div style={{ display: 'flex', gap: 80 }}>
             {[
-              { heading: 'Product', links: ['Features', 'Pricing', 'Documentation'] },
+              { heading: 'Product', links: ['Features', 'Documentation'] },
               { heading: 'Company', links: ['About', 'Blog', 'Contact'] },
             ].map(col => (
               <div key={col.heading}>

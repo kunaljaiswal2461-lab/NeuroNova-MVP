@@ -810,21 +810,6 @@ input, textarea, select { font-family: inherit; }
   transform: translateY(-2px);
 }
 
-/* --- Pricing Card --- */
-.pricing-card {
-  background: var(--color-card);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: var(--space-8);
-  box-shadow: var(--shadow-card);
-  transition: all var(--transition-fast);
-}
-.pricing-card.featured {
-  border-color: var(--color-primary-indigo);
-  box-shadow: 0 0 0 1px var(--color-primary-indigo), var(--shadow-card-hover);
-}
-.pricing-card:hover:not(.featured) { transform: translateY(-2px); }
-
 /* --- Section Styles --- */
 .section {
   padding: var(--space-16) var(--space-10);
@@ -1105,10 +1090,8 @@ input, textarea, select { font-family: inherit; }
   .hero-section .floating-ui { margin-top: 44px !important; }
   .landing-main h1 { font-size: clamp(32px, 10vw, 44px) !important; }
   .landing-main h2 { font-size: clamp(26px, 8vw, 32px) !important; }
-  .landing-feature-grid,
-  .landing-pricing-grid { grid-template-columns: minmax(0, 1fr) !important; }
+  .landing-feature-grid { grid-template-columns: minmax(0, 1fr) !important; }
   .landing-feature-grid > div { padding: 24px !important; }
-  .landing-pricing-grid > div { padding: 32px 24px !important; }
   .preview-body { height: 360px !important; }
   .preview-sidebar { display: none !important; }
   .preview-title-bar span {
