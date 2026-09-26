@@ -71,6 +71,10 @@ export const authApi = {
     return res.json();
   },
 
+  deleteAccount: async (confirmation) => {
+    await api.delete('/auth/me', { confirmation });
+  },
+
   forgotPassword: async (email) => {
     const res = await fetch(`${BASE_URL}/auth/forgot-password`, {
       method: 'POST',

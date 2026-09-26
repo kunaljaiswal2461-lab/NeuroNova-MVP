@@ -207,6 +207,14 @@ export function createApi({
     return request(path, { method: 'POST', headers, body: formData }, res => res.json(), options, true)
   }
 
+  function del(path, body, options = {}) {
+    return request(path, {
+      method: 'DELETE',
+      headers: authHeaders(),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }, res => res.status === 204 ? null : res.json(), options)
+  }
+
   async function* streamSSE(path, body = {}, options = {}) {
     // One deadline spans connection and body consumption. Streams are never
     // retried: reconnecting a chat mutation could generate a duplicate reply.
@@ -253,5 +261,5 @@ export function createApi({
     }
   }
 
-  return { get, getBlob, post, postForm, streamSSE }
+  return { get, getBlob, post, postForm, delete: del, streamSSE }
 }

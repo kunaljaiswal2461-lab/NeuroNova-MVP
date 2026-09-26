@@ -32,3 +32,13 @@ it('places X, LinkedIn, and email contact links in the landing CTA', () => {
   expect(linkedinLink.textContent).toBe('')
   expect(container.querySelector('.landing-cta-contact-links')?.contains(xLink)).toBe(true)
 })
+
+it('links each technology in the powered-by strip to its documentation', () => {
+  render(<MemoryRouter><Landing /></MemoryRouter>)
+
+  expect(screen.getByRole('link', { name: 'Read LangChain documentation' }).getAttribute('href')).toBe('https://docs.langchain.com/oss/python/langchain/overview')
+  expect(screen.getByRole('link', { name: 'Read LangGraph documentation' }).getAttribute('href')).toBe('https://docs.langchain.com/oss/python/langgraph/overview')
+  expect(screen.getByRole('link', { name: 'Read OpenAI documentation' }).getAttribute('href')).toBe('https://platform.openai.com/docs/quickstart/make-your-first-api-request')
+  expect(screen.getByRole('link', { name: 'Read pgvector documentation' }).getAttribute('href')).toBe('https://github.com/pgvector/pgvector')
+  expect(screen.getByRole('link', { name: 'Read Python documentation' }).getAttribute('href')).toBe('https://docs.python.org/3/')
+})

@@ -14,6 +14,7 @@ import Explorer from './pages/Explorer'
 import Visualization from './pages/Visualization'
 import Insights from './pages/Insights'
 import Chat from './pages/Chat'
+import Settings from './pages/Settings'
 import Login from './pages/Login'
 import Register from './pages/Register'
 import VerifyEmailLanding from './pages/VerifyEmailLanding'
@@ -46,6 +47,7 @@ export default function App() {
             <Route path="/visualization" element={<ProtectedRoute><DatasetRoute><Visualization /></DatasetRoute></ProtectedRoute>} />
             <Route path="/insights" element={<ProtectedRoute><DatasetRoute><Insights /></DatasetRoute></ProtectedRoute>} />
             <Route path="/chat" element={<ProtectedRoute><DatasetRoute><Chat /></DatasetRoute></ProtectedRoute>} />
+            <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
 
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
