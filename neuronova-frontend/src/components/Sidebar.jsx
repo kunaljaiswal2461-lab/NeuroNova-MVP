@@ -53,21 +53,22 @@ const NAV_ITEMS = [
   },
 ]
 
-export default function Sidebar() {
+export default function Sidebar({ isOpen = false, onClose = () => {} }) {
   const { activeDataset, datasetReady } = useDataset()
   const [isSupportOpen, setIsSupportOpen] = useState(false) // Added state for Support Menu
 
   const health = activeDataset?._health ?? null
 
   return (
-    <aside className="sidebar">
+    <aside id="workspace-navigation" className={`sidebar ${isOpen ? 'is-open' : ''}`} aria-label="Workspace navigation">
       {/* Wordmark */}
       <div style={{ padding: '20px 16px 12px' }}>
         <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none', cursor: 'pointer' }}>
-          <img 
-            src="/logo.png" 
+          <img
+            src="/neuronova-mark.png"
             alt="NeuroNova Logo" 
-            style={{ width: 28, height: 28, borderRadius: 6, flexShrink: 0, objectFit: 'cover' }} 
+            className="brand-mark"
+            style={{ width: 28, height: 28 }}
           />
           <div>
             <div style={{ fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 15, color: 'white', letterSpacing: '-0.01em' }}>
@@ -140,6 +141,7 @@ export default function Sidebar() {
             key={item.to}
             to={item.to}
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+            onClick={onClose}
             style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', marginBottom: 2, borderRadius: 8, textDecoration: 'none', color: 'rgba(255,255,255,0.65)', fontSize: 14, fontFamily: 'var(--font-body)', fontWeight: 500, cursor: 'pointer', transition: 'all 150ms' }}
           >
             <span style={{ width: 16, height: 16, flexShrink: 0 }}>{item.icon}</span>
@@ -213,6 +215,7 @@ export default function Sidebar() {
             }}>
               <Link 
                 to="/" 
+                onClick={onClose}
                 style={{ display: 'block', padding: '8px 16px', fontSize: 13, color: 'white', textDecoration: 'none', fontFamily: 'var(--font-body)', transition: 'background 150ms' }}
                 onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}

@@ -1,4 +1,5 @@
 import { Link, Navigate } from 'react-router-dom'
+import { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import DatasetExplorerDemo from '../components/landing/DatasetExplorerDemo'
 
@@ -95,6 +96,7 @@ const Check = ({ ok }) => ok ? (
 export default function Landing() {
   const { user, loading } = useAuth();
   const ctaLink = user ? '/upload' : '/register';
+  const [isMenuOpen, setIsMenuOpen] = useState(false)
 
 
   if (loading) return null;
@@ -118,27 +120,44 @@ export default function Landing() {
       </style>
 
       {/* ── Nav ── */}
-      <nav className="landing-nav" style={{ padding: 0, backgroundColor: 'rgba(255, 255, 255, 0.9)', borderBottom: '1px solid #E2E8F0', position: 'sticky', top: 0, zIndex: 50, backdropFilter: 'blur(8px)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', maxWidth: 1200, margin: '0 auto', paddingTop: '8px', paddingBottom: '8px', paddingLeft: '24px', paddingRight: '24px', position: 'relative' }}>
+      <nav className={`landing-nav ${isMenuOpen ? 'is-menu-open' : ''}`} style={{ padding: 0, backgroundColor: 'rgba(255, 255, 255, 0.9)', borderBottom: '1px solid #E2E8F0', position: 'sticky', top: 0, zIndex: 50, backdropFilter: 'blur(8px)' }}>
+        <div className="landing-nav-inner" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', maxWidth: 1200, margin: '0 auto', paddingTop: '8px', paddingBottom: '8px', paddingLeft: '24px', paddingRight: '24px', position: 'relative' }}>
           
           <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none' }}>
-            <img src="/logo.png" alt="NeuroNova Logo" style={{ width: 28, height: 28, borderRadius: 6 }} />
+            <img src="/neuronova-mark.png" alt="NeuroNova Logo" className="brand-mark brand-mark-on-light" style={{ width: 28, height: 28 }} />
             <span style={{ fontWeight: 700, fontSize: 18, color: '#0F172A', letterSpacing: '-0.02em' }}>
               NeuroNova
             </span>
           </Link>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 32, position: 'absolute', left: '50%', transform: 'translateX(-50%)' }}>
+          <button
+            className="landing-nav-toggle"
+            type="button"
+            aria-label={isMenuOpen ? 'Close menu' : 'Open menu'}
+            aria-expanded={isMenuOpen}
+            aria-controls="landing-navigation"
+            onClick={() => setIsMenuOpen(open => !open)}
+          >
+            <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d={isMenuOpen ? 'M6 6l12 12M18 6L6 18' : 'M4 7h16M4 12h16M4 17h16'} />
+            </svg>
+          </button>
+
+          <div id="landing-navigation" className="landing-nav-links" style={{ display: 'flex', alignItems: 'center', gap: 32, position: 'absolute', left: '50%', transform: 'translateX(-50%)' }}>
             {NAV_LINKS.map(l => (
               <a key={l} href={`#${l.toLowerCase().replace(/ /g, '-')}`}
+                onClick={() => setIsMenuOpen(false)}
                 style={{ fontSize: 14, fontWeight: 500, color: '#64748B', textDecoration: 'none', transition: 'color 150ms' }}
                 onMouseEnter={e => e.target.style.color = '#0F172A'}
                 onMouseLeave={e => e.target.style.color = '#64748B'}
               >{l}</a>
             ))}
+            <Link className="landing-nav-menu-cta" to={ctaLink} onClick={() => setIsMenuOpen(false)}>
+              {user ? 'Go to Dashboard' : 'Get Early Access'}
+            </Link>
           </div>
 
-          <Link to={ctaLink} style={{ backgroundColor: '#0F172A', color: '#FFFFFF', padding: '10px 20px', borderRadius: '8px', fontSize: 14, fontWeight: 600, textDecoration: 'none' }}>
+          <Link className="landing-nav-cta" to={ctaLink} onClick={() => setIsMenuOpen(false)} style={{ backgroundColor: '#0F172A', color: '#FFFFFF', padding: '10px 20px', borderRadius: '8px', fontSize: 14, fontWeight: 600, textDecoration: 'none' }}>
             {user ? 'Go to Dashboard →' : 'Get Early Access →'}
           </Link>
           
@@ -248,7 +267,7 @@ export default function Landing() {
             </p>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 24 }}>
+          <div className="landing-feature-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 24 }}>
             {FEATURES.map((f, i) => (
               <div key={i} style={{ backgroundColor: '#FFFFFF', padding: '32px', borderRadius: 16, border: '1px solid #F1F5F9', boxShadow: '0 10px 30px -10px rgba(0, 0, 0, 0.05)', transition: 'transform 200ms ease, box-shadow 200ms ease' }}
                    onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-4px)'; e.currentTarget.style.boxShadow = '0 20px 40px -10px rgba(0, 0, 0, 0.08)'; }}
@@ -318,7 +337,7 @@ export default function Landing() {
             <h2 style={{ fontSize: 32, fontWeight: 800, color: '#0F172A', letterSpacing: '-0.03em' }}>Simple, transparent pricing</h2>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 32 }}>
+          <div className="landing-pricing-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 32 }}>
             {PRICING.map((plan, i) => (
               <div key={i} style={{ 
                 backgroundColor: plan.featured ? '#0F172A' : '#FFFFFF',
@@ -400,7 +419,7 @@ export default function Landing() {
         <div style={{ maxWidth: 1100, margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 40 }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-              <img src="/logo.png" alt="NeuroNova Logo" style={{ width: 28, height: 28, borderRadius: 6 }} />
+              <img src="/neuronova-mark.png" alt="NeuroNova Logo" className="brand-mark" style={{ width: 28, height: 28 }} />
               <span style={{ fontWeight: 700, fontSize: 18, color: '#FFFFFF', letterSpacing: '-0.02em' }}>NeuroNova</span>
             </div> 
             <div style={{ fontSize: 14, color: '#94A3B8' }}>Data intelligence, automated and secure.</div>
