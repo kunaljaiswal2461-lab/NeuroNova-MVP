@@ -795,6 +795,11 @@ input, textarea, select { font-family: inherit; }
   text-decoration: none;
   transition: color 150ms ease, border-color 150ms ease, background 150ms ease;
 }
+.landing-cta-contact-link--icon {
+  width: 34px;
+  padding: 0;
+  justify-content: center;
+}
 .landing-cta-contact-link:hover {
   border-color: #93C5FD;
   background: #1E293B;

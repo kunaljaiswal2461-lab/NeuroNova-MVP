@@ -27,6 +27,8 @@ it('places X, LinkedIn, and email contact links in the landing CTA', () => {
 
   expect(xLink.getAttribute('href')).toBe('https://x.com/TeamNeuroNova')
   expect(linkedinLink.getAttribute('href')).toBe('https://www.linkedin.com/company/neuronova-official/?viewAsMember=true')
-  expect(emailLink.getAttribute('href')).toBe('mailto:hello@tryneuronova.in')
+  expect(emailLink.getAttribute('href')).toBe('mailto:hello@tryneuronova.in?subject=NeuroNova%20Inquiry')
+  expect(xLink.textContent).toBe('')
+  expect(linkedinLink.textContent).toBe('')
   expect(container.querySelector('.landing-cta-contact-links')?.contains(xLink)).toBe(true)
 })
