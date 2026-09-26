@@ -160,8 +160,8 @@ export default function Landing() {
       </nav>
 
       {/* ── Hero ── */}
-      <section className="hero-section" style={{ textAlign: 'center', padding: '120px 24px 60px' }}>
-        <div className="anim-fade-up" style={{ animationDelay: '0ms', maxWidth: 1100, margin: '0 auto' }}>
+      <section className="hero-section">
+        <div className="anim-fade-up hero-copy" style={{ animationDelay: '0ms' }}>
           
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: '999px', padding: '6px 16px', marginBottom: 24 }}>
 
@@ -198,7 +198,7 @@ export default function Landing() {
         </div>
 
         {/* Product Preview with floating animation */}
-        <div className="anim-fade-up floating-ui" style={{ animationDelay: '120ms', marginTop: 80 }}>
+        <div className="anim-fade-up floating-ui hero-preview" style={{ animationDelay: '120ms' }}>
           <DatasetExplorerDemo />
         </div>
       </section>
