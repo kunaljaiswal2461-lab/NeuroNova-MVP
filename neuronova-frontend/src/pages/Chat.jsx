@@ -10,6 +10,59 @@ const SUGGESTED_ACTIONS = [
   { label: 'Clear Session Context', style: 'danger' },
 ]
 
+const SESSION_STORAGE_PREFIX = 'neuronova:chat-session:v1:'
+
+function sessionStorageKey(datasetId) {
+  return `${SESSION_STORAGE_PREFIX}${datasetId}`
+}
+
+function readSavedSessionId(datasetId) {
+  try {
+    return window.sessionStorage.getItem(sessionStorageKey(datasetId))
+  } catch {
+    return null
+  }
+}
+
+function saveSessionId(datasetId, sessionId) {
+  try {
+    window.sessionStorage.setItem(sessionStorageKey(datasetId), sessionId)
+  } catch {
+    // The server transcript remains the source of truth when storage is unavailable.
+  }
+}
+
+function clearSavedSessionId(datasetId) {
+  try {
+    window.sessionStorage.removeItem(sessionStorageKey(datasetId))
+  } catch {
+    // Ignore browser storage failures; the next visit will select a server session.
+  }
+}
+
+function toDisplayMessage(message) {
+  const role = String(message.role ?? '').toLowerCase()
+  return {
+    id: message.message_id ?? `${message.created_at ?? Date.now()}-${role}`,
+    role: role === 'user' ? 'user' : 'assistant',
+    text: message.content ?? '',
+    mode: message.mode_used ?? message.intent?.mode ?? null,
+    conf: message.intent?.confidence ?? null,
+    routedBy: message.intent?.routed_by ?? null,
+    citations: message.citations ?? [],
+    queryResult: message.query_result ?? null,
+    generatedCode: message.generated_code ?? message.query_result?.expression ?? null,
+    streaming: false,
+  }
+}
+
+function restoredTokenCount(messages) {
+  return messages.reduce(
+    (total, message) => total + (message.token_usage?.output_tokens ?? 0),
+    0,
+  )
+}
+
 function ModeChip({ mode, conf, routedBy }) {
   const config = {
     RAG:   { bg: '#ECFDF5', color: '#065F46', border: '#A7F3D0', label: '◫ RAG MODE' },
@@ -127,15 +180,102 @@ export default function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Create session when dataset becomes available
+  // Reopen the last session for this dataset. Keeping only its opaque ID in
+  // session storage lets route changes and refreshes restore the server-owned
+  // transcript without copying chat content into the browser.
   useEffect(() => {
-    if (!activeDatasetId) return
+    const controller = new AbortController()
+    let disposed = false
+
     setSessionId(null)
     setMessages([])
+    setTokenCount(0)
+    setStreaming(false)
     setSessionError(null)
-    api.post(`/datasets/${activeDatasetId}/chat/sessions`, { mode: 'AUTO' })
-      .then(res => setSessionId(res.session?.session_id))
-      .catch(err => setSessionError(err.message))
+
+    if (!activeDatasetId) {
+      return () => controller.abort()
+    }
+
+    const applySession = (session, transcript) => {
+      if (disposed || controller.signal.aborted) return
+      const persistedMessages = transcript.messages ?? []
+      saveSessionId(activeDatasetId, session.session_id)
+      setSessionId(session.session_id)
+      setMessages(persistedMessages.map(toDisplayMessage))
+      setTokenCount(restoredTokenCount(persistedMessages))
+      setAutoMode((session.mode ?? 'AUTO') === 'AUTO')
+    }
+
+    const restoreSession = async session => {
+      const transcript = await api.get(
+        `/chat/sessions/${session.session_id}/messages?limit=500`,
+        { signal: controller.signal },
+      )
+      applySession(session, transcript)
+    }
+
+    const createSession = async () => {
+      const created = await api.post(
+        `/datasets/${activeDatasetId}/chat/sessions`,
+        { mode: 'AUTO' },
+        { signal: controller.signal },
+      )
+      if (disposed || controller.signal.aborted) return
+      const session = created.session
+      if (!session?.session_id) throw new Error('Unable to create a chat session.')
+      applySession(session, { messages: [] })
+    }
+
+    const restoreOrCreateSession = async () => {
+      const savedSessionId = readSavedSessionId(activeDatasetId)
+
+      if (savedSessionId) {
+        try {
+          const response = await api.get(`/chat/sessions/${savedSessionId}`, {
+            signal: controller.signal,
+          })
+          const savedSession = response.session
+          if (savedSession?.dataset_id === activeDatasetId) {
+            await restoreSession(savedSession)
+            return
+          }
+          clearSavedSessionId(activeDatasetId)
+        } catch (error) {
+          if (controller.signal.aborted) return
+          // A deleted session can safely fall back to another saved transcript.
+          // Keep its ID for transient failures so an outage cannot create duplicates.
+          if (error.status !== 404) throw error
+          clearSavedSessionId(activeDatasetId)
+        }
+      }
+
+      // This fallback also recovers conversations created before session IDs
+      // began being remembered in the browser.
+      const sessionsResponse = await api.get(
+        `/datasets/${activeDatasetId}/chat/sessions?limit=50`,
+        { signal: controller.signal },
+      )
+      const sessions = sessionsResponse.sessions ?? []
+      const previousSession = sessions.find(session => session.message_count > 0) ?? sessions[0]
+
+      if (previousSession) {
+        await restoreSession(previousSession)
+      } else {
+        await createSession()
+      }
+    }
+
+    restoreOrCreateSession().catch(error => {
+      if (!disposed && !controller.signal.aborted) {
+        setSessionError(error.message || 'Unable to restore the chat session.')
+      }
+    })
+
+    return () => {
+      disposed = true
+      controller.abort()
+    }
   }, [activeDatasetId])
 
   const handleSend = useCallback(async () => {
@@ -227,6 +367,26 @@ export default function Chat() {
       setPdfLoading(false)
     }
   }, [activeDatasetId, activeDataset, pdfLoading])
+
+  const handleClearSession = useCallback(async () => {
+    if (!activeDatasetId || !sessionId || streaming) return
+    setSessionError(null)
+    try {
+      const response = await api.post(
+        `/datasets/${activeDatasetId}/chat/sessions`,
+        { mode: 'AUTO' },
+      )
+      const nextSession = response.session
+      if (!nextSession?.session_id) throw new Error('Unable to clear the chat session.')
+      saveSessionId(activeDatasetId, nextSession.session_id)
+      setSessionId(nextSession.session_id)
+      setMessages([])
+      setTokenCount(0)
+      setAutoMode((nextSession.mode ?? 'AUTO') === 'AUTO')
+    } catch (error) {
+      setSessionError(error.message || 'Unable to clear the chat session.')
+    }
+  }, [activeDatasetId, sessionId, streaming])
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
@@ -442,26 +602,27 @@ export default function Chat() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {SUGGESTED_ACTIONS.map((a, i) => {
                 const isPdf = a.label === 'Generate PDF Summary'
-                const pdfDisabled = isPdf && (!activeDatasetId || pdfLoading)
+                const isClearSession = a.label === 'Clear Session Context'
+                const actionDisabled = isPdf
+                  ? !activeDatasetId || pdfLoading
+                  : isClearSession && (!sessionId || streaming)
                 return (
                   <button key={i}
                     onClick={() => {
                       if (isPdf) {
                         handleGeneratePdf()
-                      } else if (a.label === 'Clear Session Context' && sessionId) {
-                        api.post(`/datasets/${activeDatasetId}/chat/sessions`, { mode: 'AUTO' })
-                          .then(res => { setSessionId(res.session?.session_id); setMessages([]) })
-                          .catch(console.error)
+                      } else if (isClearSession) {
+                        handleClearSession()
                       }
                     }}
-                    disabled={pdfDisabled}
+                    disabled={actionDisabled}
                     style={{
                       padding: '8px 12px', background: 'white',
                       border: `1px solid ${a.style === 'danger' ? 'var(--color-danger-border)' : 'var(--color-border)'}`,
                       borderRadius: 8, fontFamily: 'var(--font-body)', fontSize: 12, fontWeight: 500,
                       color: a.style === 'danger' ? 'var(--color-danger)' : 'var(--color-text-primary)',
-                      cursor: pdfDisabled ? 'not-allowed' : 'pointer', textAlign: 'left', transition: 'background 150ms',
-                      opacity: pdfDisabled ? 0.5 : 1,
+                      cursor: actionDisabled ? 'not-allowed' : 'pointer', textAlign: 'left', transition: 'background 150ms',
+                      opacity: actionDisabled ? 0.5 : 1,
                     }}
                     onMouseEnter={e => e.currentTarget.style.background = a.style === 'danger' ? 'var(--color-danger-bg)' : 'var(--color-base)'}
                     onMouseLeave={e => e.currentTarget.style.background = 'white'}
