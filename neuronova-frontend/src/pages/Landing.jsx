@@ -299,16 +299,56 @@ export default function Landing() {
       </section>
 
       {/* ── CTA Banner ── */}
-      <section style={{ background: '#0F172A', padding: '100px 24px', textAlign: 'center' }}>
-        <h2 style={{ fontSize: 36, fontWeight: 800, color: '#FFFFFF', marginBottom: 20, letterSpacing: '-0.03em' }}>
-          Your data has been waiting for this.
-        </h2>
-        <p style={{ fontSize: 18, color: '#94A3B8', marginBottom: 40, maxWidth: 600, margin: '0 auto 40px', lineHeight: 1.6 }}>
-          Upload your first dataset and get a full intelligence report in under 30 seconds.
-        </p>
-        <Link to={ctaLink} style={{ background: '#FFFFFF', color: '#0F172A', padding: '16px 32px', borderRadius: '12px', fontSize: 16, fontWeight: 700, textDecoration: 'none', display: 'inline-flex' }}>
-          {user ? 'Go to Dashboard →' : 'Start Finding Answers →'}
-        </Link>
+      <section className="landing-cta" style={{ background: '#0F172A', padding: '100px 24px', textAlign: 'center' }}>
+        <div className="landing-cta-inner">
+          <div className="landing-cta-contact-links" aria-label="NeuroNova contact links">
+            <a
+              className="landing-cta-contact-link"
+              href="https://x.com/TeamNeuroNova"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Follow NeuroNova on X"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231 5.451-6.231Zm-1.161 17.52h1.833L7.084 4.126H5.117L17.083 19.77Z" />
+              </svg>
+              <span>X</span>
+            </a>
+            <a
+              className="landing-cta-contact-link"
+              href="https://www.linkedin.com/company/neuronova-official/?viewAsMember=true"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Follow NeuroNova on LinkedIn"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.34V8.98h3.42v1.57h.05c.48-.9 1.64-1.85 3.37-1.85 3.61 0 4.27 2.38 4.27 5.48v6.27ZM5.32 7.41A2.07 2.07 0 1 1 5.32 3.27a2.07 2.07 0 0 1 0 4.14Zm1.78 13.04H3.54V8.98H7.1v11.47ZM22.23 0H1.77C.79 0 0 .77 0 1.72v20.56C0 23.23.79 24 1.77 24h20.46c.98 0 1.77-.77 1.77-1.72V1.72C24 .77 23.21 0 22.23 0Z" />
+              </svg>
+              <span>LinkedIn</span>
+            </a>
+            <a
+              className="landing-cta-contact-link"
+              href="mailto:hello@tryneuronova.in"
+              aria-label="Email hello@tryneuronova.in"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="3" y="5" width="18" height="14" rx="2" />
+                <path d="m3 7 9 6 9-6" />
+              </svg>
+              <span>hello@tryneuronova.in</span>
+            </a>
+          </div>
+
+          <h2 style={{ fontSize: 36, fontWeight: 800, color: '#FFFFFF', marginBottom: 20, letterSpacing: '-0.03em' }}>
+            Your data has been waiting for this.
+          </h2>
+          <p style={{ fontSize: 18, color: '#94A3B8', marginBottom: 40, maxWidth: 600, margin: '0 auto 40px', lineHeight: 1.6 }}>
+            Upload your first dataset and get a full intelligence report in under 30 seconds.
+          </p>
+          <Link to={ctaLink} style={{ background: '#FFFFFF', color: '#0F172A', padding: '16px 32px', borderRadius: '12px', fontSize: 16, fontWeight: 700, textDecoration: 'none', display: 'inline-flex' }}>
+            {user ? 'Go to Dashboard →' : 'Start Finding Answers →'}
+          </Link>
+        </div>
       </section>
 
       {/* ── Footer ── */}
