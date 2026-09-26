@@ -235,11 +235,11 @@ export default function Chat() {
   const noDataset = !activeDatasetId
 
   return (
-    <Layout title="Conversational Analyst" subtitle="Dual-mode AI: RAG insights + direct data queries">
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 260px', gap: 0, height: 'calc(100vh - var(--topbar-height) - 48px)', position: 'relative' }}>
+    <Layout className="chat-page" title="Conversational Analyst" subtitle="Dual-mode AI: RAG insights + direct data queries">
+      <div className="chat-workspace" style={{ display: 'grid', gridTemplateColumns: '1fr 260px', gap: 0, height: 'calc(100vh - var(--topbar-height) - 48px)', position: 'relative' }}>
 
         {/* ── Chat Area ── */}
-        <div style={{ display: 'flex', flexDirection: 'column', background: 'transparent' }}>
+        <div className="chat-conversation" style={{ display: 'flex', flexDirection: 'column', background: 'transparent' }}>
           {/* Mode Badge */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, marginBottom: 12, paddingRight: 12 }}>
             <button
@@ -262,7 +262,7 @@ export default function Chat() {
           </div>
 
           {/* Messages */}
-          <div style={{ flex: 1, overflowY: 'auto', paddingRight: 12, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div className="chat-messages" style={{ flex: 1, overflowY: 'auto', paddingRight: 12, display: 'flex', flexDirection: 'column', gap: 16 }}>
             {sessionError && (
               <div style={{ background: '#FFF1F2', border: '1px solid #FECDD3', borderRadius: 8, padding: '12px 16px', fontFamily: 'var(--font-body)', fontSize: 13, color: '#9F1239' }}>
                 {sessionError}
@@ -357,7 +357,7 @@ export default function Chat() {
           </div>
 
           {/* Input Area */}
-          <div style={{ marginTop: 12, background: 'white', border: '1px solid var(--color-border)', borderRadius: 12, padding: '12px 14px', boxShadow: 'var(--shadow-card)' }}>
+          <div className="chat-composer" style={{ marginTop: 12, background: 'white', border: '1px solid var(--color-border)', borderRadius: 12, padding: '12px 14px', boxShadow: 'var(--shadow-card)' }}>
             <textarea
               ref={textareaRef}
               value={input}
@@ -400,7 +400,7 @@ export default function Chat() {
         </div>
 
         {/* ── Session Context Panel ── */}
-        <div style={{ paddingLeft: 16, borderLeft: '1px solid var(--color-border)', overflowY: 'auto' }}>
+        <div className="chat-context" style={{ paddingLeft: 16, borderLeft: '1px solid var(--color-border)', overflowY: 'auto' }}>
           <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 14 }}>Session Context</h3>
 
           {/* Active Data Sources */}

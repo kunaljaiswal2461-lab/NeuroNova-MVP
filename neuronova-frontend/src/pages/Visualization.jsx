@@ -564,6 +564,7 @@ export default function Visualization() {
 
   return (
     <Layout
+      className="visualization-page"
       title="Visualization Center"
       subtitle={activeDataset?.original_name ?? 'Chart-ready intelligence from your dataset'}
       actions={
@@ -735,7 +736,7 @@ export default function Visualization() {
               </div>
             </div>
           )}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 20, alignItems: 'start' }}>
+          <div className="visualization-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 20, alignItems: 'start' }}>
             <div className="card anim-fade-up" style={{ overflow: 'hidden' }}>
               <div className="viz-tabs" style={{ padding: '0 20px' }}>
                 {TABS.map(tab => (
@@ -951,7 +952,7 @@ export default function Visualization() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <div className="card card-pad anim-fade-up" style={{ animationDelay: '60ms' }}>
                 <p className="text-label-caps" style={{ color: 'var(--color-text-muted)', marginBottom: 14 }}>Distribution Metrics</p>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div className="visualization-metrics" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                   {[{ label: 'Mean', val: fmt(stats?.mean) }, { label: 'Median', val: fmt(stats?.median) }, { label: 'Std Dev', val: fmt(stats?.std) }, { label: 'Outliers', val: activeHistogram?.config?.is_skewed ? '⚠ Skewed' : '—' }].map((m, i) => (
                     <div key={i}>
                       <div style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 3 }}>{m.label}</div>

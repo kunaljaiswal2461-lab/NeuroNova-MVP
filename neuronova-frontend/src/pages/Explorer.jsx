@@ -124,6 +124,7 @@ export default function Explorer() {
 
   return (
     <Layout
+      className="explorer-page"
       title="Dataset Explorer"
       subtitle={subtitle}
       actions={
@@ -148,7 +149,7 @@ export default function Explorer() {
           {error}
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 20, alignItems: 'start' }}>
+        <div className="explorer-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 20, alignItems: 'start' }}>
 
           {/* ── Left: Schema Table ── */}
           <div className="card anim-fade-up">
@@ -323,7 +324,7 @@ export default function Explorer() {
             {stats.length > 0 && (
               <div className="card card-pad anim-fade-up" style={{ animationDelay: '180ms' }}>
                 <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 12 }}>Dataset Stats</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div className="stats-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   {stats.map((stat, i) => (
                     <div key={i} style={{ background: 'var(--color-base)', borderRadius: 6, padding: '8px 10px' }}>
                       <div style={{ fontFamily: 'var(--font-body)', fontSize: 10, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 3 }}>{stat.label}</div>

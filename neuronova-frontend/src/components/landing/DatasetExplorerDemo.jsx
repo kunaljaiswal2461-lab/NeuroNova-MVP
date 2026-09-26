@@ -75,9 +75,9 @@ export default function DatasetExplorerDemo() {
         <span style={{ marginLeft: 16, fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: '#94A3B8' }}>Dataset Explorer · sales_data_q3.csv</span>
       </div>
 
-      <div style={{ display: 'flex', height: 380 }}>
+      <div className="preview-body" style={{ display: 'flex', height: 380 }}>
         {/* Sidebar */}
-        <div style={{ width: 190, borderRight: '1px solid #E2E8F0', padding: '16px 12px 8px 12px', background: '#F8FAFC', display: 'flex', flexDirection: 'column', gap: 16, flexShrink: 0 }}>
+        <div className="preview-sidebar" style={{ width: 190, borderRight: '1px solid #E2E8F0', padding: '16px 12px 8px 12px', background: '#F8FAFC', display: 'flex', flexDirection: 'column', gap: 16, flexShrink: 0 }}>
           
           {/* FILES Section */}
           <div>
@@ -135,7 +135,7 @@ export default function DatasetExplorerDemo() {
         </div>
 
         {/* Main Content Area */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#FFFFFF', overflow: 'hidden' }}>
+        <div className="preview-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#FFFFFF', overflow: 'hidden' }}>
           {/* Header row */}
           <div style={{ padding: '20px 24px', borderBottom: '1px solid #E2E8F0', flexShrink: 0 }}>
             <h2 style={{ fontSize: 18, fontWeight: 600, color: '#0F172A', margin: 0 }}>
