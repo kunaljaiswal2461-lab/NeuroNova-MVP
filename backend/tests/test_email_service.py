@@ -33,3 +33,33 @@ async def test_send_uses_the_correct_encrypted_smtp_transport(
 
     assert send.await_args.kwargs["use_tls"] is expected_use_tls
     assert send.await_args.kwargs["start_tls"] is expected_start_tls
+
+
+@pytest.mark.asyncio
+async def test_verification_email_targets_the_backend_verifier() -> None:
+    settings = _settings(587)
+    settings.public_url = "https://api.neuronova.example/"
+    send = AsyncMock()
+
+    with patch.object(email_service, "_send", send):
+        await email_service.send_verification_email(
+            settings, "recipient@example.com", "Recipient", "verification-token"
+        )
+
+    html = send.await_args.args[3]
+    assert "https://api.neuronova.example/api/v1/auth/verify-email?token=verification-token" in html
+
+
+@pytest.mark.asyncio
+async def test_password_reset_email_targets_the_frontend_reset_page() -> None:
+    settings = _settings(587)
+    settings.frontend_url = "https://app.neuronova.example"
+    send = AsyncMock()
+
+    with patch.object(email_service, "_send", send):
+        await email_service.send_password_reset_email(
+            settings, "recipient@example.com", "Recipient", "reset-token"
+        )
+
+    html = send.await_args.args[3]
+    assert "https://app.neuronova.example/auth/reset-password?token=reset-token" in html

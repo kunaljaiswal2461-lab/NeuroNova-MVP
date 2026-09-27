@@ -9,7 +9,10 @@ log = structlog.get_logger()
 async def send_verification_email(
     settings: Settings, to_email: str, name: str, token: str
 ) -> None:
-    verify_url = f"{settings.frontend_url}/auth/verify-email?token={token}"
+    # Verification is performed by the backend endpoint, which then redirects
+    # the browser to the frontend confirmation screen.  The SPA has no
+    # /auth/verify-email route of its own.
+    verify_url = f"{settings.public_url.rstrip('/')}/api/v1/auth/verify-email?token={token}"
     await _send(settings, to_email, "Verify your NeuroNova account", _verification_html(name, verify_url))
 
 

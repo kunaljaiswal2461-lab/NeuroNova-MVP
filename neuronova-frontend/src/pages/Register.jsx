@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { authApi } from '../api/auth';
 
 export default function Register() {
-  const { register, login } = useAuth();
+  const { register } = useAuth();
   const navigate = useNavigate();
   const [formData, setFormData] = useState({ name: '', email: '', password: '' });
   const [error, setError] = useState('');
@@ -16,12 +16,13 @@ export default function Register() {
     setIsLoading(true);
     try {
       await register(formData.email, formData.name, formData.password);
-      try {
-        await login(formData.email, formData.password);
-        navigate('/', { replace: true });
-      } catch {
-        navigate('/auth/verified', { state: { message: 'Account created. Please check your email.' }});
-      }
+      navigate('/auth/verified', {
+        replace: true,
+        state: {
+          pendingVerification: true,
+          message: 'Account created. Check your inbox to verify your email.',
+        },
+      });
     } catch (err) {
       setError(err.message || 'Registration failed. Please try again.');
     } finally {
