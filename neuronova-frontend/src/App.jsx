@@ -19,6 +19,7 @@ import VerifyEmailLanding from './pages/VerifyEmailLanding'
 import GoogleCallback from './pages/GoogleCallback'
 import ForgotPassword from './pages/ForgotPassword'
 import ResetPassword from './pages/ResetPassword'
+import Settings from './pages/Settings'
 
 export default function App() {
   useEffect(() => {
@@ -45,6 +46,7 @@ export default function App() {
             <Route path="/visualization" element={<ProtectedRoute><Visualization /></ProtectedRoute>} />
             <Route path="/insights" element={<ProtectedRoute><Insights /></ProtectedRoute>} />
             <Route path="/chat" element={<ProtectedRoute><Chat /></ProtectedRoute>} />
+            <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
 
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

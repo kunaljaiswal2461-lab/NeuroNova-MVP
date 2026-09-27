@@ -67,6 +67,15 @@ export const AuthProvider = ({ children }) => {
     return updatedUser;
   };
 
+  const deleteAccount = async (confirmation) => {
+    await authApi.deleteAccount(confirmation);
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
+    setAccessToken(null);
+    setUser(null);
+    window.location.href = '/';
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -78,6 +87,7 @@ export const AuthProvider = ({ children }) => {
         logout,
         setSession,
         updateProfile,
+        deleteAccount,
       }}
     >
       {children}
