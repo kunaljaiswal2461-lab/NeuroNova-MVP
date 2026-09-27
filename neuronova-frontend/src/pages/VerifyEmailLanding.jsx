@@ -2,7 +2,9 @@ import { Link, useLocation } from 'react-router-dom';
 
 export default function VerifyEmailLanding() {
   const location = useLocation();
+  const pendingVerification = location.state?.pendingVerification === true;
   const message = location.state?.message || "Your email has been verified successfully.";
+  const title = pendingVerification ? "Check your inbox" : "Email verified";
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-[#F8F9FA] relative">
@@ -22,7 +24,7 @@ export default function VerifyEmailLanding() {
             </svg>
           </div>
           
-          <h2 className="text-2xl font-bold text-gray-900 mb-4">Account Verified</h2>
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">{title}</h2>
           <p className="text-gray-600 mb-8">{message}</p>
           
           <Link 
