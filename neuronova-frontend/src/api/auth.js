@@ -71,6 +71,18 @@ export const authApi = {
     return res.json();
   },
 
+  deleteAccount: async (confirmation) => {
+    const res = await fetch(`${BASE_URL}/auth/me`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('access_token')}`
+      },
+      body: JSON.stringify({ confirmation })
+    });
+    if (!res.ok) throw new Error('Failed to delete account');
+  },
+
   forgotPassword: async (email) => {
     const res = await fetch(`${BASE_URL}/auth/forgot-password`, {
       method: 'POST',

@@ -1,8 +1,11 @@
-import { Link, Navigate } from 'react-router-dom'
+import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import DatasetExplorerDemo from '../components/landing/DatasetExplorerDemo'
+import neuralPathway from '../assets/neural-pathway.png'
 
-const NAV_LINKS = ['Product', 'How It Works', 'Use Cases', 'Pricing']
+const NAV_LINKS = ['Product', 'How It Works', 'Use Cases']
+const PRICING = []
 
 // Replaced emojis with crisp SVG icons (using Lucide/Heroicons style)
 const FEATURES = [
@@ -49,43 +52,6 @@ const COMPARISON = [
   { feature: 'Persistent Dataset Memory', neuronova: true, ydata: false, chatgpt: false },
 ]
 
-const PRICING = [
-  {
-    tier: 'Analyst',
-    price: '$29',
-    period: '/mo',
-    desc: 'For individual data analysts who need fast, trustworthy EDA.',
-    features: ['5 datasets / month', 'Up to 10MB per file', 'AI Insights & Chat', 'CSV & Excel support', '7-day finding history'],
-    cta: 'Start Free Trial',
-    featured: false,
-  },
-  {
-    tier: 'Team',
-    price: '$99',
-    period: '/mo',
-    desc: 'For data teams who collaborate on enterprise datasets.',
-    features: ['50 datasets / month', 'Up to 100MB per file', 'All file formats', 'Shared workspace', 'Priority support', 'Dataset memory'],
-    cta: 'Start Free Trial',
-    featured: true,
-  },
-  {
-    tier: 'Enterprise',
-    price: 'Custom',
-    period: '',
-    desc: 'For organizations with large-scale data intelligence needs.',
-    features: ['Unlimited datasets', 'Up to 1GB per file', 'On-premise deployment', 'SSO & audit logs', 'Dedicated support', 'Custom integrations'],
-    cta: 'Contact Sales',
-    featured: false,
-  },
-]
-
-const SCHEMA_PREVIEW_ROWS = [
-  { col: 'transaction_id', type: 'UUID', nulls: '0%', insight: 'PRIMARY KEY', insightColor: '#3B82F6' },
-  { col: 'customer_email', type: 'STRING', nulls: '12%', insight: 'PII DETECTED', insightColor: '#EF4444' },
-  { col: 'purchase_amount', type: 'FLOAT', nulls: '0%', insight: 'FINANCIAL', insightColor: '#10B981' },
-  { col: 'region_code', type: 'CATEGORICAL', nulls: '2.1%', insight: 'GEOGRAPHIC', insightColor: '#F59E0B' },
-]
-
 const Check = ({ ok }) => ok ? (
   <span style={{ color: '#10B981', fontSize: 18, fontWeight: 'normal' }}>✓</span>
 ) : (
@@ -95,7 +61,7 @@ const Check = ({ ok }) => ok ? (
 export default function Landing() {
   const { user, loading } = useAuth();
   const ctaLink = user ? '/upload' : '/register';
-
+  const [isMenuOpen, setIsMenuOpen] = useState(false)
 
   if (loading) return null;
   // if (user) return <Navigate to="/upload" replace />;
@@ -118,27 +84,35 @@ export default function Landing() {
       </style>
 
       {/* ── Nav ── */}
-      <nav className="landing-nav" style={{ padding: 0, backgroundColor: 'rgba(255, 255, 255, 0.9)', borderBottom: '1px solid #E2E8F0', position: 'sticky', top: 0, zIndex: 50, backdropFilter: 'blur(8px)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', maxWidth: 1200, margin: '0 auto', paddingTop: '8px', paddingBottom: '8px', paddingLeft: '24px', paddingRight: '24px', position: 'relative' }}>
+      <nav className={`landing-nav ${isMenuOpen ? 'is-menu-open' : ''}`} style={{ padding: 0, backgroundColor: 'rgba(255, 255, 255, 0.9)', borderBottom: '1px solid #E2E8F0', position: 'sticky', top: 0, zIndex: 50, backdropFilter: 'blur(8px)' }}>
+        <div className="landing-nav-inner" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', maxWidth: 1200, margin: '0 auto', paddingTop: '8px', paddingBottom: '8px', paddingLeft: '24px', paddingRight: '24px', position: 'relative' }}>
           
           <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none' }}>
-            <img src="/logo.png" alt="NeuroNova Logo" style={{ width: 28, height: 28, borderRadius: 6 }} />
+            <img src="/neuronova-mark.png" alt="NeuroNova Logo" className="brand-mark brand-mark-on-light" style={{ width: 28, height: 28 }} />
             <span style={{ fontWeight: 700, fontSize: 18, color: '#0F172A', letterSpacing: '-0.02em' }}>
               NeuroNova
             </span>
           </Link>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 32, position: 'absolute', left: '50%', transform: 'translateX(-50%)' }}>
+          <button className="landing-nav-toggle" type="button" aria-label={isMenuOpen ? 'Close menu' : 'Open menu'} aria-expanded={isMenuOpen} aria-controls="landing-navigation" onClick={() => setIsMenuOpen(open => !open)}>
+            <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d={isMenuOpen ? 'M6 6l12 12M18 6L6 18' : 'M4 7h16M4 12h16M4 17h16'} />
+            </svg>
+          </button>
+
+          <div id="landing-navigation" className="landing-nav-links" style={{ display: 'flex', alignItems: 'center', gap: 32, position: 'absolute', left: '50%', transform: 'translateX(-50%)' }}>
             {NAV_LINKS.map(l => (
               <a key={l} href={`#${l.toLowerCase().replace(/ /g, '-')}`}
                 style={{ fontSize: 14, fontWeight: 500, color: '#64748B', textDecoration: 'none', transition: 'color 150ms' }}
+                onClick={() => setIsMenuOpen(false)}
                 onMouseEnter={e => e.target.style.color = '#0F172A'}
                 onMouseLeave={e => e.target.style.color = '#64748B'}
               >{l}</a>
             ))}
+            <Link className="landing-nav-menu-cta" to={ctaLink} onClick={() => setIsMenuOpen(false)}>{user ? 'Go to Dashboard' : 'Get Early Access'}</Link>
           </div>
 
-          <Link to={ctaLink} style={{ backgroundColor: '#0F172A', color: '#FFFFFF', padding: '10px 20px', borderRadius: '8px', fontSize: 14, fontWeight: 600, textDecoration: 'none' }}>
+          <Link className="landing-nav-cta" to={ctaLink} onClick={() => setIsMenuOpen(false)} style={{ backgroundColor: '#0F172A', color: '#FFFFFF', padding: '10px 20px', borderRadius: '8px', fontSize: 14, fontWeight: 600, textDecoration: 'none' }}>
             {user ? 'Go to Dashboard →' : 'Get Early Access →'}
           </Link>
           
@@ -146,8 +120,8 @@ export default function Landing() {
       </nav>
 
       {/* ── Hero ── */}
-      <section className="hero-section" style={{ textAlign: 'center', padding: '120px 24px 60px' }}>
-        <div className="anim-fade-up" style={{ animationDelay: '0ms', maxWidth: 1100, margin: '0 auto' }}>
+      <section className="hero-section">
+        <div className="anim-fade-up hero-copy" style={{ animationDelay: '0ms' }}>
           
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: '999px', padding: '6px 16px', marginBottom: 24 }}>
 
@@ -184,30 +158,36 @@ export default function Landing() {
         </div>
 
         {/* Product Preview with floating animation */}
-        <div className="anim-fade-up floating-ui" style={{ animationDelay: '120ms', marginTop: 80 }}>
+        <div className="anim-fade-up floating-ui hero-preview" style={{ animationDelay: '120ms' }}>
           <DatasetExplorerDemo />
         </div>
       </section>
 
       {/* ── Integration Banner ── */}
       <div style={{ borderTop: '1px solid #E2E8F0', borderBottom: '1px solid #E2E8F0', padding: '32px 24px', backgroundColor: '#F8FAFC', display: 'flex', justifyContent: 'center', gap: 'clamp(24px, 5vw, 64px)', flexWrap: 'wrap', alignItems: 'center' }}>
-        {['Powered by', 'LangChain', 'LangGraph', 'OpenAI', 'pgvector', 'Python'].map((tech, i) => (
-          <span key={tech} style={{ 
+        {[
+          { name: 'Powered by' },
+          { name: 'LangChain', href: 'https://docs.langchain.com/oss/python/langchain/overview' },
+          { name: 'LangGraph', href: 'https://docs.langchain.com/oss/python/langgraph/overview' },
+          { name: 'OpenAI', href: 'https://platform.openai.com/docs/quickstart/make-your-first-api-request' },
+          { name: 'pgvector', href: 'https://github.com/pgvector/pgvector' },
+          { name: 'Python', href: 'https://docs.python.org/3/' },
+        ].map(({ name, href }, i) => {
+          const style = {
             fontSize: i === 0 ? 12 : 16, 
             fontWeight: i === 0 ? 600 : 700, 
             color: i === 0 ? '#94A3B8' : '#cbd5e1', 
             textTransform: i === 0 ? 'uppercase' : 'none', 
             letterSpacing: i === 0 ? '1px' : '-0.02em',
-            filter: i !== 0 ? 'grayscale(100%)' : 'none'
-          }}>
-            {tech}
-          </span>
-        ))}
+            filter: i === 0 ? 'none' : 'grayscale(100%)',
+          }
+          return href ? <a key={name} href={href} target="_blank" rel="noreferrer" aria-label={`Read ${name} documentation`} title={`Read ${name} documentation`} style={{ ...style, cursor: 'pointer' }}>{name}</a> : <span key={name} style={style}>{name}</span>
+        })}
       </div>
 
       {/* ── 7-Layer Pipeline ── */}
-      <section id="product" style={{ background: '#FFFFFF', borderBottom: '1px solid #E2E8F0', padding: '100px 24px' }}>
-        <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+      <section id="product" className="landing-pipeline-section">
+        <div className="landing-pipeline-inner">
           <div style={{ textAlign: 'center', marginBottom: 48 }}>
             <p style={{ color: '#3B82F6', fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 8 }}>The Intelligence Engine</p>
             <h2 style={{ color: '#0F172A', fontSize: 32, fontWeight: 800, marginBottom: 12, letterSpacing: '-0.03em' }}>7 Layers of Data Understanding</h2>
@@ -216,7 +196,9 @@ export default function Landing() {
             </p>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 1, background: '#E2E8F0', borderRadius: 12, overflow: 'hidden' }}>
+          <div className="landing-pipeline-scene">
+            <img className="landing-pipeline-neuron" src={neuralPathway} alt="" aria-hidden="true" />
+            <div className="landing-pipeline-grid">
             {[
               { num: '01', label: 'Upload', status: '✅', desc: 'CSV, XLSX, JSON, Parquet. Async validation.' },
               { num: '02', label: 'Profiling', status: '✅', desc: 'Schema, stats, 6 sub-profilers.' },
@@ -228,11 +210,18 @@ export default function Landing() {
             ].map((layer, i) => (
               <div key={i} style={{ background: i === 6 ? '#EFF6FF' : '#FFFFFF', padding: '24px 16px', textAlign: 'center' }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: '#94A3B8', marginBottom: 12 }}>{layer.num}</div>
-                <div style={{ fontSize: 20, marginBottom: 8 }}>{layer.status}</div>
+                <div className="landing-pipeline-icon" aria-hidden="true">
+                  {i === 6 ? (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-1.6 4.9A8.5 8.5 0 0 1 12.5 20a8.4 8.4 0 0 1-4.9-1.6L3 20l1.6-4.6A8.4 8.4 0 0 1 3 10.5 8.5 8.5 0 0 1 6.6 3.6 8.4 8.4 0 0 1 11.5 2h1A8.5 8.5 0 0 1 21 10.5Z" /></svg>
+                  ) : (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 4 4L19 6" /></svg>
+                  )}
+                </div>
                 <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A', marginBottom: 8, letterSpacing: '-0.02em' }}>{layer.label}</div>
                 <div style={{ fontSize: 12, color: '#64748B', lineHeight: 1.5 }}>{layer.desc}</div>
               </div>
             ))}
+            </div>
           </div>
         </div>
       </section>
@@ -242,13 +231,12 @@ export default function Landing() {
         <div style={{ maxWidth: 1100, margin: '0 auto' }}>
           <div style={{ textAlign: 'center', marginBottom: 64 }}>
             <p style={{ fontSize: 12, fontWeight: 700, color: '#3B82F6', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 8 }}>Why NeuroNova</p>
-            <h2 style={{ fontSize: 32, fontWeight: 800, color: '#0F172A', marginBottom: 16, letterSpacing: '-0.03em' }}>The moat is real</h2>
             <p style={{ fontSize: 16, color: '#64748B', maxWidth: 500, margin: '0 auto' }}>
               Differentiators that can't be replicated with a ChatGPT wrapper.
             </p>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 24 }}>
+          <div className="landing-feature-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 24 }}>
             {FEATURES.map((f, i) => (
               <div key={i} style={{ backgroundColor: '#FFFFFF', padding: '32px', borderRadius: 16, border: '1px solid #F1F5F9', boxShadow: '0 10px 30px -10px rgba(0, 0, 0, 0.05)', transition: 'transform 200ms ease, box-shadow 200ms ease' }}
                    onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-4px)'; e.currentTarget.style.boxShadow = '0 20px 40px -10px rgba(0, 0, 0, 0.08)'; }}
@@ -302,7 +290,6 @@ export default function Landing() {
       <section style={{ padding: '100px 24px', backgroundColor: '#F8FAFC', borderTop: '1px solid #E2E8F0' }}>
         <div style={{ maxWidth: 800, margin: '0 auto', textAlign: 'center' }}>
           <p style={{ fontSize: 12, fontWeight: 700, color: '#3B82F6', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 8 }}>The Team</p>
-          <h2 style={{ fontSize: 32, fontWeight: 800, color: '#0F172A', marginBottom: 24, letterSpacing: '-0.03em' }}>Built by AI Specialists</h2>
           <p style={{ fontSize: 18, color: '#64748B', lineHeight: 1.6, marginBottom: 32 }}>
                   NeuroNova isn't just another dashboard — it's an AI Analyst that reads, understands, 
                   and explains your data the way a human analyst would, minus the wait. 
@@ -311,8 +298,7 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ── Pricing ── */}
-      <section id="pricing" style={{ backgroundColor: '#FFFFFF', padding: '100px 24px', borderTop: '1px solid #E2E8F0' }}>
+      {PRICING.length > 0 && <section id="pricing" style={{ backgroundColor: '#FFFFFF', padding: '100px 24px', borderTop: '1px solid #E2E8F0' }}>
         <div style={{ maxWidth: 1000, margin: '0 auto' }}>
           <div style={{ textAlign: 'center', marginBottom: 64 }}>
             <h2 style={{ fontSize: 32, fontWeight: 800, color: '#0F172A', letterSpacing: '-0.03em' }}>Simple, transparent pricing</h2>
@@ -380,10 +366,16 @@ export default function Landing() {
             ))}
           </div>
         </div>
-      </section>
+      </section>}
 
       {/* ── CTA Banner ── */}
-      <section style={{ background: '#0F172A', padding: '100px 24px', textAlign: 'center' }}>
+      <section className="landing-cta" style={{ background: '#0F172A', padding: '100px 24px', textAlign: 'center' }}>
+        <div className="landing-cta-inner">
+          <div className="landing-cta-contact-links" aria-label="NeuroNova contact links">
+            <a className="landing-cta-contact-link landing-cta-contact-link--icon" href="https://x.com/TeamNeuroNova" target="_blank" rel="noreferrer" aria-label="Follow NeuroNova on X" title="Follow NeuroNova on X"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231 5.451-6.231Zm-1.161 17.52h1.833L7.084 4.126H5.117L17.083 19.77Z" /></svg></a>
+            <a className="landing-cta-contact-link landing-cta-contact-link--icon" href="https://www.linkedin.com/company/neuronova-official/?viewAsMember=true" target="_blank" rel="noreferrer" aria-label="Follow NeuroNova on LinkedIn" title="Follow NeuroNova on LinkedIn"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.34V8.98h3.42v1.57h.05c.48-.9 1.64-1.85 3.37-1.85 3.61 0 4.27 2.38 4.27 5.48v6.27ZM5.32 7.41A2.07 2.07 0 1 1 5.32 3.27a2.07 2.07 0 0 1 0 4.14Zm1.78 13.04H3.54V8.98H7.1v11.47ZM22.23 0H1.77C.79 0 0 .77 0 1.72v20.56C0 23.23.79 24 1.77 24h20.46c.98 0 1.77-.77 1.77-1.72V1.72C24 .77 23.21 0 22.23 0Z" /></svg></a>
+            <a className="landing-cta-contact-link" href="mailto:hello@tryneuronova.in?subject=NeuroNova%20Inquiry" aria-label="Email hello@tryneuronova.in" title="Email hello@tryneuronova.in"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 7 9 6 9-6" /></svg><span>hello@tryneuronova.in</span></a>
+          </div>
         <h2 style={{ fontSize: 36, fontWeight: 800, color: '#FFFFFF', marginBottom: 20, letterSpacing: '-0.03em' }}>
           Your data has been waiting for this.
         </h2>
@@ -393,6 +385,7 @@ export default function Landing() {
         <Link to={ctaLink} style={{ background: '#FFFFFF', color: '#0F172A', padding: '16px 32px', borderRadius: '12px', fontSize: 16, fontWeight: 700, textDecoration: 'none', display: 'inline-flex' }}>
           {user ? 'Go to Dashboard →' : 'Start Finding Answers →'}
         </Link>
+        </div>
       </section>
 
       {/* ── Footer ── */}
@@ -400,14 +393,14 @@ export default function Landing() {
         <div style={{ maxWidth: 1100, margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 40 }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-              <img src="/logo.png" alt="NeuroNova Logo" style={{ width: 28, height: 28, borderRadius: 6 }} />
+              <img src="/neuronova-mark.png" alt="NeuroNova Logo" className="brand-mark" style={{ width: 28, height: 28 }} />
               <span style={{ fontWeight: 700, fontSize: 18, color: '#FFFFFF', letterSpacing: '-0.02em' }}>NeuroNova</span>
             </div> 
             <div style={{ fontSize: 14, color: '#94A3B8' }}>Data intelligence, automated and secure.</div>
           </div>
           <div style={{ display: 'flex', gap: 80 }}>
             {[
-              { heading: 'Product', links: ['Features', 'Pricing', 'Documentation'] },
+              { heading: 'Product', links: ['Features', 'Documentation'] },
               { heading: 'Company', links: ['About', 'Blog', 'Contact'] },
             ].map(col => (
               <div key={col.heading}>

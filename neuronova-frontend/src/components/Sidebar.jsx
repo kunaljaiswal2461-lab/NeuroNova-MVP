@@ -52,21 +52,22 @@ const NAV_ITEMS = [
   },
 ]
 
-export default function Sidebar() {
+export default function Sidebar({ isOpen = false, onClose = () => {} }) {
   const { activeDataset } = useDataset()
   const [isSupportOpen, setIsSupportOpen] = useState(false) // Added state for Support Menu
 
   const health = activeDataset?._health ?? null
 
   return (
-    <aside className="sidebar">
+    <aside id="workspace-navigation" className={`sidebar ${isOpen ? 'is-open' : ''}`} aria-label="Workspace navigation">
       {/* Wordmark */}
       <div style={{ padding: '20px 16px 12px' }}>
         <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none', cursor: 'pointer' }}>
           <img 
-            src="/logo.png" 
+            src="/neuronova-mark.png"
             alt="NeuroNova Logo" 
-            style={{ width: 28, height: 28, borderRadius: 6, flexShrink: 0, objectFit: 'cover' }} 
+            className="brand-mark"
+            style={{ width: 28, height: 28 }}
           />
           <div>
             <div style={{ fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: 15, color: 'white', letterSpacing: '-0.01em' }}>
@@ -131,6 +132,7 @@ export default function Sidebar() {
           <NavLink
             key={item.to}
             to={item.to}
+            onClick={onClose}
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
             style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', marginBottom: 2, borderRadius: 8, textDecoration: 'none', color: 'rgba(255,255,255,0.65)', fontSize: 14, fontFamily: 'var(--font-body)', fontWeight: 500, cursor: 'pointer', transition: 'all 150ms' }}
           >
@@ -177,13 +179,12 @@ export default function Sidebar() {
       {/* Bottom Actions - Unrolled to add dropdown logic */}
       <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', padding: '8px 8px 12px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
         
-        {/* Settings Button */}
-        <button className="nav-item" style={{ fontSize: 13, gap: 8, display: 'flex', alignItems: 'center', width: '100%', background: 'transparent', border: 'none', color: 'rgba(255,255,255,0.65)', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer' }}>
+        <NavLink to="/settings" onClick={onClose} className="nav-item" style={{ fontSize: 13, gap: 8, display: 'flex', alignItems: 'center', width: '100%', color: 'rgba(255,255,255,0.65)', padding: '8px 12px', borderRadius: '8px', textDecoration: 'none', cursor: 'pointer' }}>
           <span style={{ width: 15, height: 15, flexShrink: 0 }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </span>
           Settings
-        </button>
+        </NavLink>
 
         {/* Support Button & Dropdown */}
         <div style={{ position: 'relative' }}>
@@ -204,7 +205,8 @@ export default function Sidebar() {
               boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.5)'
             }}>
               <Link 
-                to="/" 
+                to="/"
+                onClick={onClose}
                 style={{ display: 'block', padding: '8px 16px', fontSize: 13, color: 'white', textDecoration: 'none', fontFamily: 'var(--font-body)', transition: 'background 150ms' }}
                 onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}

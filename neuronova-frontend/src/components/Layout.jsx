@@ -1,15 +1,23 @@
+import { useState } from 'react'
 import Sidebar from './Sidebar'
 import { Link } from 'react-router-dom'
 import '../index.css'
 
 export default function Layout({ title, subtitle, actions, children }) {
+  const [isNavigationOpen, setIsNavigationOpen] = useState(false)
+
   return (
     <div className="app-layout">
-      <Sidebar />
+      <Sidebar isOpen={isNavigationOpen} onClose={() => setIsNavigationOpen(false)} />
+      <button className={`sidebar-overlay ${isNavigationOpen ? 'is-visible' : ''}`} type="button" aria-label="Close navigation" tabIndex={isNavigationOpen ? 0 : -1} onClick={() => setIsNavigationOpen(false)} />
       <div className="main-content">
         {/* Top Bar */}
         <header className="topbar">
-          <div>
+          <div className="topbar-title">
+            <button className="mobile-nav-toggle" type="button" aria-label="Open navigation" aria-controls="workspace-navigation" aria-expanded={isNavigationOpen} onClick={() => setIsNavigationOpen(true)}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+            </button>
+            <div>
             <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: 18, fontWeight: 700, color: 'var(--color-text-primary)', letterSpacing: '-0.01em' }}>
               {title}
             </h1>
@@ -18,8 +26,9 @@ export default function Layout({ title, subtitle, actions, children }) {
                 {subtitle}
               </p>
             )}
+            </div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div className="topbar-actions" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             {/* Explore button - takes user back to landing page, stays logged in */}
             <Link
               to="/"
