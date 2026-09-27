@@ -134,6 +134,8 @@ class Settings(BaseSettings):
     smtp_username: str = ""
     smtp_password: str = ""
     smtp_from_email: str = "noreply@neuronova.ai"
+    # SMTP_TLS enables encrypted SMTP. Port 465 uses implicit TLS; other
+    # standard submission ports (including Gmail's 587) use STARTTLS.
     smtp_tls: bool = True
 
     # --- Google OAuth ---
