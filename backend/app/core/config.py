@@ -128,7 +128,12 @@ class Settings(BaseSettings):
     frontend_allowed_origins: str = "http://localhost:5173,https://tryneuronova.in"
     public_url: str = "http://localhost:8000"
 
-    # --- email (SMTP) ---
+    # --- email delivery ---
+    # Preferred in hosted environments: Resend's HTTPS API (port 443). This
+    # avoids SMTP ports that are blocked by some hosting providers.
+    resend_api_key: str = ""
+
+    # SMTP is retained as a fallback for environments without a Resend key.
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""

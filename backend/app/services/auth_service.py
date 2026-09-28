@@ -36,10 +36,15 @@ async def register_user(
     if existing:
         raise ConflictError("email already registered")
 
-    # In dev with no SMTP configured, sending the verification email is a no-op,
-    # which would leave the user permanently unable to log in. Auto-verify instead
-    # and log the would-be verification URL so the verify flow can still be tested.
-    dev_auto_verify = settings.app_env == "dev" and not settings.smtp_host
+    # In dev with no email provider configured, sending the verification email is
+    # a no-op, which would leave the user permanently unable to log in.
+    # Auto-verify instead and log the would-be verification URL so the verify
+    # flow can still be tested.
+    dev_auto_verify = (
+        settings.app_env == "dev"
+        and not settings.smtp_host
+        and not settings.resend_api_key
+    )
 
     user = User(
         email=email.lower(),
