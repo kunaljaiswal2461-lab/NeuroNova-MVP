@@ -10,6 +10,59 @@ const SUGGESTED_ACTIONS = [
   { label: 'Clear Session Context', style: 'danger' },
 ]
 
+const SESSION_STORAGE_PREFIX = 'neuronova:chat-session:v1:'
+
+function sessionStorageKey(datasetId) {
+  return `${SESSION_STORAGE_PREFIX}${datasetId}`
+}
+
+function readSavedSessionId(datasetId) {
+  try {
+    return window.sessionStorage.getItem(sessionStorageKey(datasetId))
+  } catch {
+    return null
+  }
+}
+
+function saveSessionId(datasetId, sessionId) {
+  try {
+    window.sessionStorage.setItem(sessionStorageKey(datasetId), sessionId)
+  } catch {
+    // The server transcript remains the source of truth when storage is unavailable.
+  }
+}
+
+function clearSavedSessionId(datasetId) {
+  try {
+    window.sessionStorage.removeItem(sessionStorageKey(datasetId))
+  } catch {
+    // Ignore browser storage failures; the next visit will select a server session.
+  }
+}
+
+function toDisplayMessage(message) {
+  const role = String(message.role ?? '').toLowerCase()
+  return {
+    id: message.message_id ?? `${message.created_at ?? Date.now()}-${role}`,
+    role: role === 'user' ? 'user' : 'assistant',
+    text: message.content ?? '',
+    mode: message.mode_used ?? message.intent?.mode ?? null,
+    conf: message.intent?.confidence ?? null,
+    routedBy: message.intent?.routed_by ?? null,
+    citations: message.citations ?? [],
+    queryResult: message.query_result ?? null,
+    generatedCode: message.generated_code ?? message.query_result?.expression ?? null,
+    streaming: false,
+  }
+}
+
+function restoredTokenCount(messages) {
+  return messages.reduce(
+    (total, message) => total + (message.token_usage?.output_tokens ?? 0),
+    0,
+  )
+}
+
 function ModeChip({ mode, conf, routedBy }) {
   const config = {
     RAG:   { bg: '#ECFDF5', color: '#065F46', border: '#A7F3D0', label: '◫ RAG MODE' },
@@ -73,6 +126,41 @@ function QueryResultTable({ result }) {
   )
 }
 
+function GeneratedCodeBlock({ code }) {
+  const [expanded, setExpanded] = useState(false)
+
+  if (code == null) return null
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <button
+        type="button"
+        onClick={() => setExpanded(value => !value)}
+        aria-expanded={expanded}
+        style={{
+          height: 28, display: 'inline-flex', alignItems: 'center', gap: 5,
+          padding: '0 9px', background: 'transparent', border: '1px solid var(--color-border)',
+          borderRadius: 6, fontFamily: 'var(--font-body)', fontSize: 12,
+          color: 'var(--color-text-secondary)', cursor: 'pointer',
+        }}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" />
+        </svg>
+        {expanded ? 'Hide code' : 'Show code'}
+      </button>
+      {expanded && (
+        <pre style={{
+          margin: '8px 0 0', padding: '12px 16px', overflowX: 'auto',
+          background: 'var(--color-base)', border: '0.5px solid var(--color-border)',
+          borderRadius: 8, fontFamily: 'var(--font-data)', fontSize: 13,
+          lineHeight: 1.5, color: 'var(--color-text-primary)', whiteSpace: 'pre',
+        }}>{code}</pre>
+      )}
+    </div>
+  )
+}
+
 export default function Chat() {
   const location = useLocation()
   const { activeDatasetId, activeDataset } = useDataset()
@@ -92,15 +180,102 @@ export default function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Create session when dataset becomes available
+  // Reopen the last session for this dataset. Keeping only its opaque ID in
+  // session storage lets route changes and refreshes restore the server-owned
+  // transcript without copying chat content into the browser.
   useEffect(() => {
-    if (!activeDatasetId) return
+    const controller = new AbortController()
+    let disposed = false
+
     setSessionId(null)
     setMessages([])
+    setTokenCount(0)
+    setStreaming(false)
     setSessionError(null)
-    api.post(`/datasets/${activeDatasetId}/chat/sessions`, { mode: 'AUTO' })
-      .then(res => setSessionId(res.session?.session_id))
-      .catch(err => setSessionError(err.message))
+
+    if (!activeDatasetId) {
+      return () => controller.abort()
+    }
+
+    const applySession = (session, transcript) => {
+      if (disposed || controller.signal.aborted) return
+      const persistedMessages = transcript.messages ?? []
+      saveSessionId(activeDatasetId, session.session_id)
+      setSessionId(session.session_id)
+      setMessages(persistedMessages.map(toDisplayMessage))
+      setTokenCount(restoredTokenCount(persistedMessages))
+      setAutoMode((session.mode ?? 'AUTO') === 'AUTO')
+    }
+
+    const restoreSession = async session => {
+      const transcript = await api.get(
+        `/chat/sessions/${session.session_id}/messages?limit=500`,
+        { signal: controller.signal },
+      )
+      applySession(session, transcript)
+    }
+
+    const createSession = async () => {
+      const created = await api.post(
+        `/datasets/${activeDatasetId}/chat/sessions`,
+        { mode: 'AUTO' },
+        { signal: controller.signal },
+      )
+      if (disposed || controller.signal.aborted) return
+      const session = created.session
+      if (!session?.session_id) throw new Error('Unable to create a chat session.')
+      applySession(session, { messages: [] })
+    }
+
+    const restoreOrCreateSession = async () => {
+      const savedSessionId = readSavedSessionId(activeDatasetId)
+
+      if (savedSessionId) {
+        try {
+          const response = await api.get(`/chat/sessions/${savedSessionId}`, {
+            signal: controller.signal,
+          })
+          const savedSession = response.session
+          if (savedSession?.dataset_id === activeDatasetId) {
+            await restoreSession(savedSession)
+            return
+          }
+          clearSavedSessionId(activeDatasetId)
+        } catch (error) {
+          if (controller.signal.aborted) return
+          // A deleted session can safely fall back to another saved transcript.
+          // Keep its ID for transient failures so an outage cannot create duplicates.
+          if (error.status !== 404) throw error
+          clearSavedSessionId(activeDatasetId)
+        }
+      }
+
+      // This fallback also recovers conversations created before session IDs
+      // began being remembered in the browser.
+      const sessionsResponse = await api.get(
+        `/datasets/${activeDatasetId}/chat/sessions?limit=50`,
+        { signal: controller.signal },
+      )
+      const sessions = sessionsResponse.sessions ?? []
+      const previousSession = sessions.find(session => session.message_count > 0) ?? sessions[0]
+
+      if (previousSession) {
+        await restoreSession(previousSession)
+      } else {
+        await createSession()
+      }
+    }
+
+    restoreOrCreateSession().catch(error => {
+      if (!disposed && !controller.signal.aborted) {
+        setSessionError(error.message || 'Unable to restore the chat session.')
+      }
+    })
+
+    return () => {
+      disposed = true
+      controller.abort()
+    }
   }, [activeDatasetId])
 
   const handleSend = useCallback(async () => {
@@ -112,7 +287,7 @@ export default function Chat() {
 
     const userMsg = { id: Date.now(), role: 'user', text: input }
     const assistantId = Date.now() + 1
-    const assistantMsg = { id: assistantId, role: 'assistant', text: '', mode: null, conf: null, citations: [], queryResult: null, streaming: true }
+    const assistantMsg = { id: assistantId, role: 'assistant', text: '', mode: null, conf: null, citations: [], queryResult: null, generatedCode: null, streaming: true }
 
     setMessages(prev => [...prev, userMsg, assistantMsg])
     setInput('')
@@ -135,7 +310,11 @@ export default function Chat() {
         } else if (event === 'query_result') {
           // Backend wraps payload as {"query_result": {...}}, unwrap it
           setMessages(prev => prev.map(m => m.id === assistantId
-            ? { ...m, queryResult: data.query_result ?? data }
+            ? {
+                ...m,
+                queryResult: data.query_result ?? data,
+                generatedCode: data.generated_code ?? data.query_result?.expression ?? null,
+              }
             : m
           ))
         } else if (event === 'token') {
@@ -145,7 +324,10 @@ export default function Chat() {
           ))
           setTokenCount(t => t + 1)
         } else if (event === 'done') {
-          setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, streaming: false } : m))
+          setMessages(prev => prev.map(m => m.id === assistantId
+            ? { ...m, streaming: false, generatedCode: data.generated_code ?? m.generatedCode }
+            : m
+          ))
           break
         } else if (event === 'error') {
           setMessages(prev => prev.map(m => m.id === assistantId
@@ -186,6 +368,26 @@ export default function Chat() {
     }
   }, [activeDatasetId, activeDataset, pdfLoading])
 
+  const handleClearSession = useCallback(async () => {
+    if (!activeDatasetId || !sessionId || streaming) return
+    setSessionError(null)
+    try {
+      const response = await api.post(
+        `/datasets/${activeDatasetId}/chat/sessions`,
+        { mode: 'AUTO' },
+      )
+      const nextSession = response.session
+      if (!nextSession?.session_id) throw new Error('Unable to clear the chat session.')
+      saveSessionId(activeDatasetId, nextSession.session_id)
+      setSessionId(nextSession.session_id)
+      setMessages([])
+      setTokenCount(0)
+      setAutoMode((nextSession.mode ?? 'AUTO') === 'AUTO')
+    } catch (error) {
+      setSessionError(error.message || 'Unable to clear the chat session.')
+    }
+  }, [activeDatasetId, sessionId, streaming])
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
   }
@@ -193,11 +395,11 @@ export default function Chat() {
   const noDataset = !activeDatasetId
 
   return (
-    <Layout title="Conversational Analyst" subtitle="Dual-mode AI: RAG insights + direct data queries">
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 260px', gap: 0, height: 'calc(100vh - var(--topbar-height) - 48px)', position: 'relative' }}>
+    <Layout className="chat-page" title="Conversational Analyst" subtitle="Dual-mode AI: RAG insights + direct data queries">
+      <div className="chat-workspace" style={{ display: 'grid', gridTemplateColumns: '1fr 260px', gap: 0, height: 'calc(100vh - var(--topbar-height) - 48px)', position: 'relative' }}>
 
         {/* ── Chat Area ── */}
-        <div style={{ display: 'flex', flexDirection: 'column', background: 'transparent' }}>
+        <div className="chat-conversation" style={{ display: 'flex', flexDirection: 'column', background: 'transparent' }}>
           {/* Mode Badge */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, marginBottom: 12, paddingRight: 12 }}>
             <button
@@ -220,7 +422,7 @@ export default function Chat() {
           </div>
 
           {/* Messages */}
-          <div style={{ flex: 1, overflowY: 'auto', paddingRight: 12, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div className="chat-messages" style={{ flex: 1, overflowY: 'auto', paddingRight: 12, display: 'flex', flexDirection: 'column', gap: 16 }}>
             {sessionError && (
               <div style={{ background: '#FFF1F2', border: '1px solid #FECDD3', borderRadius: 8, padding: '12px 16px', fontFamily: 'var(--font-body)', fontSize: 13, color: '#9F1239' }}>
                 {sessionError}
@@ -289,6 +491,7 @@ export default function Chat() {
                             {msg.streaming && <span style={{ display: 'inline-block', width: 8, height: 14, background: 'var(--color-primary-indigo)', marginLeft: 2, borderRadius: 1, verticalAlign: 'text-bottom', animation: 'pulse-dot 0.8s ease-in-out infinite' }} />}
                           </p>
                           {msg.queryResult && <QueryResultTable result={msg.queryResult} />}
+                          <GeneratedCodeBlock code={msg.generatedCode} />
                           {msg.citations?.length > 0 && (
                             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                               {msg.citations.map((c, ci) => (
@@ -314,7 +517,7 @@ export default function Chat() {
           </div>
 
           {/* Input Area */}
-          <div style={{ marginTop: 12, background: 'white', border: '1px solid var(--color-border)', borderRadius: 12, padding: '12px 14px', boxShadow: 'var(--shadow-card)' }}>
+          <div className="chat-composer" style={{ marginTop: 12, background: 'white', border: '1px solid var(--color-border)', borderRadius: 12, padding: '12px 14px', boxShadow: 'var(--shadow-card)' }}>
             <textarea
               ref={textareaRef}
               value={input}
@@ -357,7 +560,7 @@ export default function Chat() {
         </div>
 
         {/* ── Session Context Panel ── */}
-        <div style={{ paddingLeft: 16, borderLeft: '1px solid var(--color-border)', overflowY: 'auto' }}>
+        <div className="chat-context" style={{ paddingLeft: 16, borderLeft: '1px solid var(--color-border)', overflowY: 'auto' }}>
           <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 14 }}>Session Context</h3>
 
           {/* Active Data Sources */}
@@ -399,26 +602,27 @@ export default function Chat() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {SUGGESTED_ACTIONS.map((a, i) => {
                 const isPdf = a.label === 'Generate PDF Summary'
-                const pdfDisabled = isPdf && (!activeDatasetId || pdfLoading)
+                const isClearSession = a.label === 'Clear Session Context'
+                const actionDisabled = isPdf
+                  ? !activeDatasetId || pdfLoading
+                  : isClearSession && (!sessionId || streaming)
                 return (
                   <button key={i}
                     onClick={() => {
                       if (isPdf) {
                         handleGeneratePdf()
-                      } else if (a.label === 'Clear Session Context' && sessionId) {
-                        api.post(`/datasets/${activeDatasetId}/chat/sessions`, { mode: 'AUTO' })
-                          .then(res => { setSessionId(res.session?.session_id); setMessages([]) })
-                          .catch(console.error)
+                      } else if (isClearSession) {
+                        handleClearSession()
                       }
                     }}
-                    disabled={pdfDisabled}
+                    disabled={actionDisabled}
                     style={{
                       padding: '8px 12px', background: 'white',
                       border: `1px solid ${a.style === 'danger' ? 'var(--color-danger-border)' : 'var(--color-border)'}`,
                       borderRadius: 8, fontFamily: 'var(--font-body)', fontSize: 12, fontWeight: 500,
                       color: a.style === 'danger' ? 'var(--color-danger)' : 'var(--color-text-primary)',
-                      cursor: pdfDisabled ? 'not-allowed' : 'pointer', textAlign: 'left', transition: 'background 150ms',
-                      opacity: pdfDisabled ? 0.5 : 1,
+                      cursor: actionDisabled ? 'not-allowed' : 'pointer', textAlign: 'left', transition: 'background 150ms',
+                      opacity: actionDisabled ? 0.5 : 1,
                     }}
                     onMouseEnter={e => e.currentTarget.style.background = a.style === 'danger' ? 'var(--color-danger-bg)' : 'var(--color-base)'}
                     onMouseLeave={e => e.currentTarget.style.background = 'white'}

@@ -1,21 +1,36 @@
-import { useState } from 'react'
 import Sidebar from './Sidebar'
 import { Link } from 'react-router-dom'
+import { useState } from 'react'
 import '../index.css'
 
-export default function Layout({ title, subtitle, actions, children }) {
-  const [isNavigationOpen, setIsNavigationOpen] = useState(false)
+export default function Layout({ title, subtitle, actions, children, className = '' }) {
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false)
 
   return (
-    <div className="app-layout">
-      <Sidebar isOpen={isNavigationOpen} onClose={() => setIsNavigationOpen(false)} />
-      <button className={`sidebar-overlay ${isNavigationOpen ? 'is-visible' : ''}`} type="button" aria-label="Close navigation" tabIndex={isNavigationOpen ? 0 : -1} onClick={() => setIsNavigationOpen(false)} />
+    <div className={`app-layout ${className}`}>
+      <Sidebar isOpen={isSidebarOpen} onClose={() => setIsSidebarOpen(false)} />
+      <button
+        className={`sidebar-overlay ${isSidebarOpen ? 'is-visible' : ''}`}
+        type="button"
+        aria-label="Close navigation"
+        tabIndex={isSidebarOpen ? 0 : -1}
+        onClick={() => setIsSidebarOpen(false)}
+      />
       <div className="main-content">
         {/* Top Bar */}
         <header className="topbar">
           <div className="topbar-title">
-            <button className="mobile-nav-toggle" type="button" aria-label="Open navigation" aria-controls="workspace-navigation" aria-expanded={isNavigationOpen} onClick={() => setIsNavigationOpen(true)}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+            <button
+              className="mobile-nav-toggle"
+              type="button"
+              aria-label="Open navigation"
+              aria-controls="workspace-navigation"
+              aria-expanded={isSidebarOpen}
+              onClick={() => setIsSidebarOpen(true)}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M4 7h16M4 12h16M4 17h16" />
+              </svg>
             </button>
             <div>
             <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: 18, fontWeight: 700, color: 'var(--color-text-primary)', letterSpacing: '-0.01em' }}>

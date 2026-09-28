@@ -10,6 +10,52 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 ENV_FILE = BASE_DIR / ".env"
 ENV_TXT_FILE = BASE_DIR / ".env.txt"
 
+# The direct-query AST validator imports this registry to enforce the
+# positional + keyword argument count of every module-level ``pl.*`` call it
+# permits.  ``None`` as the maximum means "one or more" or "zero or more",
+# depending on the minimum.  Keep this explicit rather than introspecting
+# Polars at runtime: the registry is part of our supported query language and
+# can be reviewed alongside a Polars upgrade.
+POLARS_FUNCTION_SIGNATURES: dict[str, tuple[int, int | None]] = {
+    "col": (1, 1),
+    "lit": (1, 1),
+    "when": (1, 1),
+    "sum": (1, None),
+    "mean": (1, None),
+    "median": (1, None),
+    "min": (1, None),
+    "max": (1, None),
+    "len": (0, 0),
+    "count": (0, 0),
+    "n_unique": (1, None),
+    "std": (1, None),
+    "var": (1, None),
+    "quantile": (1, None),
+    "corr": (2, 2),
+    "cov": (2, 2),
+    "first": (1, None),
+    "last": (1, None),
+    "nth": (1, 1),
+    "all": (0, None),
+    "any": (0, None),
+    "exclude": (1, None),
+    "concat_str": (1, None),
+    "concat_list": (1, None),
+    "concat": (1, 2),
+    "sum_horizontal": (1, None),
+    "min_horizontal": (1, None),
+    "max_horizontal": (1, None),
+    "mean_horizontal": (1, None),
+    "coalesce": (1, None),
+    "struct": (1, None),
+    "format": (1, None),
+    "date": (3, 3),
+    "datetime": (3, 8),
+    "duration": (0, 9),
+    "int_range": (2, 3),
+    "date_range": (2, 3),
+}
+
 # --- 1. AUTO-FIX HIDDEN WINDOWS EXTENSIONS ---
 if ENV_TXT_FILE.exists() and not ENV_FILE.exists():
     print("\n⚠️ WARNING: Found '.env.txt'. Windows hid the extension! Renaming to '.env' automatically...\n")
@@ -41,7 +87,7 @@ class Settings(BaseSettings):
 
     storage_backend: Literal["local", "s3"] = "local"
     data_dir: Path = BASE_DIR / "data"
-    max_upload_bytes: int = 100 * 1024 * 1024
+    max_upload_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
 
     openai_api_key: str = ""
     openai_chat_model: str = "gpt-4o"
@@ -65,16 +111,21 @@ class Settings(BaseSettings):
     rate_limit_interpret: str = "20/hour"
     rate_limit_session_create: str = "20/hour"
     rate_limit_global: str = "200/hour"
-    max_concurrent_pipelines: int = 3
+    max_concurrent_pipelines: int = Field(default=1, gt=0)
 
     # --- upload abuse protection ---
     max_upload_rows: int = 5_000_000
 
     # --- request size + security ---
-    max_request_bytes: int = 110 * 1024 * 1024
+    # One MiB of headroom for multipart headers around the pilot file limit.
+    max_request_bytes: int = Field(default=21 * 1024 * 1024, gt=0)
 
     # --- frontend ---
     frontend_url: str = "http://localhost:5173"
+    # Comma-separated browser origins permitted to receive OAuth callbacks.
+    # Keep the deployed custom domain here; OAuth never falls back to a Vercel
+    # deployment URL.
+    frontend_allowed_origins: str = "http://localhost:5173,https://tryneuronova.in"
     public_url: str = "http://localhost:8000"
 
     # --- email (SMTP) ---

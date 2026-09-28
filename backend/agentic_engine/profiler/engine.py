@@ -74,7 +74,22 @@ def save_report(report: ProfileReport, settings: Settings | None = None) -> Path
 
 
 def load_report(dataset_id: uuid.UUID, settings: Settings | None = None) -> dict | None:
+    """Load the persisted JSON representation of a profile report."""
     target = profile_path(dataset_id, settings)
     if not target.exists():
         return None
     return json.loads(target.read_text(encoding="utf-8"))
+
+
+def load_profile_report(
+    dataset_id: uuid.UUID, settings: Settings | None = None
+) -> ProfileReport | None:
+    """Load and validate a persisted profile using the canonical model shape.
+
+    Callers that need typed profile data should use this instead of duplicating
+    filesystem naming or reaching into the JSON payload directly.
+    """
+    raw_report = load_report(dataset_id, settings)
+    if raw_report is None:
+        return None
+    return ProfileReport.model_validate(raw_report)

@@ -13,20 +13,56 @@ Endpoints:
   GET    /api/v1/auth/google            — get Google OAuth redirect URL
   GET    /api/v1/auth/google/callback   — handle Google OAuth callback
 """
+from urllib.parse import urlencode, urlsplit
+from typing import Literal
+
 import httpx
 import structlog
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
+from jose import JWTError
 from pydantic import BaseModel, EmailStr, Field
 
-from app.core.dependencies import DBSession, SettingsDep, get_current_user
+from app.core.dependencies import DBSession, SettingsDep, StorageDep, get_current_user
 from app.core.limiter import limiter
+from app.core.security import create_one_time_token, decode_one_time_token
 from app.db.models.user import User
 from app.exceptions.custom_exceptions import UnauthorizedError
 from app.services import auth_service
+from app.services import account_service
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+
+
+def _validated_frontend_origin(frontend_origin: str, settings: SettingsDep) -> str:
+    """Return a permitted browser origin for a post-OAuth redirect.
+
+    The client supplies ``window.location.origin`` when starting OAuth.  It is
+    embedded in a signed, short-lived state token before the browser leaves the
+    app, so the callback cannot be turned into an open redirect.
+    """
+    parsed = urlsplit(frontend_origin)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise UnauthorizedError("invalid OAuth return origin")
+
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    allowed_origins = {
+        configured_origin.strip().rstrip("/")
+        for configured_origin in settings.frontend_allowed_origins.split(",")
+        if configured_origin.strip()
+    }
+    if origin not in allowed_origins:
+        raise UnauthorizedError("unapproved OAuth return origin")
+    return origin
 
 
 # ── request / response schemas ────────────────────────────────────────────────
@@ -52,6 +88,7 @@ class LogoutRequest(BaseModel):
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
+    frontend_origin: str | None = None
 
 
 class ResetPasswordRequest(BaseModel):
@@ -61,6 +98,12 @@ class ResetPasswordRequest(BaseModel):
 
 class UpdateProfileRequest(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=256)
+
+
+class DeleteAccountRequest(BaseModel):
+    confirmation: Literal["DELETE"] = Field(
+        description='Must be the exact value "DELETE" to permanently remove the account.'
+    )
 
 
 class UserResponse(BaseModel):
@@ -147,7 +190,12 @@ async def forgot_password(
     request: Request, body: ForgotPasswordRequest, db: DBSession, settings: SettingsDep
 ):
     """Send a password-reset email. Always returns 202 to avoid leaking email existence."""
-    await auth_service.forgot_password(db, settings, body.email)
+    frontend_url = (
+        _validated_frontend_origin(body.frontend_origin, settings)
+        if body.frontend_origin
+        else settings.frontend_url
+    )
+    await auth_service.forgot_password(db, settings, body.email, frontend_url)
     return {"message": "if that email is registered, a reset link has been sent"}
 
 
@@ -181,13 +229,41 @@ async def update_me(
     return UserResponse.from_user(current_user)
 
 
+@router.delete("/me", status_code=204)
+@limiter.limit("2/hour")
+async def delete_me(
+    request: Request,
+    body: DeleteAccountRequest,
+    db: DBSession,
+    storage: StorageDep,
+    settings: SettingsDep,
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    """Permanently delete the authenticated user's account and owned data."""
+    await account_service.delete_account(
+        session=db,
+        storage=storage,
+        settings=settings,
+        user=current_user,
+    )
+    return Response(status_code=204)
+
+
 # ── Google OAuth 2.0 ──────────────────────────────────────────────────────────
 
 @router.get("/google")
-async def google_oauth_start(settings: SettingsDep):
-    """Return the Google authorization URL. The frontend should redirect the user there."""
+async def google_oauth_start(frontend_origin: str, settings: SettingsDep):
+    """Return the Google authorization URL for the requesting browser origin."""
     if not settings.google_client_id:
         return {"error": "Google OAuth is not configured on this server"}
+
+    return_origin = _validated_frontend_origin(frontend_origin, settings)
+    state = create_one_time_token(
+        return_origin,
+        "google_oauth_return_origin",
+        settings.jwt_secret_key,
+        expire_hours=1,
+    )
     params = {
         "client_id": settings.google_client_id,
         "redirect_uri": settings.google_redirect_uri,
@@ -195,21 +271,23 @@ async def google_oauth_start(settings: SettingsDep):
         "scope": "openid email profile",
         "access_type": "offline",
         "prompt": "select_account",
+        "state": state,
     }
-    query = "&".join(f"{k}={v}" for k, v in params.items())
-    return {"url": f"https://accounts.google.com/o/oauth2/v2/auth?{query}"}
+    return {"url": f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"}
 
 
 @router.get("/google/callback")
 async def google_oauth_callback(
     code: str,
+    state: str,
     db: DBSession,
     settings: SettingsDep,
 ):
     """Handle the OAuth2 callback from Google.
 
-    On success, redirect the browser to the SPA at
-    `${frontend_url}/auth/google-callback#access_token=...&refresh_token=...`
+    On success, redirect the browser back to the SPA origin captured in the
+    signed OAuth state at
+    `${frontend_origin}/auth/google-callback#access_token=...&refresh_token=...`
     so the SPA can pick up the tokens from the URL fragment.
 
     Putting tokens in the fragment (not the query string) prevents them from being
@@ -218,6 +296,14 @@ async def google_oauth_callback(
     """
     if not settings.google_client_id:
         raise UnauthorizedError("Google OAuth is not configured on this server")
+
+    try:
+        return_origin = decode_one_time_token(
+            state, "google_oauth_return_origin", settings.jwt_secret_key
+        )
+        return_origin = _validated_frontend_origin(return_origin, settings)
+    except JWTError as exc:
+        raise UnauthorizedError("invalid or expired OAuth state") from exc
 
     async with httpx.AsyncClient(timeout=10) as client:
         token_resp = await client.post(
@@ -250,8 +336,8 @@ async def google_oauth_callback(
         )
     except UnauthorizedError as exc:
         return RedirectResponse(
-            url=f"{settings.frontend_url}/login?error={exc.args[0] if exc.args else 'oauth_failed'}"
+            url=f"{return_origin}/login?{urlencode({'error': exc.args[0] if exc.args else 'oauth_failed'})}"
         )
 
     fragment = f"access_token={access_token}&refresh_token={refresh_token}"
-    return RedirectResponse(url=f"{settings.frontend_url}/auth/google-callback#{fragment}")
+    return RedirectResponse(url=f"{return_origin}/auth/google-callback#{fragment}")

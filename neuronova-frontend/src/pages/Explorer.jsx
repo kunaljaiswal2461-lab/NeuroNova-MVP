@@ -41,7 +41,7 @@ function findingToFlag(f) {
 }
 
 export default function Explorer() {
-  const { activeDatasetId, activeDataset, selectDataset } = useDataset()
+  const { activeDatasetId, activeDataset, updateDataset } = useDataset()
   const [searchQuery, setSearchQuery] = useState('')
   const [mounted, setMounted] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -54,25 +54,27 @@ export default function Explorer() {
 
   useEffect(() => {
     if (!activeDatasetId) return
+    const controller = new AbortController()
+    const options = { signal: controller.signal }
     setLoading(true)
     setError(null)
     Promise.all([
-      api.get(`/datasets/${activeDatasetId}/profile`),
-      api.get(`/datasets/${activeDatasetId}/findings?severity=HIGH`),
-      api.get(`/datasets/${activeDatasetId}/viz`).catch(() => ({ skipped_columns: [] })),
+      api.get(`/datasets/${activeDatasetId}/profile`, options),
+      api.get(`/datasets/${activeDatasetId}/findings?severity=HIGH`, options),
+      api.get(`/datasets/${activeDatasetId}/viz`, options).catch(() => ({ skipped_columns: [] })),
     ])
       .then(([prof, findingsResp, vizResp]) => {
+        if (controller.signal.aborted) return
         setProfile(prof)
         setAnomalyFlags((findingsResp.findings ?? []).slice(0, 6).map(findingToFlag))
         setSkippedVizCols(new Set((vizResp.skipped_columns ?? []).map(s => s.column_name)))
         // push health into context so Sidebar can show it
-        if (activeDataset) {
-          selectDataset({ ...activeDataset, _health: prof.health })
-        }
+        updateDataset(activeDatasetId, { _health: prof.health })
       })
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false))
-  }, [activeDatasetId])
+      .catch(err => { if (!controller.signal.aborted) setError(err.message) })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
+  }, [activeDatasetId, updateDataset])
 
   // Build merged column rows
   const schemaColumns = (() => {
@@ -122,6 +124,7 @@ export default function Explorer() {
 
   return (
     <Layout
+      className="explorer-page"
       title="Dataset Explorer"
       subtitle={subtitle}
       actions={
@@ -146,7 +149,7 @@ export default function Explorer() {
           {error}
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 20, alignItems: 'start' }}>
+        <div className="explorer-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 20, alignItems: 'start' }}>
 
           {/* ── Left: Schema Table ── */}
           <div className="card anim-fade-up">
@@ -321,7 +324,7 @@ export default function Explorer() {
             {stats.length > 0 && (
               <div className="card card-pad anim-fade-up" style={{ animationDelay: '180ms' }}>
                 <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 12 }}>Dataset Stats</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div className="stats-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   {stats.map((stat, i) => (
                     <div key={i} style={{ background: 'var(--color-base)', borderRadius: 6, padding: '8px 10px' }}>
                       <div style={{ fontFamily: 'var(--font-body)', fontSize: 10, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 3 }}>{stat.label}</div>

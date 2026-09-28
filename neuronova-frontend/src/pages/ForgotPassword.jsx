@@ -7,15 +7,18 @@ export default function ForgotPassword() {
   const [email, setEmail] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [error, setError] = useState('');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setError('');
     setIsLoading(true);
     try {
       await authApi.forgotPassword(email);
       setSubmitted(true);
     } catch (err) {
       console.error('Forgot password error:', err);
+      setError('We could not send a reset link. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -77,6 +80,14 @@ export default function ForgotPassword() {
 
           <div className="bg-[#F9FAFB] p-[32px] shadow-sm rounded-none border border-transparent relative z-10">
             <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+              {error && (
+                <div
+                  role="alert"
+                  className="rounded-[6px] border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+                >
+                  {error}
+                </div>
+              )}
               <div className="flex flex-col gap-1">
                 <label className="text-[14px] font-medium text-[#4B5563]">Work email</label>
                 <input

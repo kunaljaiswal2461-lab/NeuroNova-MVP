@@ -40,8 +40,8 @@ logger = get_logger("pipeline")
 
 
 # Global concurrency cap for the upload pipeline. Background-task fan-out
-# would otherwise be unbounded — three concurrent pipelines is enough to
-# keep CPU busy while still leaving headroom for the API event loop.
+# would otherwise be unbounded. The pilot defaults to one active pipeline;
+# waiting uploads retain the existing QUEUED state until acquiring this slot.
 _PIPELINE_SEMAPHORE: asyncio.Semaphore | None = None
 
 

@@ -160,7 +160,11 @@ async def create_dataset_from_upload(
         )
     except StorageFileTooLargeError as exc:
         raise FileTooLargeError(
-            f"file exceeds upload limit of {exc.limit_bytes} bytes",
+            (
+                "Pilot version currently supports datasets up to 20 MB."
+                if exc.limit_bytes == 20 * 1024 * 1024
+                else f"File exceeds upload limit of {exc.limit_bytes} bytes."
+            ),
             details={"max_bytes": exc.limit_bytes},
         ) from exc
 

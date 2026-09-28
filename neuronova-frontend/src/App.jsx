@@ -4,6 +4,7 @@ import './index.css'
 
 import { AuthProvider } from './context/AuthContext'
 import { DatasetProvider } from './context/DatasetContext'
+import DatasetRoute from './components/DatasetRoute'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { warmBackend } from './api/warmup'
 
@@ -13,13 +14,13 @@ import Explorer from './pages/Explorer'
 import Visualization from './pages/Visualization'
 import Insights from './pages/Insights'
 import Chat from './pages/Chat'
+import Settings from './pages/Settings'
 import Login from './pages/Login'
 import Register from './pages/Register'
 import VerifyEmailLanding from './pages/VerifyEmailLanding'
 import GoogleCallback from './pages/GoogleCallback'
 import ForgotPassword from './pages/ForgotPassword'
 import ResetPassword from './pages/ResetPassword'
-import Settings from './pages/Settings'
 
 export default function App() {
   useEffect(() => {
@@ -42,10 +43,10 @@ export default function App() {
 
             {/* Protected Routes */}
             <Route path="/upload" element={<ProtectedRoute><Upload /></ProtectedRoute>} />
-            <Route path="/explorer" element={<ProtectedRoute><Explorer /></ProtectedRoute>} />
-            <Route path="/visualization" element={<ProtectedRoute><Visualization /></ProtectedRoute>} />
-            <Route path="/insights" element={<ProtectedRoute><Insights /></ProtectedRoute>} />
-            <Route path="/chat" element={<ProtectedRoute><Chat /></ProtectedRoute>} />
+            <Route path="/explorer" element={<ProtectedRoute><DatasetRoute><Explorer /></DatasetRoute></ProtectedRoute>} />
+            <Route path="/visualization" element={<ProtectedRoute><DatasetRoute><Visualization /></DatasetRoute></ProtectedRoute>} />
+            <Route path="/insights" element={<ProtectedRoute><DatasetRoute><Insights /></DatasetRoute></ProtectedRoute>} />
+            <Route path="/chat" element={<ProtectedRoute><DatasetRoute><Chat /></DatasetRoute></ProtectedRoute>} />
             <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
 
             <Route path="*" element={<Navigate to="/" replace />} />

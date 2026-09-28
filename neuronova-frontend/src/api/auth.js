@@ -72,29 +72,24 @@ export const authApi = {
   },
 
   deleteAccount: async (confirmation) => {
-    const res = await fetch(`${BASE_URL}/auth/me`, {
-      method: 'DELETE',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('access_token')}`
-      },
-      body: JSON.stringify({ confirmation })
-    });
-    if (!res.ok) throw new Error('Failed to delete account');
+    await api.delete('/auth/me', { confirmation });
   },
 
   forgotPassword: async (email) => {
     const res = await fetch(`${BASE_URL}/auth/forgot-password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email })
+      body: JSON.stringify({ email, frontend_origin: window.location.origin })
     });
     if (!res.ok) throw new Error('Failed to request password reset');
     return res.json();
   },
 
   googleStart: async () => {
-    const res = await fetch(`${BASE_URL}/auth/google`);
+    // Preserve the host the user actually opened (custom domain or local dev)
+    // instead of relying on a backend-side deployment URL.
+    const query = new URLSearchParams({ frontend_origin: window.location.origin });
+    const res = await fetch(`${BASE_URL}/auth/google?${query}`);
     if (!res.ok) throw new Error('Failed to start Google sign-in');
     return res.json(); // { url } or { error }
   },

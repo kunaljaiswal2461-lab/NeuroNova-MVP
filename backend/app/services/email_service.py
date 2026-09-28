@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import structlog
 from app.core.config import Settings
 
@@ -9,16 +10,20 @@ async def send_verification_email(
     settings: Settings, to_email: str, name: str, token: str
 ) -> None:
     # Verification is performed by the backend endpoint, which then redirects
-    # the browser to the frontend confirmation screen. The SPA has no
+    # the browser to the frontend confirmation screen.  The SPA has no
     # /auth/verify-email route of its own.
     verify_url = f"{settings.public_url.rstrip('/')}/api/v1/auth/verify-email?token={token}"
     await _send(settings, to_email, "Verify your NeuroNova account", _verification_html(name, verify_url))
 
 
 async def send_password_reset_email(
-    settings: Settings, to_email: str, name: str, token: str
+    settings: Settings,
+    to_email: str,
+    name: str,
+    token: str,
+    frontend_url: str | None = None,
 ) -> None:
-    reset_url = f"{settings.frontend_url}/auth/reset-password?token={token}"
+    reset_url = f"{frontend_url or settings.frontend_url}/auth/reset-password?token={token}"
     await _send(settings, to_email, "Reset your NeuroNova password", _reset_html(name, reset_url))
 
 

@@ -1,11 +1,34 @@
+import { Link, Navigate } from 'react-router-dom'
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import DatasetExplorerDemo from '../components/landing/DatasetExplorerDemo'
 import neuralPathway from '../assets/neural-pathway.png'
 
 const NAV_LINKS = ['Product', 'How It Works', 'Use Cases']
-const PRICING = []
+
+const TECHNOLOGIES = [
+  { name: 'Powered by' },
+  {
+    name: 'LangChain',
+    href: 'https://docs.langchain.com/oss/python/langchain/overview',
+  },
+  {
+    name: 'LangGraph',
+    href: 'https://docs.langchain.com/oss/python/langgraph/overview',
+  },
+  {
+    name: 'OpenAI',
+    href: 'https://platform.openai.com/docs/quickstart/make-your-first-api-request',
+  },
+  {
+    name: 'pgvector',
+    href: 'https://github.com/pgvector/pgvector',
+  },
+  {
+    name: 'Python',
+    href: 'https://docs.python.org/3/',
+  },
+]
 
 // Replaced emojis with crisp SVG icons (using Lucide/Heroicons style)
 const FEATURES = [
@@ -52,6 +75,13 @@ const COMPARISON = [
   { feature: 'Persistent Dataset Memory', neuronova: true, ydata: false, chatgpt: false },
 ]
 
+const SCHEMA_PREVIEW_ROWS = [
+  { col: 'transaction_id', type: 'UUID', nulls: '0%', insight: 'PRIMARY KEY', insightColor: '#3B82F6' },
+  { col: 'customer_email', type: 'STRING', nulls: '12%', insight: 'PII DETECTED', insightColor: '#EF4444' },
+  { col: 'purchase_amount', type: 'FLOAT', nulls: '0%', insight: 'FINANCIAL', insightColor: '#10B981' },
+  { col: 'region_code', type: 'CATEGORICAL', nulls: '2.1%', insight: 'GEOGRAPHIC', insightColor: '#F59E0B' },
+]
+
 const Check = ({ ok }) => ok ? (
   <span style={{ color: '#10B981', fontSize: 18, fontWeight: 'normal' }}>✓</span>
 ) : (
@@ -62,6 +92,7 @@ export default function Landing() {
   const { user, loading } = useAuth();
   const ctaLink = user ? '/upload' : '/register';
   const [isMenuOpen, setIsMenuOpen] = useState(false)
+
 
   if (loading) return null;
   // if (user) return <Navigate to="/upload" replace />;
@@ -94,7 +125,14 @@ export default function Landing() {
             </span>
           </Link>
 
-          <button className="landing-nav-toggle" type="button" aria-label={isMenuOpen ? 'Close menu' : 'Open menu'} aria-expanded={isMenuOpen} aria-controls="landing-navigation" onClick={() => setIsMenuOpen(open => !open)}>
+          <button
+            className="landing-nav-toggle"
+            type="button"
+            aria-label={isMenuOpen ? 'Close menu' : 'Open menu'}
+            aria-expanded={isMenuOpen}
+            aria-controls="landing-navigation"
+            onClick={() => setIsMenuOpen(open => !open)}
+          >
             <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d={isMenuOpen ? 'M6 6l12 12M18 6L6 18' : 'M4 7h16M4 12h16M4 17h16'} />
             </svg>
@@ -103,13 +141,15 @@ export default function Landing() {
           <div id="landing-navigation" className="landing-nav-links" style={{ display: 'flex', alignItems: 'center', gap: 32, position: 'absolute', left: '50%', transform: 'translateX(-50%)' }}>
             {NAV_LINKS.map(l => (
               <a key={l} href={`#${l.toLowerCase().replace(/ /g, '-')}`}
-                style={{ fontSize: 14, fontWeight: 500, color: '#64748B', textDecoration: 'none', transition: 'color 150ms' }}
                 onClick={() => setIsMenuOpen(false)}
+                style={{ fontSize: 14, fontWeight: 500, color: '#64748B', textDecoration: 'none', transition: 'color 150ms' }}
                 onMouseEnter={e => e.target.style.color = '#0F172A'}
                 onMouseLeave={e => e.target.style.color = '#64748B'}
               >{l}</a>
             ))}
-            <Link className="landing-nav-menu-cta" to={ctaLink} onClick={() => setIsMenuOpen(false)}>{user ? 'Go to Dashboard' : 'Get Early Access'}</Link>
+            <Link className="landing-nav-menu-cta" to={ctaLink} onClick={() => setIsMenuOpen(false)}>
+              {user ? 'Go to Dashboard' : 'Get Early Access'}
+            </Link>
           </div>
 
           <Link className="landing-nav-cta" to={ctaLink} onClick={() => setIsMenuOpen(false)} style={{ backgroundColor: '#0F172A', color: '#FFFFFF', padding: '10px 20px', borderRadius: '8px', fontSize: 14, fontWeight: 600, textDecoration: 'none' }}>
@@ -165,23 +205,33 @@ export default function Landing() {
 
       {/* ── Integration Banner ── */}
       <div style={{ borderTop: '1px solid #E2E8F0', borderBottom: '1px solid #E2E8F0', padding: '32px 24px', backgroundColor: '#F8FAFC', display: 'flex', justifyContent: 'center', gap: 'clamp(24px, 5vw, 64px)', flexWrap: 'wrap', alignItems: 'center' }}>
-        {[
-          { name: 'Powered by' },
-          { name: 'LangChain', href: 'https://docs.langchain.com/oss/python/langchain/overview' },
-          { name: 'LangGraph', href: 'https://docs.langchain.com/oss/python/langgraph/overview' },
-          { name: 'OpenAI', href: 'https://platform.openai.com/docs/quickstart/make-your-first-api-request' },
-          { name: 'pgvector', href: 'https://github.com/pgvector/pgvector' },
-          { name: 'Python', href: 'https://docs.python.org/3/' },
-        ].map(({ name, href }, i) => {
+        {TECHNOLOGIES.map(({ name, href }, i) => {
           const style = {
-            fontSize: i === 0 ? 12 : 16, 
-            fontWeight: i === 0 ? 600 : 700, 
-            color: i === 0 ? '#94A3B8' : '#cbd5e1', 
-            textTransform: i === 0 ? 'uppercase' : 'none', 
+            fontSize: i === 0 ? 12 : 16,
+            fontWeight: i === 0 ? 600 : 700,
+            color: i === 0 ? '#94A3B8' : '#cbd5e1',
+            textTransform: i === 0 ? 'uppercase' : 'none',
             letterSpacing: i === 0 ? '1px' : '-0.02em',
-            filter: i === 0 ? 'none' : 'grayscale(100%)',
+            filter: i !== 0 ? 'grayscale(100%)' : 'none',
           }
-          return href ? <a key={name} href={href} target="_blank" rel="noreferrer" aria-label={`Read ${name} documentation`} title={`Read ${name} documentation`} style={{ ...style, cursor: 'pointer' }}>{name}</a> : <span key={name} style={style}>{name}</span>
+
+          if (!href) {
+            return <span key={name} style={style}>{name}</span>
+          }
+
+          return (
+            <a
+              key={name}
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={`Read ${name} documentation`}
+              title={`Read ${name} documentation`}
+              style={{ ...style, cursor: 'pointer' }}
+            >
+              {name}
+            </a>
+          )
         })}
       </div>
 
@@ -212,9 +262,13 @@ export default function Landing() {
                 <div style={{ fontSize: 12, fontWeight: 700, color: '#94A3B8', marginBottom: 12 }}>{layer.num}</div>
                 <div className="landing-pipeline-icon" aria-hidden="true">
                   {i === 6 ? (
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-1.6 4.9A8.5 8.5 0 0 1 12.5 20a8.4 8.4 0 0 1-4.9-1.6L3 20l1.6-4.6A8.4 8.4 0 0 1 3 10.5 8.5 8.5 0 0 1 6.6 3.6 8.4 8.4 0 0 1 11.5 2h1A8.5 8.5 0 0 1 21 10.5Z" /></svg>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 11.5a8.4 8.4 0 0 1-1.6 4.9A8.5 8.5 0 0 1 12.5 20a8.4 8.4 0 0 1-4.9-1.6L3 20l1.6-4.6A8.4 8.4 0 0 1 3 10.5 8.5 8.5 0 0 1 6.6 3.6 8.4 8.4 0 0 1 11.5 2h1A8.5 8.5 0 0 1 21 10.5Z" />
+                    </svg>
                   ) : (
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 4 4L19 6" /></svg>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="m5 12 4 4L19 6" />
+                    </svg>
                   )}
                 </div>
                 <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A', marginBottom: 8, letterSpacing: '-0.02em' }}>{layer.label}</div>
@@ -298,93 +352,57 @@ export default function Landing() {
         </div>
       </section>
 
-      {PRICING.length > 0 && <section id="pricing" style={{ backgroundColor: '#FFFFFF', padding: '100px 24px', borderTop: '1px solid #E2E8F0' }}>
-        <div style={{ maxWidth: 1000, margin: '0 auto' }}>
-          <div style={{ textAlign: 'center', marginBottom: 64 }}>
-            <h2 style={{ fontSize: 32, fontWeight: 800, color: '#0F172A', letterSpacing: '-0.03em' }}>Simple, transparent pricing</h2>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 32 }}>
-            {PRICING.map((plan, i) => (
-              <div key={i} style={{ 
-                backgroundColor: plan.featured ? '#0F172A' : '#FFFFFF',
-                border: plan.featured ? 'none' : '1px solid #E2E8F0',
-                padding: '48px 32px',
-                borderRadius: 24,
-                position: 'relative',
-                boxShadow: plan.featured ? '0 20px 40px -10px rgba(0,0,0,0.2)' : '0 10px 30px -10px rgba(0,0,0,0.05)',
-                transition: 'transform 200ms ease, box-shadow 200ms ease'
-              }}
-                onMouseEnter={e => {
-                  console.log('Hover Fired');
-                  e.currentTarget.style.transform= 'translateY(-6px)';
-                  e.currentTarget.style.boxShadow= plan.featured
-                    ? '0 30px 50px -10px rgba(0,0,0,0.3)'
-                    : '0 20px 40px -10px rgba(0,0,0,0.08)';
-                }}
-                onMouseLeave={e => {
-                  e.currentTarget.style.transform='translateY(0)';
-                  e.currentTarget.style.boxShadow=plan.featured
-                    ? '0 20px 40px -10px rgba(0,0,0,0.2)'
-                    : '0 10px 30px -10px rgba(0,0,0,0.05)';
-                }}
-              >
-                {plan.featured && (
-                  <div style={{ position: 'absolute', top: -12, left: '50%', transform: 'translateX(-50%)', background: '#3B82F6', color: '#FFFFFF', borderRadius: '999px', padding: '6px 16px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    Most Popular
-                  </div>
-                )}
-                <h3 style={{ fontSize: 24, fontWeight: 700, color: plan.featured ? '#FFFFFF' : '#0F172A', marginBottom: 12, letterSpacing: '-0.02em' }}>{plan.tier}</h3>
-                <p style={{ fontSize: 15, color: plan.featured ? '#94A3B8' : '#64748B', marginBottom: 32, minHeight: 48, lineHeight: 1.5 }}>{plan.desc}</p>
-                <div style={{ marginBottom: 32 }}>
-                  <span style={{ fontSize: 48, fontWeight: 800, color: plan.featured ? '#FFFFFF' : '#0F172A', letterSpacing: '-0.04em' }}>{plan.price}</span>
-                  <span style={{ fontSize: 16, color: plan.featured ? '#94A3B8' : '#64748B', marginLeft: 6 }}>{plan.period}</span>
-                </div>
-                <Link to="/register" style={{ 
-                  justifyContent: 'center', 
-                  marginBottom: 40, 
-                  display: 'flex',
-                  padding: '16px',
-                  borderRadius: '12px',
-                  fontWeight: 600,
-                  textDecoration: 'none',
-                  backgroundColor: plan.featured ? '#3B82F6' : '#F8FAFC',
-                  color: plan.featured ? '#FFFFFF' : '#0F172A',
-                  border: plan.featured ? 'none' : '1px solid #E2E8F0'
-                }}>
-                  {plan.cta}
-                </Link>
-                <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
-                  {plan.features.map((feat, j) => (
-                    <li key={j} style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 15, color: plan.featured ? '#CBD5E1' : '#475569' }}>
-                      <span style={{ color: '#3B82F6', fontWeight: 700 }}>✓</span>
-                      {feat}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>}
-
       {/* ── CTA Banner ── */}
       <section className="landing-cta" style={{ background: '#0F172A', padding: '100px 24px', textAlign: 'center' }}>
         <div className="landing-cta-inner">
           <div className="landing-cta-contact-links" aria-label="NeuroNova contact links">
-            <a className="landing-cta-contact-link landing-cta-contact-link--icon" href="https://x.com/TeamNeuroNova" target="_blank" rel="noreferrer" aria-label="Follow NeuroNova on X" title="Follow NeuroNova on X"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231 5.451-6.231Zm-1.161 17.52h1.833L7.084 4.126H5.117L17.083 19.77Z" /></svg></a>
-            <a className="landing-cta-contact-link landing-cta-contact-link--icon" href="https://www.linkedin.com/company/neuronova-official/?viewAsMember=true" target="_blank" rel="noreferrer" aria-label="Follow NeuroNova on LinkedIn" title="Follow NeuroNova on LinkedIn"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.34V8.98h3.42v1.57h.05c.48-.9 1.64-1.85 3.37-1.85 3.61 0 4.27 2.38 4.27 5.48v6.27ZM5.32 7.41A2.07 2.07 0 1 1 5.32 3.27a2.07 2.07 0 0 1 0 4.14Zm1.78 13.04H3.54V8.98H7.1v11.47ZM22.23 0H1.77C.79 0 0 .77 0 1.72v20.56C0 23.23.79 24 1.77 24h20.46c.98 0 1.77-.77 1.77-1.72V1.72C24 .77 23.21 0 22.23 0Z" /></svg></a>
-            <a className="landing-cta-contact-link" href="mailto:hello@tryneuronova.in?subject=NeuroNova%20Inquiry" aria-label="Email hello@tryneuronova.in" title="Email hello@tryneuronova.in"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 7 9 6 9-6" /></svg><span>hello@tryneuronova.in</span></a>
+            <a
+              className="landing-cta-contact-link landing-cta-contact-link--icon"
+              href="https://x.com/TeamNeuroNova"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Follow NeuroNova on X"
+              title="Follow NeuroNova on X"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231 5.451-6.231Zm-1.161 17.52h1.833L7.084 4.126H5.117L17.083 19.77Z" />
+              </svg>
+            </a>
+            <a
+              className="landing-cta-contact-link landing-cta-contact-link--icon"
+              href="https://www.linkedin.com/company/neuronova-official/?viewAsMember=true"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Follow NeuroNova on LinkedIn"
+              title="Follow NeuroNova on LinkedIn"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.34V8.98h3.42v1.57h.05c.48-.9 1.64-1.85 3.37-1.85 3.61 0 4.27 2.38 4.27 5.48v6.27ZM5.32 7.41A2.07 2.07 0 1 1 5.32 3.27a2.07 2.07 0 0 1 0 4.14Zm1.78 13.04H3.54V8.98H7.1v11.47ZM22.23 0H1.77C.79 0 0 .77 0 1.72v20.56C0 23.23.79 24 1.77 24h20.46c.98 0 1.77-.77 1.77-1.72V1.72C24 .77 23.21 0 22.23 0Z" />
+              </svg>
+            </a>
+            <a
+              className="landing-cta-contact-link"
+              href="mailto:hello@tryneuronova.in?subject=NeuroNova%20Inquiry"
+              aria-label="Email hello@tryneuronova.in"
+              title="Email hello@tryneuronova.in"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="3" y="5" width="18" height="14" rx="2" />
+                <path d="m3 7 9 6 9-6" />
+              </svg>
+              <span>hello@tryneuronova.in</span>
+            </a>
           </div>
-        <h2 style={{ fontSize: 36, fontWeight: 800, color: '#FFFFFF', marginBottom: 20, letterSpacing: '-0.03em' }}>
-          Your data has been waiting for this.
-        </h2>
-        <p style={{ fontSize: 18, color: '#94A3B8', marginBottom: 40, maxWidth: 600, margin: '0 auto 40px', lineHeight: 1.6 }}>
-          Upload your first dataset and get a full intelligence report in under 30 seconds.
-        </p>
-        <Link to={ctaLink} style={{ background: '#FFFFFF', color: '#0F172A', padding: '16px 32px', borderRadius: '12px', fontSize: 16, fontWeight: 700, textDecoration: 'none', display: 'inline-flex' }}>
-          {user ? 'Go to Dashboard →' : 'Start Finding Answers →'}
-        </Link>
+
+          <h2 style={{ fontSize: 36, fontWeight: 800, color: '#FFFFFF', marginBottom: 20, letterSpacing: '-0.03em' }}>
+            Your data has been waiting for this.
+          </h2>
+          <p style={{ fontSize: 18, color: '#94A3B8', marginBottom: 40, maxWidth: 600, margin: '0 auto 40px', lineHeight: 1.6 }}>
+            Upload your first dataset and get a full intelligence report in under 30 seconds.
+          </p>
+          <Link to={ctaLink} style={{ background: '#FFFFFF', color: '#0F172A', padding: '16px 32px', borderRadius: '12px', fontSize: 16, fontWeight: 700, textDecoration: 'none', display: 'inline-flex' }}>
+            {user ? 'Go to Dashboard →' : 'Start Finding Answers →'}
+          </Link>
         </div>
       </section>
 

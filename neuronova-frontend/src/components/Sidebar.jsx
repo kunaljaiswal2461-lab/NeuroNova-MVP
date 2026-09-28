@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { NavLink, Link } from 'react-router-dom'
 import { useDataset } from '../context/DatasetContext'
+import { stageLabel } from '../context/datasetStatus'
 
 const NAV_ITEMS = [
   {
@@ -53,7 +54,7 @@ const NAV_ITEMS = [
 ]
 
 export default function Sidebar({ isOpen = false, onClose = () => {} }) {
-  const { activeDataset } = useDataset()
+  const { activeDataset, datasetReady } = useDataset()
   const [isSupportOpen, setIsSupportOpen] = useState(false) // Added state for Support Menu
 
   const health = activeDataset?._health ?? null
@@ -63,7 +64,7 @@ export default function Sidebar({ isOpen = false, onClose = () => {} }) {
       {/* Wordmark */}
       <div style={{ padding: '20px 16px 12px' }}>
         <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none', cursor: 'pointer' }}>
-          <img 
+          <img
             src="/neuronova-mark.png"
             alt="NeuroNova Logo" 
             className="brand-mark"
@@ -104,7 +105,7 @@ export default function Sidebar({ isOpen = false, onClose = () => {} }) {
                   {activeDataset.original_name}
                 </div>
                 <div style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>
-                  {activeDataset.row_count?.toLocaleString() ?? '—'} rows · {activeDataset.col_count ?? '—'} cols
+                  {datasetReady ? `${activeDataset.row_count?.toLocaleString() ?? '—'} rows · ${activeDataset.col_count ?? '—'} cols` : stageLabel(activeDataset.status)}
                 </div>
               </>
             ) : (
@@ -128,12 +129,19 @@ export default function Sidebar({ isOpen = false, onClose = () => {} }) {
 
       {/* Navigation */}
       <nav style={{ padding: '0 8px', flex: 1 }}>
-        {NAV_ITEMS.map(item => (
+        {NAV_ITEMS.map(item => item.to !== '/upload' && !datasetReady ? (
+          <button key={item.to} type="button" disabled aria-disabled="true" className="nav-item"
+            title="Available when dataset processing is complete"
+            style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 12px', marginBottom: 2, borderRadius: 8, border: 'none', background: 'transparent', color: 'rgba(255,255,255,0.35)', fontSize: 14, fontFamily: 'var(--font-body)', fontWeight: 500, cursor: 'not-allowed' }}>
+            <span style={{ width: 16, height: 16, flexShrink: 0 }}>{item.icon}</span>
+            {item.label}
+          </button>
+        ) : (
           <NavLink
             key={item.to}
             to={item.to}
-            onClick={onClose}
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+            onClick={onClose}
             style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', marginBottom: 2, borderRadius: 8, textDecoration: 'none', color: 'rgba(255,255,255,0.65)', fontSize: 14, fontFamily: 'var(--font-body)', fontWeight: 500, cursor: 'pointer', transition: 'all 150ms' }}
           >
             <span style={{ width: 16, height: 16, flexShrink: 0 }}>{item.icon}</span>
@@ -179,6 +187,7 @@ export default function Sidebar({ isOpen = false, onClose = () => {} }) {
       {/* Bottom Actions - Unrolled to add dropdown logic */}
       <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', padding: '8px 8px 12px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
         
+        {/* Settings */}
         <NavLink to="/settings" onClick={onClose} className="nav-item" style={{ fontSize: 13, gap: 8, display: 'flex', alignItems: 'center', width: '100%', color: 'rgba(255,255,255,0.65)', padding: '8px 12px', borderRadius: '8px', textDecoration: 'none', cursor: 'pointer' }}>
           <span style={{ width: 15, height: 15, flexShrink: 0 }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -204,7 +213,7 @@ export default function Sidebar({ isOpen = false, onClose = () => {} }) {
               zIndex: 50,
               boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.5)'
             }}>
-              <Link 
+              <Link
                 to="/"
                 onClick={onClose}
                 style={{ display: 'block', padding: '8px 16px', fontSize: 13, color: 'white', textDecoration: 'none', fontFamily: 'var(--font-body)', transition: 'background 150ms' }}
