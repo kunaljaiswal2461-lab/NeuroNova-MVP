@@ -149,19 +149,18 @@ export default function Explorer() {
           {error}
         </div>
       ) : (
-        <div className="explorer-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 20, alignItems: 'start' }}>
+        <div className="explorer-grid explorer-workspace">
 
           {/* ── Left: Schema Table ── */}
-          <div className="card anim-fade-up">
-            <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>Schema Overview</h3>
+          <section className="card anim-fade-up explorer-schema-card" aria-labelledby="schema-overview-heading">
+            <div className="explorer-schema-header">
+              <h3 id="schema-overview-heading" style={{ fontFamily: 'var(--font-heading)', fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>Schema Overview</h3>
               <div style={{ position: 'relative' }}>
                 <svg style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)' }} width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
                 </svg>
                 <input
-                  className="input"
-                  style={{ paddingLeft: 28, width: 200, fontSize: 12, padding: '7px 10px 7px 28px' }}
+                  className="input explorer-search-input"
                   placeholder="Search columns..."
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
@@ -169,8 +168,8 @@ export default function Explorer() {
               </div>
             </div>
 
-            <div style={{ overflowX: 'auto' }}>
-              <table className="data-table">
+            <div className="explorer-table-scroll" role="region" aria-label="Schema Overview table">
+              <table className="data-table explorer-schema-table">
                 <thead>
                   <tr>
                     <th>Column</th>
@@ -243,7 +242,7 @@ export default function Explorer() {
               </table>
             </div>
 
-            <div style={{ padding: '10px 20px', borderTop: '1px solid var(--color-border-light)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div className="explorer-schema-footer">
               <span style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-muted)' }}>
                 {filteredCols.length} of {schemaColumns.length} columns
               </span>
@@ -251,10 +250,10 @@ export default function Explorer() {
                 {profile?.schema?.row_count?.toLocaleString() ?? '—'} rows
               </span>
             </div>
-          </div>
+          </section>
 
           {/* ── Right Panel ── */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <aside className="explorer-side-rail" aria-label="Dataset information">
 
             {/* Dataset Health */}
             <div className="card card-pad anim-fade-up" style={{ animationDelay: '60ms' }}>
@@ -334,7 +333,7 @@ export default function Explorer() {
                 </div>
               </div>
             )}
-          </div>
+          </aside>
         </div>
       )}
     </Layout>
