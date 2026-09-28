@@ -435,6 +435,158 @@ input, textarea, select { font-family: inherit; }
   overflow: auto;
 }
 
+/* --- Visualization Center: independent workspace and catalogue --- */
+.visualization-page .page-area {
+  background-image: none;
+}
+
+.visualization-gallery-workspace,
+.visualization-workspace {
+  min-width: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+}
+
+.visualization-workspace {
+  align-self: start;
+}
+
+.visualization-side-rail {
+  position: fixed;
+  top: calc(var(--topbar-height) + var(--space-6));
+  right: var(--space-6);
+  bottom: var(--space-6);
+  z-index: 1;
+  width: 280px;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: var(--space-4);
+}
+
+.visualization-catalogue {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.visualization-catalogue-list {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.visualization-catalogue-item {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--color-base);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.visualization-catalogue-item:hover {
+  background: var(--color-primary-50);
+  border-color: var(--color-info-border);
+}
+
+.visualization-catalogue-item:focus-visible,
+.visualization-skipped-item:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-input-focus);
+}
+
+.visualization-skipped-section {
+  margin-top: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border-light);
+}
+
+.visualization-skipped-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.visualization-skipped-heading p {
+  font-family: var(--font-heading);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--color-warning);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.visualization-skipped-heading span {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.visualization-skipped-summary {
+  margin: 4px 0 8px;
+  color: var(--color-text-muted);
+  font-family: var(--font-body);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.visualization-skipped-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.visualization-skipped-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-sm);
+  padding: 7px 8px;
+  background: var(--color-warning-bg);
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.visualization-skipped-item:hover {
+  border-color: var(--color-warning);
+  background: #FEF3C7;
+}
+
+.visualization-skipped-column {
+  font-family: var(--font-data);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.visualization-skipped-reason {
+  color: var(--color-text-secondary);
+  font-family: var(--font-body);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
 /* --- Topbar --- */
 .topbar {
   height: var(--topbar-height);
@@ -1181,6 +1333,22 @@ input, textarea, select { font-family: inherit; }
   .explorer-grid,
   .visualization-grid {
     grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .visualization-gallery-workspace,
+  .visualization-workspace { padding: var(--space-2); }
+  .visualization-side-rail {
+    position: static;
+    top: auto;
+    right: auto;
+    bottom: auto;
+    width: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+  .visualization-catalogue-list {
+    flex: 0 1 auto;
+    max-height: min(60dvh, 420px);
   }
   .chat-page .page-area {
     display: flex;
