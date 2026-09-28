@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import structlog
 from app.core.config import Settings
 
@@ -9,7 +8,10 @@ log = structlog.get_logger()
 async def send_verification_email(
     settings: Settings, to_email: str, name: str, token: str
 ) -> None:
-    verify_url = f"{settings.frontend_url}/auth/verify-email?token={token}"
+    # Verification is performed by the backend endpoint, which then redirects
+    # the browser to the frontend confirmation screen. The SPA has no
+    # /auth/verify-email route of its own.
+    verify_url = f"{settings.public_url.rstrip('/')}/api/v1/auth/verify-email?token={token}"
     await _send(settings, to_email, "Verify your NeuroNova account", _verification_html(name, verify_url))
 
 
@@ -29,6 +31,12 @@ async def _send(settings: Settings, to: str, subject: str, html: str) -> None:
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
 
+        # Gmail uses STARTTLS on port 587 and implicit TLS on port 465. Passing
+        # ``use_tls=True`` to port 587 attempts the wrong handshake and causes
+        # delivery to fail before an email can be sent.
+        use_tls = settings.smtp_tls and settings.smtp_port == 465
+        start_tls = settings.smtp_tls and settings.smtp_port != 465
+
         msg = MIMEMultipart("alternative")
         msg["From"] = settings.smtp_from_email
         msg["To"] = to
@@ -41,9 +49,15 @@ async def _send(settings: Settings, to: str, subject: str, html: str) -> None:
             port=settings.smtp_port,
             username=settings.smtp_username or None,
             password=settings.smtp_password or None,
-            use_tls=settings.smtp_tls,
+            use_tls=use_tls,
+            start_tls=start_tls,
         )
-        log.info("email.sent", to=to, subject=subject)
+        log.info(
+            "email.sent",
+            to=to,
+            subject=subject,
+            transport="implicit_tls" if use_tls else "starttls" if start_tls else "plain",
+        )
     except Exception as exc:
         log.error("email.failed", to=to, error=str(exc))
 

@@ -56,7 +56,7 @@ async def register_user(
         str(user.id), "email_verification", settings.jwt_secret_key, expire_hours=24
     )
     if dev_auto_verify:
-        verify_url = f"{settings.frontend_url}/auth/verify-email?token={token}"
+        verify_url = f"{settings.public_url.rstrip('/')}/api/v1/auth/verify-email?token={token}"
         log.warning(
             "auth.register.dev_auto_verified",
             user_id=str(user.id),
