@@ -230,7 +230,7 @@ async def update_me(
 
 
 @router.delete("/me", status_code=204)
-@limiter.limit("25/hour")
+@limiter.limit("2/hour")
 async def delete_me(
     request: Request,
     body: DeleteAccountRequest,
