@@ -28,21 +28,21 @@ function SkipPlaceholder({ column, reason }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'center', padding: '48px 0' }}>
       <div style={{
-        borderLeft: '3px solid #E11D48',
+        borderLeft: '3px solid var(--color-warning)',
         padding: '14px 18px',
-        background: '#FFF1F2',
+        background: 'var(--color-warning-bg)',
         borderRadius: '0 6px 6px 0',
         maxWidth: 480,
         width: '100%',
       }}>
-        <div style={{ fontFamily: 'var(--font-heading)', fontSize: 11, fontWeight: 700, color: '#E11D48', letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: 6 }}>
-          ⊘ Chart cannot be generated
+        <div style={{ fontFamily: 'var(--font-heading)', fontSize: 11, fontWeight: 700, color: 'var(--color-warning)', letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: 6 }}>
+          Skipped / Data Quality
         </div>
         <div style={{ fontFamily: 'var(--font-data)', fontSize: 14, fontWeight: 600, color: '#1C1917', marginBottom: 4 }}>
           {column}
         </div>
         <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: '#6B6560', lineHeight: 1.5 }}>
-          {reason ?? 'This column could not be visualized.'}
+          {reason ?? 'This field is intentionally excluded from chart recommendations.'}
         </div>
       </div>
     </div>
@@ -613,14 +613,14 @@ export default function Visualization() {
       ) : error ? (
         <div style={{ background: '#FFF1F2', border: '1px solid #FECDD3', borderRadius: 8, padding: '16px 20px', fontFamily: 'var(--font-body)', fontSize: 13, color: '#9F1239' }}>{error}</div>
       ) : viewMode === 'gallery' ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
+        <div className="visualization-gallery-workspace dot-grid" style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
           {skippedColumns.length > 0 && (
             <div style={{ background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 8, padding: '10px 14px', display: 'flex', alignItems: 'flex-start', gap: 10, fontFamily: 'var(--font-body)', fontSize: 13, color: '#1E40AF' }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1E40AF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 2 }}>
                 <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
               </svg>
               <div>
-                <strong>{skippedColumns.length} column{skippedColumns.length === 1 ? '' : 's'}</strong> could not be visualized: <span style={{ fontFamily: 'var(--font-data)' }}>{skippedColumns.map(s => s.column_name).join(', ')}</span>
+                <strong>{skippedColumns.length} expected exclusion{skippedColumns.length === 1 ? '' : 's'}</strong> will not receive chart recommendations: <span style={{ fontFamily: 'var(--font-data)' }}>{skippedColumns.map(s => s.column_name).join(', ')}</span>
               </div>
             </div>
           )}
@@ -725,19 +725,20 @@ export default function Visualization() {
           )}
         </div>
       ) : (
-        <>
-          {skippedColumns.length > 0 && (
-            <div style={{ background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 8, padding: '10px 14px', marginBottom: 16, display: 'flex', alignItems: 'flex-start', gap: 10, fontFamily: 'var(--font-body)', fontSize: 13, color: '#1E40AF' }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1E40AF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 2 }}>
-                <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
-              </svg>
-              <div style={{ lineHeight: 1.5 }}>
-                <strong>{skippedColumns.length} column{skippedColumns.length === 1 ? '' : 's'}</strong> could not be visualized due to data quality issues and {skippedColumns.length === 1 ? 'was' : 'were'} skipped: <span style={{ fontFamily: 'var(--font-data)' }}>{skippedColumns.map(s => s.column_name).join(', ')}</span>
-              </div>
-            </div>
-          )}
+        <div className="visualization-single-view">
           <div className="visualization-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 20, alignItems: 'start' }}>
-            <div className="card anim-fade-up" style={{ overflow: 'hidden' }}>
+            <section className="visualization-workspace dot-grid" role="region" aria-label="Visualization workspace">
+              {skippedColumns.length > 0 && (
+                <div style={{ background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 8, padding: '10px 14px', marginBottom: 16, display: 'flex', alignItems: 'flex-start', gap: 10, fontFamily: 'var(--font-body)', fontSize: 13, color: '#1E40AF' }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1E40AF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 2 }}>
+                    <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+                  </svg>
+                  <div style={{ lineHeight: 1.5 }}>
+                    <strong>{skippedColumns.length} expected exclusion{skippedColumns.length === 1 ? '' : 's'}</strong> will not receive chart recommendations: <span style={{ fontFamily: 'var(--font-data)' }}>{skippedColumns.map(s => s.column_name).join(', ')}</span>
+                  </div>
+                </div>
+              )}
+              <div className="card anim-fade-up" style={{ overflow: 'hidden' }}>
               <div className="viz-tabs" style={{ padding: '0 20px' }}>
                 {TABS.map(tab => (
                   <button key={tab} className={`viz-tab ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>{tab}</button>
@@ -947,9 +948,10 @@ export default function Visualization() {
                   </div>
                 )}
               </div>
-            </div>
+              </div>
+            </section>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <aside className="visualization-side-rail" aria-label="Visualization details">
               <div className="card card-pad anim-fade-up" style={{ animationDelay: '60ms' }}>
                 <p className="text-label-caps" style={{ color: 'var(--color-text-muted)', marginBottom: 14 }}>Distribution Metrics</p>
                 <div className="visualization-metrics" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -970,11 +972,11 @@ export default function Visualization() {
                 </div>
               </div>
 
-              <div className="card anim-fade-up" style={{ animationDelay: '120ms' }}>
+              <section className="card anim-fade-up visualization-catalogue" aria-label="Chart catalogue panel" style={{ animationDelay: '120ms' }}>
                 <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--color-border)' }}>
-                  <p className="text-label-caps" style={{ color: 'var(--color-text-muted)' }}>Chart Catalogue</p>
+                  <p id="chart-catalogue-heading" className="text-label-caps" style={{ color: 'var(--color-text-muted)' }}>Chart Catalogue</p>
                 </div>
-                <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div className="visualization-catalogue-list" role="region" aria-label="Chart Catalogue">
                   {charts.length === 0 && skippedColumns.length === 0 ? (
                     <div style={{ textAlign: 'center', padding: '16px 0' }}>
                       <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-muted)' }}>{loading ? 'Loading…' : 'No charts generated'}</p>
@@ -984,7 +986,7 @@ export default function Visualization() {
                       {charts.map((c, i) => {
                         const display = CHART_TYPE_DISPLAY[c.type] ?? { label: c.type, color: '#6B7280' }
                         return (
-                          <div key={i} style={{ background: 'var(--color-base)', borderRadius: 6, padding: '8px 10px', cursor: 'pointer' }} onClick={() => {
+                          <button key={c.chart_id ?? i} type="button" className="visualization-catalogue-item" onClick={() => {
                             const tab = { HISTOGRAM: 'Numeric', BOXPLOT: 'Numeric', BAR: 'Categorical', PIE: 'Categorical', HEATMAP: 'Dataset', SCATTER: 'Dataset', TIMESERIES: 'Temporal', NULL_MATRIX: 'Dataset', RADAR: 'Dataset' }[c.type] ?? 'Numeric'
                             setViewMode('single')
                             if (tab) setActiveTab(tab)
@@ -996,29 +998,34 @@ export default function Visualization() {
                               <span style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: display.color, textTransform: 'uppercase', letterSpacing: '0.04em', fontWeight: 700 }}>{display.label}</span>
                             </div>
                             <div style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-primary)', fontWeight: 500 }}>{c.title}</div>
-                          </div>
+                          </button>
                         )
                       })}
                       {skippedColumns.length > 0 && (
-                        <>
-                          <div style={{ height: 1, background: 'var(--color-border-light)', margin: '6px 0' }} />
+                        <section className="visualization-skipped-section" aria-labelledby="skipped-data-quality-heading">
+                          <div className="visualization-skipped-heading">
+                            <p id="skipped-data-quality-heading">Skipped / Data Quality</p>
+                            <span>{skippedColumns.length}</span>
+                          </div>
+                          <p className="visualization-skipped-summary">Expected exclusions such as identifiers and free-form fields.</p>
+                          <div className="visualization-skipped-list">
                           {skippedColumns.map((sc, i) => (
-                            <button key={`sk-${i}`} onClick={() => {
+                            <button key={`sk-${i}`} type="button" className="visualization-skipped-item" onClick={() => {
                               setViewMode('single')
                               if (sc.intended_chart_type === 'BAR') { setActiveTab('Categorical'); setActiveBarCol(sc.column_name) }
                               else { setActiveTab('Numeric'); setActiveCol(sc.column_name) }
-                            }} style={{ borderLeft: '3px solid #E11D48', background: '#FFF1F2', borderRadius: '0 6px 6px 0', border: 'none', borderLeftWidth: 3, borderLeftStyle: 'solid', borderLeftColor: '#E11D48', padding: '8px 10px', textAlign: 'left', cursor: 'pointer', width: '100%' }}>
-                              <div style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: '#E11D48', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 700, marginBottom: 3 }}>⊘ Chart cannot be generated</div>
-                              <div style={{ fontFamily: 'var(--font-data)', fontSize: 12, color: '#1C1917', fontWeight: 500, marginBottom: 2 }}>{sc.column_name}</div>
-                              <div style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#6B6560', lineHeight: 1.4 }}>{sc.reason}</div>
+                            }}>
+                              <span className="visualization-skipped-column">{sc.column_name}</span>
+                              <span className="visualization-skipped-reason">{sc.reason ?? 'Not suited to charting.'}</span>
                             </button>
                           ))}
-                        </>
+                          </div>
+                        </section>
                       )}
                     </>
                   )}
                 </div>
-              </div>
+              </section>
 
               <div className="card card-pad anim-fade-up" style={{ animationDelay: '180ms' }}>
                 <p className="text-label-caps" style={{ color: 'var(--color-text-muted)', marginBottom: 12 }}>Percentiles</p>
@@ -1031,9 +1038,9 @@ export default function Visualization() {
                   ))}
                 </div>
               </div>
-            </div>
+            </aside>
           </div>
-        </>
+        </div>
       )}
     </Layout>
   )
