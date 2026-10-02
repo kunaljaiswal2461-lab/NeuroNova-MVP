@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from functools import lru_cache
 from typing import Literal
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
 
@@ -110,6 +110,8 @@ class Settings(BaseSettings):
     rate_limit_chat_message: str = "60/hour"
     rate_limit_interpret: str = "20/hour"
     rate_limit_session_create: str = "20/hour"
+    rate_limit_connector_test: str = "10/hour"
+    rate_limit_connector_create: str = "10/hour"
     rate_limit_global: str = "200/hour"
     max_concurrent_pipelines: int = Field(default=1, gt=0)
 
@@ -119,6 +121,23 @@ class Settings(BaseSettings):
     # --- request size + security ---
     # One MiB of headroom for multipart headers around the pilot file limit.
     max_request_bytes: int = Field(default=21 * 1024 * 1024, gt=0)
+
+    # --- external PostgreSQL sources (disabled until production egress is ready) ---
+    # These are intentionally optional: file-only deployments must start without
+    # connector secrets. The feature service fails closed when they are absent.
+    connectors_enabled: bool = False
+    connector_egress_policy_configured: bool = False
+    connector_credentials_active_key_id: str = Field(default="", max_length=64)
+    connector_credentials_active_key: SecretStr | None = None
+    # JSON object of at most three historical {key_id: fernet_key} entries.
+    # It is secret material and must be injected by the deployment, never
+    # committed to an .env example.
+    connector_credentials_previous_keyring: SecretStr | None = None
+    connector_connect_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    connector_statement_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    connector_operation_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    connector_max_concurrent_operations: int = Field(default=2, ge=1, le=10)
+    connector_max_inventory_tables: int = Field(default=1000, ge=1, le=1000)
 
     # --- frontend ---
     frontend_url: str = "http://localhost:5173"
