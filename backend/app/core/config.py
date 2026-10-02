@@ -156,6 +156,20 @@ class Settings(BaseSettings):
     catalog_discovery_max_relationships: int = Field(default=20_000, ge=1, le=50_000)
     catalog_discovery_max_metadata_bytes: int = Field(default=4 * 1024 * 1024, ge=1024, le=32 * 1024 * 1024)
 
+    # --- PostgreSQL structured-query planning (Stage 4A; no executor yet) ---
+    # These caps constrain the small, deterministic SQL language before any
+    # future connector can see a plan. They deliberately remain independent
+    # from upload/Polars query limits.
+    postgres_query_max_result_limit: int = Field(default=500, ge=1, le=10_000)
+    postgres_query_max_projections: int = Field(default=20, ge=1, le=100)
+    postgres_query_max_filters: int = Field(default=12, ge=0, le=50)
+    postgres_query_max_aggregations: int = Field(default=8, ge=1, le=25)
+    postgres_query_max_group_by: int = Field(default=4, ge=0, le=12)
+    postgres_query_max_in_values: int = Field(default=100, ge=1, le=1000)
+    # A conservative pre-asyncpg estimate for all bound plan values. Result
+    # bytes remain a separate Stage 4B execution limit.
+    postgres_query_max_parameter_bytes: int = Field(default=64 * 1024, ge=1024, le=1024 * 1024)
+
     # --- frontend ---
     frontend_url: str = "http://localhost:5173"
     # Comma-separated browser origins permitted to receive OAuth callbacks.

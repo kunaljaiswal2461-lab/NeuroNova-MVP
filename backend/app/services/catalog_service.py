@@ -16,9 +16,10 @@ import hashlib
 import json
 import re
 import uuid
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Iterable
+from types import MappingProxyType
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -39,7 +40,7 @@ from app.db.models.catalog import (
     CatalogSyncRunStatus,
     SourceCatalogHead,
 )
-from app.db.models.source import DataSource, SourceTableScope
+from app.db.models.source import DataSource, SourceTableScope, SourceType
 from app.exceptions.custom_exceptions import AppError, NotFoundError
 
 
@@ -103,6 +104,24 @@ class CatalogInspectionInputError(CatalogServiceError):
 
     def __init__(self, message: str = "catalog inspection request is invalid"):
         super().__init__(message)
+
+
+_POSTGRES_QUERY_CONTEXT_MAX_COLUMN_IDS = 256
+
+
+class CatalogQueryContextError(CatalogServiceError):
+    """A source's current catalog cannot safely support query planning yet.
+
+    This deliberately does not distinguish a stale snapshot, a changed scope,
+    or a non-published run. Those details are operational state, not a reason
+    to let a caller bypass the current-catalog boundary.
+    """
+
+    status_code = 409
+    code = "catalog_query_context_unavailable"
+
+    def __init__(self):
+        super().__init__("the current catalog is not eligible for query planning")
 
 
 @dataclass(frozen=True)
@@ -179,6 +198,24 @@ class CatalogAvailability:
     source_id: uuid.UUID
     latest_run: CatalogSyncRun | None
     current_snapshot: CatalogSnapshot | None
+
+
+@dataclass(frozen=True)
+class PostgresQueryCatalogContext:
+    """Authorized, current structural inputs for one PostgreSQL query plan.
+
+    This boundary deliberately returns catalog records rather than names from
+    an untrusted plan. Callers can compile only the exact source/snapshot/table
+    and requested columns that were proven current and selected here. It does
+    not establish live client-database permissions; Stage 4B must recheck
+    those immediately before execution.
+    """
+
+    source: DataSource
+    snapshot: CatalogSnapshot
+    asset: CatalogAsset
+    columns: Mapping[uuid.UUID, CatalogColumn]
+    current_scope_fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -1363,6 +1400,149 @@ def _scope_asset_join():
     )
 
 
+def _query_context_column_ids(
+    column_ids: Iterable[uuid.UUID],
+) -> tuple[uuid.UUID, ...]:
+    """Materialize bounded callers' column references without accepting IDs by name.
+
+    Query-plan shape validation owns its own complexity limits. This service
+    still rejects malformed references here so a direct internal caller cannot
+    cause an unscoped catalog lookup. Repeated UUIDs describe the same catalog
+    record and are intentionally loaded once.
+    """
+
+    try:
+        requested = tuple(column_ids)
+    except TypeError:
+        raise NotFoundError("catalog column not found") from None
+    if (
+        len(requested) > _POSTGRES_QUERY_CONTEXT_MAX_COLUMN_IDS
+        or any(not isinstance(column_id, uuid.UUID) for column_id in requested)
+    ):
+        raise NotFoundError("catalog column not found")
+    return tuple(dict.fromkeys(requested))
+
+
+async def resolve_postgres_query_catalog_context_for_owner(
+    session: AsyncSession,
+    *,
+    source_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    column_ids: Iterable[uuid.UUID],
+    owner_user_id: uuid.UUID,
+) -> PostgresQueryCatalogContext:
+    """Resolve the sole current, selected catalog context for a query plan.
+
+    An immutable historical snapshot is useful for inspection, but it is not
+    an execution authority. Query planning therefore accepts only the source
+    head's published snapshot and only when its captured scope still exactly
+    matches the source's current explicit table selection. No requested name
+    or identifier is trusted until it is found through this owner-scoped,
+    source/snapshot/asset-constrained lookup.
+    """
+
+    requested_column_ids = _query_context_column_ids(column_ids)
+    try:
+        source = await _owned_source_or_raise(
+            session,
+            source_id=source_id,
+            owner_user_id=owner_user_id,
+        )
+        if source.source_type is not SourceType.POSTGRESQL:
+            await _rollback_quietly(session)
+            raise CatalogQueryContextError()
+
+        # Distinguish a foreign/nonexistent snapshot (a reference failure)
+        # from an owned but historical snapshot (a stale planning context).
+        snapshot = (
+            await session.execute(
+                select(CatalogSnapshot).where(
+                    CatalogSnapshot.id == snapshot_id,
+                    CatalogSnapshot.source_id == source.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if snapshot is None:
+            await _rollback_quietly(session)
+            raise NotFoundError("catalog snapshot not found")
+
+        head = (
+            await session.execute(
+                select(SourceCatalogHead).where(SourceCatalogHead.source_id == source.id)
+            )
+        ).scalar_one_or_none()
+        if head is None or head.snapshot_id != snapshot.id:
+            await _rollback_quietly(session)
+            raise CatalogQueryContextError()
+
+        run = (
+            await session.execute(
+                select(CatalogSyncRun).where(
+                    CatalogSyncRun.id == snapshot.sync_run_id,
+                    CatalogSyncRun.source_id == source.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if run is None or run.status is not CatalogSyncRunStatus.SUCCEEDED:
+            await _rollback_quietly(session)
+            raise CatalogQueryContextError()
+
+        current_scope = await _current_scope(session, source.id)
+        if not current_scope:
+            await _rollback_quietly(session)
+            raise CatalogQueryContextError()
+        current_scope_fingerprint = canonical_scope_fingerprint(current_scope)
+        if snapshot.scope_fingerprint != current_scope_fingerprint:
+            await _rollback_quietly(session)
+            raise CatalogQueryContextError()
+
+        asset = (
+            await session.execute(
+                select(CatalogAsset)
+                .join(SourceTableScope, _scope_asset_join())
+                .where(
+                    CatalogAsset.id == asset_id,
+                    CatalogAsset.source_id == source.id,
+                    CatalogAsset.snapshot_id == snapshot.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if asset is None:
+            await _rollback_quietly(session)
+            raise NotFoundError("catalog asset not found")
+
+        columns: dict[uuid.UUID, CatalogColumn] = {}
+        if requested_column_ids:
+            resolved_columns = (
+                await session.execute(
+                    select(CatalogColumn)
+                    .where(
+                        CatalogColumn.source_id == source.id,
+                        CatalogColumn.snapshot_id == snapshot.id,
+                        CatalogColumn.asset_id == asset.id,
+                        CatalogColumn.id.in_(requested_column_ids),
+                    )
+                    .order_by(CatalogColumn.ordinal_position, CatalogColumn.id)
+                )
+            ).scalars().all()
+            columns = {column.id: column for column in resolved_columns}
+            if len(columns) != len(requested_column_ids):
+                await _rollback_quietly(session)
+                raise NotFoundError("catalog column not found")
+
+        return PostgresQueryCatalogContext(
+            source=source,
+            snapshot=snapshot,
+            asset=asset,
+            columns=MappingProxyType(columns),
+            current_scope_fingerprint=current_scope_fingerprint,
+        )
+    except SQLAlchemyError:
+        await _rollback_quietly(session)
+        raise CatalogPersistenceError() from None
+
+
 async def list_catalog_assets_for_owner(
     session: AsyncSession,
     *,
@@ -2365,6 +2545,7 @@ __all__ = [
     "CatalogKeyChange",
     "CatalogKeyInput",
     "CatalogPersistenceError",
+    "CatalogQueryContextError",
     "CatalogRunLeaseLostError",
     "CatalogRunStateError",
     "CatalogRunSupersededError",
@@ -2374,6 +2555,7 @@ __all__ = [
     "CatalogSyncLease",
     "CatalogTableChange",
     "CatalogTableIdentity",
+    "PostgresQueryCatalogContext",
     "cancel_catalog_sync_run_for_owner",
     "canonical_scope_fingerprint",
     "claim_next_catalog_sync_run",
@@ -2388,6 +2570,7 @@ __all__ = [
     "mark_catalog_sync_running",
     "list_catalog_assets_for_owner",
     "publish_catalog_snapshot",
+    "resolve_postgres_query_catalog_context_for_owner",
     "renew_catalog_sync_lease",
     "request_catalog_sync_for_owner",
 ]
