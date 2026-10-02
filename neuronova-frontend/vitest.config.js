@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: 'jsdom',
-    include: ['tests/dataset*.test.{js,jsx}'],
+    include: ['tests/**/*.test.{js,jsx}'],
     clearMocks: true,
   },
 })

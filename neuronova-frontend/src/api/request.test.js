@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createApi, RETRY_MESSAGE, UNAVAILABLE_MESSAGE, UPLOAD_UNCERTAIN_MESSAGE } from './request.js'
+import { createApi, JWT_REQUIRED_MESSAGE, RETRY_MESSAGE, UNAVAILABLE_MESSAGE, UPLOAD_UNCERTAIN_MESSAGE } from './request.js'
 
 function json(data = {}, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } })
@@ -174,6 +174,41 @@ test('POST never replays network failures, timeouts or transient HTTP errors', a
     await assert.rejects(api.post('/write', { value: 1 }), { message: UNAVAILABLE_MESSAGE })
     assert.equal(calls, 1)
   }
+})
+
+test('JWT-only requests reject before fetch and never fall back to the global API key', async () => {
+  let calls = 0
+  const { api, tokens } = harness(async () => { calls++; return json({ ok: true }) })
+  tokens.delete('access_token')
+  tokens.delete('refresh_token')
+
+  await assert.rejects(api.post('/sources/postgresql/test', {}, { requireJwt: true }), {
+    status: 401,
+    code: 'authentication_required',
+    message: JWT_REQUIRED_MESSAGE,
+  })
+  assert.equal(calls, 0)
+})
+
+test('JWT-only requests preserve structured connector errors without retrying them', async () => {
+  let calls = 0
+  const { api } = harness(async (_url, init) => {
+    calls++
+    assert.equal(init.headers.Authorization, 'Bearer old')
+    assert.equal(init.headers['X-API-Key'], undefined)
+    return json({ error: { code: 'connectors_disabled', message: 'disabled' } }, 503)
+  })
+
+  await assert.rejects(api.post('/sources/postgresql/test', {}, {
+    requireJwt: true,
+    preserveErrorBody: true,
+  }), error => {
+    assert.equal(error.status, 503)
+    assert.equal(error.response.error.code, 'connectors_disabled')
+    assert.equal(error.code, 'connectors_disabled')
+    return true
+  })
+  assert.equal(calls, 1)
 })
 
 test('DELETE sends the confirmation payload once and handles a 204 response', async () => {

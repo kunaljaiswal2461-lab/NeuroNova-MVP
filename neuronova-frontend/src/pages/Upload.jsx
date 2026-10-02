@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Layout from '../components/Layout'
+import DatabaseSourcesPanel from '../components/sources/DatabaseSourcesPanel'
 import { api } from '../api/client'
 import { useDataset } from '../context/DatasetContext'
 import { isTerminalStatus, stageLabel, validateUpload } from '../context/datasetStatus'
@@ -28,6 +29,8 @@ const PIPELINE_STEPS = [
   { key: 'INDEXING',  label: 'Indexing semantic embeddings' },
   { key: 'COMPLETE',  label: 'Pipeline complete' },
 ]
+
+const SOURCE_TABS = ['file', 'database']
 
 function StepIcon({ status }) {
   if (status === 'complete') return (
@@ -63,12 +66,14 @@ function timeAgo(dateStr) {
 }
 
 export default function Upload() {
+  const [activeTab, setActiveTab] = useState('file')
   const [dragActive, setDragActive] = useState(false)
   const [datasets, setDatasets] = useState([])
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState(null)
   const [listError, setListError] = useState(null)
   const fileRef = useRef(null)
+  const tabRefs = useRef([])
   const uploadRef = useRef(null)
   const listRef = useRef(null)
   const { activeDataset, activeDatasetId, selectDataset, clearDataset, statusMessage } = useDataset()
@@ -156,6 +161,20 @@ export default function Upload() {
   const handleDragLeave = () => setDragActive(false)
   const handleClick = () => { if (!uploadRef.current) fileRef.current?.click() }
 
+  const handleTabKeyDown = (event) => {
+    const currentIndex = SOURCE_TABS.indexOf(activeTab)
+    let nextIndex
+    if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % SOURCE_TABS.length
+    if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + SOURCE_TABS.length) % SOURCE_TABS.length
+    if (event.key === 'Home') nextIndex = 0
+    if (event.key === 'End') nextIndex = SOURCE_TABS.length - 1
+    if (nextIndex === undefined) return
+    event.preventDefault()
+    const nextTab = SOURCE_TABS[nextIndex]
+    setActiveTab(nextTab)
+    tabRefs.current[nextIndex]?.focus()
+  }
+
   const currentIdx = PIPELINE_STEPS.findIndex(s => s.key === pipelineStatus)
   const steps = PIPELINE_STEPS.map((s, i) => ({
     ...s,
@@ -166,17 +185,55 @@ export default function Upload() {
     <Layout
       className="dataset-workflow"
       title="Upload Center"
-      subtitle="Upload a dataset to begin AI-powered analysis"
+      subtitle="Upload a dataset or connect a PostgreSQL source"
       actions={
-        <button className="btn btn-primary" onClick={handleClick} disabled={uploading} style={{ gap: 6 }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-          </svg>
-          New Dataset
-        </button>
+        activeTab === 'file' ? (
+          <button className="btn btn-primary" onClick={handleClick} disabled={uploading} style={{ gap: 6 }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            New Dataset
+          </button>
+        ) : null
       }
     >
       <div style={{ width: '100%', minWidth: 0, maxWidth: 860, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <div className="source-tabs" role="tablist" aria-label="Data sources" onKeyDown={handleTabKeyDown}>
+          <button
+            ref={element => { tabRefs.current[0] = element }}
+            id="file-source-tab"
+            className={`source-tab ${activeTab === 'file' ? 'active' : ''}`}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'file'}
+            aria-controls="file-source-panel"
+            tabIndex={activeTab === 'file' ? 0 : -1}
+            onClick={() => setActiveTab('file')}
+          >
+            File
+          </button>
+          <button
+            ref={element => { tabRefs.current[1] = element }}
+            id="database-source-tab"
+            className={`source-tab ${activeTab === 'database' ? 'active' : ''}`}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'database'}
+            aria-controls="database-source-panel"
+            tabIndex={activeTab === 'database' ? 0 : -1}
+            onClick={() => setActiveTab('database')}
+          >
+            Database
+          </button>
+        </div>
+
+        <section
+          id="file-source-panel"
+          role="tabpanel"
+          aria-labelledby="file-source-tab"
+          hidden={activeTab !== 'file'}
+          inert={activeTab !== 'file'}
+        >
 
         {error && (
           <div role="alert" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, background: '#FFF1F2', border: '1px solid #FECDD3', borderRadius: 8, padding: '12px 16px', fontFamily: 'var(--font-body)', fontSize: 13, color: '#9F1239' }}>
@@ -364,6 +421,17 @@ export default function Upload() {
           </table>
           </div>
         </div>
+        </section>
+
+        <section
+          id="database-source-panel"
+          role="tabpanel"
+          aria-labelledby="database-source-tab"
+          hidden={activeTab !== 'database'}
+          inert={activeTab !== 'database'}
+        >
+          <DatabaseSourcesPanel active={activeTab === 'database'} />
+        </section>
       </div>
     </Layout>
   )
