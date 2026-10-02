@@ -112,6 +112,7 @@ class Settings(BaseSettings):
     rate_limit_session_create: str = "20/hour"
     rate_limit_connector_test: str = "10/hour"
     rate_limit_connector_create: str = "10/hour"
+    rate_limit_catalog_sync_request: str = "20/hour"
     rate_limit_global: str = "200/hour"
     max_concurrent_pipelines: int = Field(default=1, gt=0)
 
@@ -138,6 +139,22 @@ class Settings(BaseSettings):
     connector_operation_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
     connector_max_concurrent_operations: int = Field(default=2, ge=1, le=10)
     connector_max_inventory_tables: int = Field(default=1000, ge=1, le=1000)
+
+    # --- durable PostgreSQL catalog discovery worker ---
+    # The web process only persists a manual request. A separately deployed
+    # worker consumes it, so file-only web deployments remain unaffected.
+    catalog_worker_max_concurrent_jobs: int = Field(default=1, ge=1, le=10)
+    catalog_worker_poll_interval_seconds: float = Field(default=2.0, gt=0, le=30)
+    catalog_worker_lease_seconds: float = Field(default=30.0, ge=5, le=300)
+    catalog_worker_lease_renewal_seconds: float = Field(default=5.0, ge=1, le=60)
+    catalog_worker_max_attempts: int = Field(default=3, ge=1, le=10)
+    catalog_worker_retry_base_seconds: float = Field(default=2.0, gt=0, le=60)
+    catalog_worker_retry_max_seconds: float = Field(default=30.0, gt=0, le=300)
+    catalog_discovery_timeout_seconds: float = Field(default=45.0, gt=0, le=120)
+    catalog_discovery_max_tables: int = Field(default=1000, ge=1, le=1000)
+    catalog_discovery_max_columns: int = Field(default=50_000, ge=1, le=100_000)
+    catalog_discovery_max_relationships: int = Field(default=20_000, ge=1, le=50_000)
+    catalog_discovery_max_metadata_bytes: int = Field(default=4 * 1024 * 1024, ge=1024, le=32 * 1024 * 1024)
 
     # --- frontend ---
     frontend_url: str = "http://localhost:5173"

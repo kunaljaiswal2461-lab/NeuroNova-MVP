@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -17,6 +18,7 @@ from app.core.config import Settings, get_settings
 from app.core.dependencies import get_session
 from app.core.security import create_access_token
 from app.db.models.source import SourceStatus, SourceType, TLSMode
+from app.db.models.catalog import CatalogSyncRunStatus
 from app.db.models.user import User, UserRole
 from app.exceptions.custom_exceptions import NotFoundError
 from app.schemas.source_schemas import (
@@ -25,7 +27,7 @@ from app.schemas.source_schemas import (
     SourceDetailResponse,
     SourceListResponse,
 )
-from app.services import source_service
+from app.services import catalog_service, source_service
 from main import create_app
 
 
@@ -74,6 +76,16 @@ def route_context(monkeypatch):
     )
     source = _source(owner.id)
     calls: list[tuple[str, uuid.UUID | None]] = []
+    catalog_run = SimpleNamespace(
+        id=uuid.uuid4(),
+        status=CatalogSyncRunStatus.QUEUED,
+        requested_at=datetime.now(timezone.utc),
+        started_at=None,
+        completed_at=None,
+        attempt_count=0,
+        next_attempt_at=None,
+        failure_code=None,
+    )
 
     async def fake_test(body, *, settings):
         calls.append(("test", None))
@@ -101,11 +113,45 @@ def route_context(monkeypatch):
         if source_id != source.source_id or owner_user_id != owner.id:
             raise NotFoundError("source not found")
 
+    async def fake_catalog_request(_session, *, source_id, owner_user_id):
+        calls.append(("catalog_request", owner_user_id))
+        if source_id != source.source_id or owner_user_id != owner.id:
+            raise NotFoundError("source not found")
+        return catalog_run
+
+    async def fake_catalog_availability(_session, *, source_id, owner_user_id):
+        calls.append(("catalog_availability", owner_user_id))
+        if source_id != source.source_id or owner_user_id != owner.id:
+            raise NotFoundError("source not found")
+        return catalog_service.CatalogAvailability(
+            source_id=source_id,
+            latest_run=catalog_run,
+            current_snapshot=None,
+        )
+
+    async def fake_catalog_run(_session, *, source_id, run_id, owner_user_id):
+        calls.append(("catalog_run", owner_user_id))
+        if source_id != source.source_id or run_id != catalog_run.id or owner_user_id != owner.id:
+            raise NotFoundError("catalog synchronization run not found")
+        return catalog_run
+
+    async def fake_catalog_cancel(_session, *, source_id, run_id, owner_user_id):
+        calls.append(("catalog_cancel", owner_user_id))
+        if source_id != source.source_id or run_id != catalog_run.id or owner_user_id != owner.id:
+            raise NotFoundError("catalog synchronization run not found")
+        catalog_run.status = CatalogSyncRunStatus.CANCELLED
+        catalog_run.completed_at = datetime.now(timezone.utc)
+        return catalog_run
+
     monkeypatch.setattr(source_service, "test_postgresql_source", fake_test)
     monkeypatch.setattr(source_service, "create_postgresql_source", fake_create)
     monkeypatch.setattr(source_service, "list_sources_for_owner", fake_list)
     monkeypatch.setattr(source_service, "read_source_for_owner", fake_read)
     monkeypatch.setattr(source_service, "delete_source_for_owner", fake_delete)
+    monkeypatch.setattr(catalog_service, "request_catalog_sync_for_owner", fake_catalog_request)
+    monkeypatch.setattr(catalog_service, "get_catalog_availability_for_owner", fake_catalog_availability)
+    monkeypatch.setattr(catalog_service, "get_catalog_sync_run_for_owner", fake_catalog_run)
+    monkeypatch.setattr(catalog_service, "cancel_catalog_sync_run_for_owner", fake_catalog_cancel)
 
     app = create_app()
 
@@ -122,7 +168,7 @@ def route_context(monkeypatch):
             )
         }
 
-    yield app, owner, other, source, settings, headers, calls
+    yield app, owner, other, source, settings, headers, calls, catalog_run
     app.dependency_overrides.clear()
 
 
@@ -150,7 +196,7 @@ def _create_payload():
 
 
 async def test_jwt_owner_can_test_create_read_list_and_delete(route_client, route_context):
-    _app, owner, _other, source, _settings, headers, calls = route_context
+    _app, owner, _other, source, _settings, headers, calls, _catalog_run = route_context
     owner_headers = headers(owner)
 
     assert (await route_client.post("/api/v1/sources/postgresql/test", headers=owner_headers, json=_test_payload())).status_code == 200
@@ -165,7 +211,7 @@ async def test_jwt_owner_can_test_create_read_list_and_delete(route_client, rout
 
 
 async def test_other_user_gets_non_enumerating_not_found(route_client, route_context):
-    _app, _owner, other, source, _settings, headers, calls = route_context
+    _app, _owner, other, source, _settings, headers, calls, _catalog_run = route_context
     response = await route_client.get(f"/api/v1/sources/{source.source_id}", headers=headers(other))
     assert response.status_code == 404
     deleted = await route_client.delete(f"/api/v1/sources/{source.source_id}", headers=headers(other))
@@ -180,7 +226,7 @@ async def test_source_apis_reject_unauthenticated_api_key_and_invalid_bearer(rou
 
 
 async def test_source_validation_never_reflects_password_or_ca(route_client, route_context):
-    _app, owner, _other, _source, _settings, headers, calls = route_context
+    _app, owner, _other, _source, _settings, headers, calls, _catalog_run = route_context
     payload = _test_payload()
     payload["credentials"]["password"] = "do-not-reflect-this-password"
     payload["tls"] = {"mode": "verify-full", "custom_ca_pem": "x" * (64 * 1024 + 1)}
@@ -197,7 +243,7 @@ async def test_blank_custom_ca_is_rejected_without_contacting_the_adapter(
     route_context,
     custom_ca_pem,
 ):
-    _app, owner, _other, _source, _settings, headers, calls = route_context
+    _app, owner, _other, _source, _settings, headers, calls, _catalog_run = route_context
     payload = _test_payload()
     payload["tls"] = {"mode": "verify-full", "custom_ca_pem": custom_ca_pem}
 
@@ -302,7 +348,7 @@ async def test_http_fixture_can_inject_the_explicit_disposable_destination_polic
 
 
 async def test_profiling_cannot_be_enabled_in_stage_2b(route_client, route_context):
-    _app, owner, _other, _source, _settings, headers, calls = route_context
+    _app, owner, _other, _source, _settings, headers, calls, _catalog_run = route_context
     payload = _create_payload()
     payload["profiling_enabled"] = True
     response = await route_client.post("/api/v1/sources", headers=headers(owner), json=payload)
@@ -329,3 +375,75 @@ async def test_source_routes_use_configured_cors_origins_not_wildcard(route_clie
         },
     )
     assert "access-control-allow-origin" not in rejected.headers
+
+
+async def test_catalog_sync_routes_are_jwt_owner_scoped(route_client, route_context):
+    _app, owner, _other, source, _settings, headers, calls, catalog_run = route_context
+    owner_headers = headers(owner)
+
+    accepted = await route_client.post(
+        f"/api/v1/sources/{source.source_id}/catalog-syncs", headers=owner_headers
+    )
+    assert accepted.status_code == 202
+    assert accepted.json()["run_id"] == str(catalog_run.id)
+    availability = await route_client.get(
+        f"/api/v1/sources/{source.source_id}/catalog", headers=owner_headers
+    )
+    assert availability.status_code == 200
+    assert availability.json()["current_snapshot_id"] is None
+    inspected = await route_client.get(
+        f"/api/v1/sources/{source.source_id}/catalog-syncs/{catalog_run.id}",
+        headers=owner_headers,
+    )
+    assert inspected.status_code == 200
+    cancelled = await route_client.post(
+        f"/api/v1/sources/{source.source_id}/catalog-syncs/{catalog_run.id}/cancel",
+        headers=owner_headers,
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["state"] == "CANCELLED"
+    assert [name for name, _owner_id in calls] == [
+        "catalog_request",
+        "catalog_availability",
+        "catalog_run",
+        "catalog_cancel",
+    ]
+
+
+async def test_catalog_sync_routes_reject_other_user_and_legacy_api_key(route_client, route_context):
+    _app, _owner, other, source, _settings, headers, calls, catalog_run = route_context
+    other_response = await route_client.get(
+        f"/api/v1/sources/{source.source_id}/catalog-syncs/{catalog_run.id}",
+        headers=headers(other),
+    )
+    assert other_response.status_code == 404
+    legacy_response = await route_client.post(
+        f"/api/v1/sources/{source.source_id}/catalog-syncs",
+        headers={"X-API-Key": "stage2b-route-test-api-key"},
+    )
+    assert legacy_response.status_code == 401
+    assert [name for name, _owner_id in calls] == ["catalog_run"]
+
+
+async def test_catalog_sync_routes_require_a_jwt(route_client, route_context):
+    _app, _owner, _other, source, _settings, _headers, calls, _catalog_run = route_context
+
+    response = await route_client.get(f"/api/v1/sources/{source.source_id}/catalog")
+
+    assert response.status_code == 401
+    assert calls == []
+
+
+async def test_catalog_sync_request_fails_closed_when_connectors_are_disabled(
+    route_client, route_context
+):
+    _app, owner, _other, source, settings, headers, calls, _catalog_run = route_context
+    settings.connectors_enabled = False
+
+    response = await route_client.post(
+        f"/api/v1/sources/{source.source_id}/catalog-syncs", headers=headers(owner)
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "connectors_disabled"
+    assert calls == []

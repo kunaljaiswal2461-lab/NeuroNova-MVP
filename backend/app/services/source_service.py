@@ -173,7 +173,14 @@ def _build_adapter(settings: Settings) -> PostgresOnboardingAdapter:
     return PostgresOnboardingAdapter(settings=settings)
 
 
-def _require_credential_operations(settings: Settings) -> CredentialProtector:
+def require_credential_operations(settings: Settings) -> CredentialProtector:
+    """Fail closed unless connector work can safely be requested or run.
+
+    Both onboarding and the later durable-catalog request path use this one
+    activation/credential boundary. It intentionally returns a protector so
+    callers that need it do not reimplement configuration validation.
+    """
+
     if not settings.connectors_enabled:
         raise ConnectorDisabledError()
     # This acknowledgement cannot replace an egress firewall/proxy. It makes
@@ -202,7 +209,7 @@ async def _test_and_inventory(
     settings: Settings,
     adapter_factory: AdapterFactory | None = None,
 ) -> list[InventoryTable]:
-    _require_credential_operations(settings)
+    require_credential_operations(settings)
     username, password, custom_ca_pem = _request_secrets(request)
     try:
         async with _outbound_operation_slot(settings.connector_max_concurrent_operations):
@@ -263,7 +270,7 @@ async def create_postgresql_source(
     if not selected or not selected.issubset(inventory_set):
         raise InvalidSourceScopeError()
 
-    protector = _require_credential_operations(settings)
+    protector = require_credential_operations(settings)
     source_id = uuid.uuid4()
     username, password, custom_ca_pem = _request_secrets(request)
     ciphertext, key_id, encryption_format = protector.encrypt(

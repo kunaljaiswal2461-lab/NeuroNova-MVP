@@ -45,6 +45,8 @@ from app.services.catalog_service import (
     CatalogTableIdentity,
     cancel_catalog_sync_run_for_owner,
     canonical_scope_fingerprint,
+    get_catalog_availability_for_owner,
+    get_catalog_sync_run_for_owner,
     get_catalog_snapshot_for_owner,
     get_current_catalog_snapshot_for_owner,
     mark_catalog_sync_running,
@@ -469,7 +471,7 @@ async def test_failed_publish_rolls_back_new_snapshot_and_preserves_prior_head(c
     assert await _count(catalog_session, CatalogSnapshot) == 1
 
 
-async def test_superseded_cancelled_and_duplicate_runs_cannot_replace_current_snapshot(catalog_session):
+async def test_active_requests_coalesce_and_cancelled_or_duplicate_runs_cannot_replace_current_snapshot(catalog_session):
     owner = await _make_user(catalog_session, "owner@example.test")
     source = await _make_source(catalog_session, owner=owner)
     source_id = source.id
@@ -479,32 +481,21 @@ async def test_superseded_cancelled_and_duplicate_runs_cannot_replace_current_sn
     )
     old_run_id = old_run.id
     await mark_catalog_sync_running(catalog_session, source_id=source_id, run_id=old_run_id)
-    newer_run = await request_catalog_sync_for_owner(
+    duplicate_request = await request_catalog_sync_for_owner(
         catalog_session, source_id=source_id, owner_user_id=owner_id
     )
-    newer_run_id = newer_run.id
-
-    with pytest.raises(CatalogRunSupersededError):
-        await publish_catalog_snapshot(
-            catalog_session,
-            source_id=source_id,
-            run_id=old_run_id,
-            snapshot_input=_catalog_input(),
-        )
-    assert await _count(catalog_session, CatalogSnapshot) == 0
-
-    await mark_catalog_sync_running(catalog_session, source_id=source_id, run_id=newer_run_id)
+    assert duplicate_request.id == old_run_id
     snapshot = await publish_catalog_snapshot(
         catalog_session,
         source_id=source_id,
-        run_id=newer_run_id,
+        run_id=old_run_id,
         snapshot_input=_catalog_input(),
     )
     with pytest.raises(CatalogRunStateError):
         await publish_catalog_snapshot(
             catalog_session,
             source_id=source_id,
-            run_id=newer_run_id,
+            run_id=old_run_id,
             snapshot_input=_catalog_input(),
         )
 
@@ -668,11 +659,29 @@ async def test_owner_scoped_reads_and_source_delete_cascade_catalog_records(cata
     owner = await _make_user(catalog_session, "owner@example.test")
     other = await _make_user(catalog_session, "other@example.test")
     source = await _make_source(catalog_session, owner=owner)
-    _run, snapshot = await _publish(catalog_session, source, owner)
+    run, snapshot = await _publish(catalog_session, source, owner)
     source_id = source.id
     owner_id = owner.id
     other_id = other.id
     snapshot_id = snapshot.id
+
+    owned_run = await get_catalog_sync_run_for_owner(
+        catalog_session, source_id=source_id, run_id=run.id, owner_user_id=owner_id
+    )
+    assert owned_run.id == run.id
+    availability = await get_catalog_availability_for_owner(
+        catalog_session, source_id=source_id, owner_user_id=owner_id
+    )
+    assert availability.latest_run.id == run.id
+    assert availability.current_snapshot.id == snapshot_id
+    with pytest.raises(NotFoundError):
+        await get_catalog_sync_run_for_owner(
+            catalog_session, source_id=source_id, run_id=run.id, owner_user_id=other_id
+        )
+    with pytest.raises(NotFoundError):
+        await get_catalog_availability_for_owner(
+            catalog_session, source_id=source_id, owner_user_id=other_id
+        )
 
     with pytest.raises(NotFoundError):
         await get_current_catalog_snapshot_for_owner(

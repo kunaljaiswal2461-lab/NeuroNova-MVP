@@ -13,6 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from app.db.models.source import SourceStatus, SourceType, TLSMode
+from app.db.models.catalog import CatalogSyncRunStatus
 
 
 def _bounded_text(value: str, *, maximum: int, field_name: str) -> str:
@@ -155,3 +156,24 @@ class SourceDetailResponse(SourceSummaryResponse):
 class SourceListResponse(BaseModel):
     items: list[SourceSummaryResponse]
     count: int
+
+
+class CatalogSyncRunResponse(BaseModel):
+    """Safe public subset of durable worker state; never expose lease tokens."""
+
+    run_id: uuid.UUID
+    state: CatalogSyncRunStatus
+    requested_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+    attempt_count: int
+    next_attempt_at: datetime | None
+    failure_code: str | None
+
+
+class CatalogAvailabilityResponse(BaseModel):
+    source_id: uuid.UUID
+    latest_run: CatalogSyncRunResponse | None
+    current_snapshot_id: uuid.UUID | None
+    current_snapshot_published_at: datetime | None
+    older_snapshot_available: bool

@@ -56,6 +56,12 @@ class CatalogSyncRun(Base, TimestampMixin):
     __table_args__ = (
         CheckConstraint("request_sequence > 0", name="sequence_positive"),
         CheckConstraint("scope_count > 0", name="scope_count_positive"),
+        CheckConstraint("attempt_count >= 0", name="attempt_count_nonnegative"),
+        CheckConstraint(
+            "(lease_owner IS NULL AND lease_token IS NULL AND lease_expires_at IS NULL) "
+            "OR (lease_owner IS NOT NULL AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)",
+            name="lease_fields_match",
+        ),
         UniqueConstraint("source_id", "request_sequence", name="uq_catalog_sync_runs_source_sequence"),
         # This exact target key lets a snapshot prove that its source, run,
         # and captured scope fingerprint all agree at the database boundary.
@@ -97,6 +103,18 @@ class CatalogSyncRun(Base, TimestampMixin):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Deliberately a bounded safe classification, never a driver error string.
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Durable worker state. A fresh token is assigned on each claim and is
+    # checked again in the same transaction as publication/finalization.
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_token: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class CatalogSnapshot(Base):

@@ -1,8 +1,12 @@
-# PostgreSQL source onboarding (Stage 2B)
+# PostgreSQL source onboarding and catalog discovery (Stages 2B and 3B)
 
 Stage 2B connects only long enough to test a supplied PostgreSQL connection
-and list eligible table *names*. It does not ingest client data, profile
-tables, build a catalog, execute analytical SQL, or expose database chat.
+and list eligible table *names*. Stage 3B adds a separately operated, manual
+structural-metadata discovery worker for a saved source and its explicit
+table scope. Neither stage ingests client data, profiles tables, executes
+analytical SQL, or exposes database chat. See
+[the Stage 3B worker runbook](stage3b-catalog-discovery.md) for its API and
+operational contract.
 
 ## Activation and configuration
 

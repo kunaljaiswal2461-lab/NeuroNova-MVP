@@ -17,10 +17,10 @@ import json
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -86,6 +86,14 @@ class CatalogPersistenceError(CatalogServiceError):
         super().__init__("could not complete the catalog persistence request")
 
 
+class CatalogRunLeaseLostError(CatalogServiceError):
+    status_code = 409
+    code = "catalog_run_lease_lost"
+
+    def __init__(self):
+        super().__init__("catalog synchronization lease is no longer valid")
+
+
 @dataclass(frozen=True)
 class CatalogTableIdentity:
     """A structural table identity; never concatenate these parts for storage."""
@@ -143,6 +151,23 @@ class CatalogSnapshotInput:
     """Complete normalized structural metadata for one source scope."""
 
     assets: tuple[CatalogAssetInput, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class CatalogSyncLease:
+    """Worker-only durable claim. The opaque token fences stale workers."""
+
+    source_id: uuid.UUID
+    run_id: uuid.UUID
+    lease_token: uuid.UUID
+    attempt_count: int
+
+
+@dataclass(frozen=True)
+class CatalogAvailability:
+    source_id: uuid.UUID
+    latest_run: CatalogSyncRun | None
+    current_snapshot: CatalogSnapshot | None
 
 
 _SAFE_FAILURE_CODE = re.compile(r"^[a-z0-9_]{1,64}$")
@@ -395,6 +420,56 @@ async def _locked_run(
     ).scalar_one_or_none()
 
 
+def _clear_lease(run: CatalogSyncRun) -> None:
+    run.lease_owner = None
+    run.lease_token = None
+    run.lease_expires_at = None
+
+
+def _lease_expired(lease_expires_at: datetime, now: datetime) -> bool:
+    """Compare application timestamps across PostgreSQL and SQLite tests."""
+
+    if lease_expires_at.tzinfo is None:
+        lease_expires_at = lease_expires_at.replace(tzinfo=timezone.utc)
+    return lease_expires_at <= now
+
+
+def _active_or_recoverable_run_query(source_id: uuid.UUID, now: datetime):
+    return (
+        select(CatalogSyncRun)
+        .where(
+            CatalogSyncRun.source_id == source_id,
+            or_(
+                CatalogSyncRun.status == CatalogSyncRunStatus.QUEUED,
+                and_(
+                    CatalogSyncRun.status == CatalogSyncRunStatus.RUNNING,
+                    or_(
+                        # Stage 3A's internal transition helper pre-dates
+                        # leases. Treat such a non-leased RUNNING row as
+                        # abandoned so a Stage 3B worker cannot strand it.
+                        CatalogSyncRun.lease_expires_at.is_(None),
+                        CatalogSyncRun.lease_expires_at <= now,
+                    ),
+                ),
+            ),
+        )
+        .order_by(CatalogSyncRun.request_sequence.desc())
+    )
+
+
+def _active_run_query(source_id: uuid.UUID):
+    return (
+        select(CatalogSyncRun)
+        .where(
+            CatalogSyncRun.source_id == source_id,
+            CatalogSyncRun.status.in_(
+                (CatalogSyncRunStatus.QUEUED, CatalogSyncRunStatus.RUNNING)
+            ),
+        )
+        .order_by(CatalogSyncRun.request_sequence.desc())
+    )
+
+
 async def _current_scope(
     session: AsyncSession,
     source_id: uuid.UUID,
@@ -457,13 +532,34 @@ async def request_catalog_sync_for_owner(
         if not scope:
             await _rollback_quietly(session)
             raise CatalogInputError("source has no selected table scope")
+        scope_fingerprint = canonical_scope_fingerprint(scope)
+        active = (
+            await session.execute(
+                _active_run_query(source.id).with_for_update()
+            )
+        ).scalars().first()
+        if active is not None:
+            if (
+                active.scope_fingerprint == scope_fingerprint
+                and active.scope_count == len(scope)
+                and active.request_sequence == source.catalog_sync_sequence
+            ):
+                # Repeated manual refresh requests coalesce to the one durable
+                # queued/leased run rather than growing an unbounded queue.
+                await _commit_or_raise(session)
+                return active
+            active.status = CatalogSyncRunStatus.FAILED
+            active.completed_at = _now()
+            active.failure_code = "scope_changed"
+            active.next_attempt_at = None
+            _clear_lease(active)
         source.catalog_sync_sequence += 1
         run = CatalogSyncRun(
             id=uuid.uuid4(),
             source_id=source.id,
             requesting_user_id=owner_user_id,
             request_sequence=source.catalog_sync_sequence,
-            scope_fingerprint=canonical_scope_fingerprint(scope),
+            scope_fingerprint=scope_fingerprint,
             scope_count=len(scope),
             status=CatalogSyncRunStatus.QUEUED,
             requested_at=_now(),
@@ -471,6 +567,189 @@ async def request_catalog_sync_for_owner(
         session.add(run)
         await _commit_or_raise(session)
         return run
+    except SQLAlchemyError:
+        await _rollback_quietly(session)
+        raise CatalogPersistenceError() from None
+
+
+async def claim_next_catalog_sync_run(
+    session: AsyncSession,
+    *,
+    worker_id: str,
+    lease_seconds: float,
+    max_attempts: int,
+) -> CatalogSyncLease | None:
+    """Atomically claim one current queued or abandoned run for a worker.
+
+    PostgreSQL locks the source row with ``SKIP LOCKED`` before the run row,
+    matching all other source/run mutations. That is the per-source fencing
+    boundary across independent worker processes; no process-local queue is
+    involved.
+    """
+
+    if (
+        not isinstance(worker_id, str)
+        or not worker_id
+        or "\x00" in worker_id
+        or len(worker_id.encode("utf-8")) > 128
+        or lease_seconds <= 0
+        or max_attempts < 1
+    ):
+        raise CatalogInputError("catalog worker claim is invalid")
+    now = _now()
+    eligible = or_(
+        and_(
+            CatalogSyncRun.status == CatalogSyncRunStatus.QUEUED,
+            or_(
+                CatalogSyncRun.next_attempt_at.is_(None),
+                CatalogSyncRun.next_attempt_at <= now,
+            ),
+        ),
+        and_(
+            CatalogSyncRun.status == CatalogSyncRunStatus.RUNNING,
+            or_(
+                CatalogSyncRun.lease_expires_at.is_(None),
+                CatalogSyncRun.lease_expires_at <= now,
+            ),
+        ),
+    )
+    try:
+        candidate_source_id = (
+            await session.execute(
+                select(DataSource.id)
+                .join(CatalogSyncRun, CatalogSyncRun.source_id == DataSource.id)
+                .where(
+                    eligible,
+                    CatalogSyncRun.request_sequence == DataSource.catalog_sync_sequence,
+                )
+                .order_by(CatalogSyncRun.requested_at, CatalogSyncRun.id)
+                .with_for_update(of=DataSource, skip_locked=True)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if candidate_source_id is None:
+            await _commit_or_raise(session)
+            return None
+        source = await _locked_source(session, source_id=candidate_source_id)
+        if source is None:
+            await _rollback_quietly(session)
+            return None
+        run = (
+            await session.execute(
+                _active_or_recoverable_run_query(source.id, now).where(
+                    CatalogSyncRun.request_sequence == source.catalog_sync_sequence
+                ).with_for_update()
+            )
+        ).scalars().first()
+        if run is None:
+            await _commit_or_raise(session)
+            return None
+        if run.attempt_count >= max_attempts:
+            run.status = CatalogSyncRunStatus.FAILED
+            run.completed_at = now
+            run.failure_code = "retry_exhausted"
+            _clear_lease(run)
+            await _commit_or_raise(session)
+            return None
+        token = uuid.uuid4()
+        run.status = CatalogSyncRunStatus.RUNNING
+        run.started_at = run.started_at or now
+        run.completed_at = None
+        run.failure_code = None
+        run.attempt_count += 1
+        run.lease_owner = worker_id
+        run.lease_token = token
+        run.lease_expires_at = now + timedelta(seconds=lease_seconds)
+        run.next_attempt_at = None
+        await _commit_or_raise(session)
+        return CatalogSyncLease(
+            source_id=source.id,
+            run_id=run.id,
+            lease_token=token,
+            attempt_count=run.attempt_count,
+        )
+    except SQLAlchemyError:
+        await _rollback_quietly(session)
+        raise CatalogPersistenceError() from None
+
+
+async def renew_catalog_sync_lease(
+    session: AsyncSession,
+    *,
+    source_id: uuid.UUID,
+    run_id: uuid.UUID,
+    lease_token: uuid.UUID,
+    lease_seconds: float,
+) -> bool:
+    """Extend a lease only if the caller remains the current fenced worker."""
+
+    if lease_seconds <= 0:
+        raise CatalogInputError("catalog lease duration is invalid")
+    now = _now()
+    try:
+        source = await _locked_source(session, source_id=source_id)
+        run = await _locked_run(session, source_id=source_id, run_id=run_id) if source else None
+        if (
+            source is None
+            or run is None
+            or run.status is not CatalogSyncRunStatus.RUNNING
+            or run.lease_token != lease_token
+            or run.lease_expires_at is None
+            or _lease_expired(run.lease_expires_at, now)
+            or run.cancel_requested_at is not None
+        ):
+            await _rollback_quietly(session)
+            return False
+        run.lease_expires_at = now + timedelta(seconds=lease_seconds)
+        await _commit_or_raise(session)
+        return True
+    except SQLAlchemyError:
+        await _rollback_quietly(session)
+        raise CatalogPersistenceError() from None
+
+
+async def finalize_catalog_sync_worker_failure(
+    session: AsyncSession,
+    *,
+    source_id: uuid.UUID,
+    run_id: uuid.UUID,
+    lease_token: uuid.UUID,
+    failure_code: str,
+    retry_delay_seconds: float | None,
+    max_attempts: int,
+) -> bool:
+    """Fence a worker's retry/terminal result at the durable run row."""
+
+    safe_failure_code = _validate_safe_failure_code(failure_code)
+    if max_attempts < 1 or (retry_delay_seconds is not None and retry_delay_seconds < 0):
+        raise CatalogInputError("catalog retry configuration is invalid")
+    now = _now()
+    try:
+        source = await _locked_source(session, source_id=source_id)
+        run = await _locked_run(session, source_id=source_id, run_id=run_id) if source else None
+        if (
+            source is None
+            or run is None
+            or run.status is not CatalogSyncRunStatus.RUNNING
+            or run.lease_token != lease_token
+            or run.lease_expires_at is None
+            or _lease_expired(run.lease_expires_at, now)
+            or run.cancel_requested_at is not None
+        ):
+            await _rollback_quietly(session)
+            return False
+        _clear_lease(run)
+        run.failure_code = safe_failure_code
+        if retry_delay_seconds is not None and run.attempt_count < max_attempts:
+            run.status = CatalogSyncRunStatus.QUEUED
+            run.next_attempt_at = now + timedelta(seconds=retry_delay_seconds)
+            run.completed_at = None
+        else:
+            run.status = CatalogSyncRunStatus.FAILED
+            run.completed_at = now
+            run.next_attempt_at = None
+        await _commit_or_raise(session)
+        return True
     except SQLAlchemyError:
         await _rollback_quietly(session)
         raise CatalogPersistenceError() from None
@@ -497,6 +776,8 @@ async def mark_catalog_sync_running(
             run.status = CatalogSyncRunStatus.CANCELLED
             run.completed_at = _now()
             run.failure_code = "superseded"
+            run.next_attempt_at = None
+            _clear_lease(run)
             await _commit_or_raise(session)
             raise CatalogRunSupersededError()
         if (
@@ -506,6 +787,8 @@ async def mark_catalog_sync_running(
             run.status = CatalogSyncRunStatus.FAILED
             run.completed_at = _now()
             run.failure_code = "scope_changed"
+            run.next_attempt_at = None
+            _clear_lease(run)
             await _commit_or_raise(session)
             raise CatalogScopeChangedError()
         run.status = CatalogSyncRunStatus.RUNNING
@@ -540,6 +823,8 @@ async def fail_catalog_sync_run(
         run.status = CatalogSyncRunStatus.FAILED
         run.completed_at = _now()
         run.failure_code = safe_failure_code
+        run.next_attempt_at = None
+        _clear_lease(run)
         await _commit_or_raise(session)
         return run
     except SQLAlchemyError:
@@ -567,9 +852,12 @@ async def cancel_catalog_sync_run_for_owner(
         if run.status not in {CatalogSyncRunStatus.QUEUED, CatalogSyncRunStatus.RUNNING}:
             await _rollback_quietly(session)
             raise CatalogRunStateError()
+        run.cancel_requested_at = _now()
         run.status = CatalogSyncRunStatus.CANCELLED
         run.completed_at = _now()
         run.failure_code = None
+        run.next_attempt_at = None
+        _clear_lease(run)
         await _commit_or_raise(session)
         return run
     except SQLAlchemyError:
@@ -583,6 +871,7 @@ async def publish_catalog_snapshot(
     source_id: uuid.UUID,
     run_id: uuid.UUID,
     snapshot_input: CatalogSnapshotInput,
+    lease_token: uuid.UUID | None = None,
 ) -> CatalogSnapshot:
     """Atomically publish a complete structural snapshot for a running run.
 
@@ -603,10 +892,22 @@ async def publish_catalog_snapshot(
         if run.status is not CatalogSyncRunStatus.RUNNING:
             await _rollback_quietly(session)
             raise CatalogRunStateError()
+        if run.lease_token is not None or lease_token is not None:
+            if (
+                lease_token is None
+                or run.lease_token != lease_token
+                or run.lease_expires_at is None
+                or _lease_expired(run.lease_expires_at, _now())
+                or run.cancel_requested_at is not None
+            ):
+                await _rollback_quietly(session)
+                raise CatalogRunLeaseLostError()
         if run.request_sequence != source.catalog_sync_sequence:
             run.status = CatalogSyncRunStatus.CANCELLED
             run.completed_at = _now()
             run.failure_code = "superseded"
+            run.next_attempt_at = None
+            _clear_lease(run)
             await _commit_or_raise(session)
             raise CatalogRunSupersededError()
 
@@ -618,6 +919,8 @@ async def publish_catalog_snapshot(
             run.status = CatalogSyncRunStatus.FAILED
             run.completed_at = _now()
             run.failure_code = "scope_changed"
+            run.next_attempt_at = None
+            _clear_lease(run)
             await _commit_or_raise(session)
             raise CatalogScopeChangedError()
 
@@ -656,6 +959,8 @@ async def publish_catalog_snapshot(
         run.status = CatalogSyncRunStatus.SUCCEEDED
         run.completed_at = _now()
         run.failure_code = None
+        run.next_attempt_at = None
+        _clear_lease(run)
         await _commit_or_raise(session)
         return snapshot
     except SQLAlchemyError:
@@ -829,25 +1134,104 @@ async def get_catalog_snapshot_for_owner(
         raise CatalogPersistenceError() from None
 
 
+async def get_catalog_sync_run_for_owner(
+    session: AsyncSession,
+    *,
+    source_id: uuid.UUID,
+    run_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+) -> CatalogSyncRun:
+    """Read one run only through its source's JWT-derived owner boundary."""
+
+    try:
+        await _owned_source_or_raise(
+            session, source_id=source_id, owner_user_id=owner_user_id
+        )
+        run = (
+            await session.execute(
+                select(CatalogSyncRun).where(
+                    CatalogSyncRun.id == run_id,
+                    CatalogSyncRun.source_id == source_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if run is None:
+            await _rollback_quietly(session)
+            raise NotFoundError("catalog synchronization run not found")
+        return run
+    except SQLAlchemyError:
+        await _rollback_quietly(session)
+        raise CatalogPersistenceError() from None
+
+
+async def get_catalog_availability_for_owner(
+    session: AsyncSession,
+    *,
+    source_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+) -> CatalogAvailability:
+    """Return safe Stage 3C availability facts without source credentials."""
+
+    try:
+        await _owned_source_or_raise(
+            session, source_id=source_id, owner_user_id=owner_user_id
+        )
+        latest_run = (
+            await session.execute(
+                select(CatalogSyncRun)
+                .where(CatalogSyncRun.source_id == source_id)
+                .order_by(CatalogSyncRun.request_sequence.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        current_snapshot = (
+            await session.execute(
+                select(CatalogSnapshot)
+                .join(
+                    SourceCatalogHead,
+                    (SourceCatalogHead.source_id == CatalogSnapshot.source_id)
+                    & (SourceCatalogHead.snapshot_id == CatalogSnapshot.id),
+                )
+                .where(SourceCatalogHead.source_id == source_id)
+            )
+        ).scalar_one_or_none()
+        return CatalogAvailability(
+            source_id=source_id,
+            latest_run=latest_run,
+            current_snapshot=current_snapshot,
+        )
+    except SQLAlchemyError:
+        await _rollback_quietly(session)
+        raise CatalogPersistenceError() from None
+
+
 __all__ = [
     "CatalogAssetInput",
+    "CatalogAvailability",
     "CatalogColumnInput",
     "CatalogForeignKeyColumnInput",
     "CatalogForeignKeyInput",
     "CatalogInputError",
     "CatalogKeyInput",
     "CatalogPersistenceError",
+    "CatalogRunLeaseLostError",
     "CatalogRunStateError",
     "CatalogRunSupersededError",
     "CatalogScopeChangedError",
     "CatalogSnapshotInput",
+    "CatalogSyncLease",
     "CatalogTableIdentity",
     "cancel_catalog_sync_run_for_owner",
     "canonical_scope_fingerprint",
+    "claim_next_catalog_sync_run",
     "fail_catalog_sync_run",
+    "finalize_catalog_sync_worker_failure",
+    "get_catalog_availability_for_owner",
+    "get_catalog_sync_run_for_owner",
     "get_catalog_snapshot_for_owner",
     "get_current_catalog_snapshot_for_owner",
     "mark_catalog_sync_running",
     "publish_catalog_snapshot",
+    "renew_catalog_sync_lease",
     "request_catalog_sync_for_owner",
 ]

@@ -127,6 +127,53 @@ Record only synthetic identifiers, revision names, counts, and safe failure
 codes. These checks verify application-database catalog persistence only; they
 do not replace the Stage 2D client TLS, ACL, or onboarding checks.
 
+## Stage 3B durable-discovery checks
+
+Stage 3B extends the application database from `0008_catalog_persistence` to
+`0009_catalog_discovery_worker`; it does not change client data. Execute these
+checks only after the Stage 3A checks and with the isolated application/client
+topology above:
+
+1. Upgrade a fresh application database and a database at `0008` to `0009`.
+   Inspect the lease, attempt, cancellation, retry, and claim-index DDL. Then
+   run a downgrade to `0008` on a disposable copy and upgrade it to `0009`
+   again. Do not treat offline SQL generation as this verification.
+2. Start two separately configured discovery worker processes. Use a barrier
+   around their claims of queued requests for two sources and prove
+   `FOR UPDATE ... SKIP LOCKED` gives one lease per source and does not hold an
+   application transaction through client discovery. Record only lease state,
+   not tokens.
+3. Kill one worker after it begins a deliberately delayed synthetic discovery.
+   After lease expiry, prove another worker recovers the request and that the
+   first worker's publication, renewal, and failure finalization are all
+   rejected by the token fence. Verify bounded retry and terminal failure
+   behavior separately.
+4. Request cancellation before discovery and during a delayed discovery. In
+   both cases verify no new snapshot publishes; in the first case the client
+   adapter must not be called. Delete a source and change an explicit scope
+   after a claim but before publication and prove the former cascades work and
+   the latter fails the run while retaining the prior head.
+5. With the restricted TLS client role, discover a selected fixture that has
+   comments, multi-column primary/unique keys, a composite foreign key to an
+   included table, and a foreign key to an excluded table. Verify ordered
+   native metadata persists through the Stage 3A models; the excluded target's
+   names and columns never persist. Use statement logging confined to the
+   disposable client service to prove no client relation row is selected.
+6. Revoke selected-table or column access, remove a selected table, deny the
+   metadata read, and exceed each discovery size/time limit. Each must return
+   a safe terminal code, close the connection, and preserve the earlier head;
+   none may publish a structurally incomplete snapshot.
+7. With two JWT users, exercise all four catalog-sync APIs. The owner may
+   request, inspect, summarize, and cancel; the other user receives a
+   non-enumerating `404`, and missing/invalid/API-key-only credentials receive
+   `401`. Check no response exposes a lease token, ciphertext, metadata
+   comment, client row, or raw driver error.
+
+This live procedure remains pending until it is actually executed against the
+isolated PostgreSQL/TLS fixture. SQLite and mocked-adapter tests only cover
+the application and adapter contracts, not PostgreSQL lock, migration, or
+privilege semantics.
+
 ## Adapter and HTTP integration checks
 
 Start the backend against one of the disposable application databases with
