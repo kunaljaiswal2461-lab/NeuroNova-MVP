@@ -4,10 +4,8 @@ load_dotenv()
 
 from contextlib import asynccontextmanager, suppress
 import asyncio
-import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware 
-from fastapi.staticfiles import StaticFiles
 
 from slowapi.errors import RateLimitExceeded
 
@@ -56,27 +54,6 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(app)
     app.include_router(api_router)
-
-    # Mount the visualization directory
-    viz_path = os.path.join(settings.data_dir, "viz")
-    os.makedirs(viz_path, exist_ok=True)
-    app.mount("/viz", StaticFiles(directory=viz_path), name="viz_root")
-
-    @app.get("/api/v1/datasets/{dataset_id}/charts", tags=["viz"])
-    async def get_dataset_charts(dataset_id: str):
-        settings = get_settings()
-        viz_path = os.path.join(settings.data_dir, "viz")
-        chart_urls = []
-        
-        if os.path.exists(viz_path):
-            all_files = os.listdir(viz_path)
-            print(f"DEBUG: Looking for charts in {viz_path}. Files found: {all_files}")
-            
-            for file in all_files:
-                if file.lower().endswith(('.png', '.jpg', '.jpeg', '.svg')):
-                    chart_urls.append(f"{settings.public_url}/viz/{file}")
-        
-        return {"charts": chart_urls}
 
     return app
 

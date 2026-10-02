@@ -1,6 +1,7 @@
 """Conversational chat routes — Layer 7 HTTP surface.
 
-Five endpoints, all under ``/api/v1`` and ``X-API-Key`` protected:
+Endpoints are available to JWT users and to the tightly scoped legacy API-key
+namespace. A legacy key can never act as an arbitrary user's session owner.
 
   * ``POST   /datasets/{dataset_id}/chat/sessions``      — create a session
   * ``GET    /datasets/{dataset_id}/chat/sessions``      — list sessions
@@ -26,8 +27,6 @@ from app.core.config import get_settings
 from app.core.dependencies import AuthContext, DBSession, SettingsDep, get_auth_context
 from app.middlewares.rate_limiter import limiter
 from app.core.logging import get_logger
-from app.db.models.dataset import DatasetStatus
-from app.exceptions.custom_exceptions import NotFoundError
 from app.schemas.chat_schemas import (
     CreateSessionRequest,
     MessageListResponse,
@@ -35,13 +34,27 @@ from app.schemas.chat_schemas import (
     SessionListResponse,
     SessionResponse,
 )
-from app.services import dataset_service
 from agentic_engine.conversational import conversation_manager as manager
 from agentic_engine.conversational.chat_agent import stream_chat_turn
 from agentic_engine.conversational.models import ChatStreamEvent
 
 
 logger = get_logger("chat_routes")
+
+
+async def get_conversation_access(
+    current_user=Depends(get_auth_context),
+) -> manager.ConversationAccess:
+    """Build an actor only from the already-verified authentication context.
+
+    ``get_auth_context`` returns ``None`` exclusively for a valid legacy
+    ``X-API-Key``. The manager receives an explicit legacy actor rather than a
+    bare ``None`` user id, preventing the legacy all-datasets behavior used by
+    older dataset endpoints from leaking into conversation authorization.
+    """
+    if current_user is None:
+        return manager.ConversationAccess.for_legacy_api_key()
+    return manager.ConversationAccess.for_user(current_user.id)
 
 
 router = APIRouter(
@@ -65,25 +78,13 @@ async def create_session(
     dataset_id: uuid.UUID,
     body: CreateSessionRequest,
     session: DBSession,
-    current_user=Depends(get_auth_context),
+    access: manager.ConversationAccess = Depends(get_conversation_access),
 ) -> SessionResponse:
-    # Sessions can only be opened on datasets that have completed the
-    # full pipeline — the chat agent depends on the profile, findings,
-    # and (for RAG) the vector index all being on disk / in PG.
-    record = await dataset_service.get_dataset(
-        session, dataset_id,
-        user_id=current_user.id if current_user is not None else None,
-    )
-    if record.status is not DatasetStatus.COMPLETE:
-        raise NotFoundError(
-            f"dataset {dataset_id} is not ready for chat",
-            details={"status": record.status.value},
-        )
-    created = await manager.create_session(
+    created = await manager.create_session_for_access(
         session_db=session,
         dataset_id=dataset_id,
         mode=body.mode,
-        user_id=current_user.id if current_user is not None else None,
+        access=access,
     )
     return SessionResponse(session=created)
 
@@ -97,9 +98,10 @@ async def list_sessions(
     dataset_id: uuid.UUID,
     session: DBSession,
     limit: int = Query(50, ge=1, le=200),
+    access: manager.ConversationAccess = Depends(get_conversation_access),
 ) -> SessionListResponse:
     sessions = await manager.list_sessions_for_dataset(
-        session, dataset_id, limit=limit
+        session, dataset_id, limit=limit, access=access
     )
     return SessionListResponse(sessions=sessions, count=len(sessions))
 
@@ -112,9 +114,12 @@ async def list_sessions(
 async def get_session(
     session_id: uuid.UUID,
     session: DBSession,
+    access: manager.ConversationAccess = Depends(get_conversation_access),
 ) -> SessionResponse:
-    fetched = await manager.get_session(session, session_id)
-    return SessionResponse(session=fetched)
+    conversation = await manager.get_session_for_access(
+        session, session_id, access=access
+    )
+    return SessionResponse(session=conversation.session)
 
 
 @router.delete(
@@ -126,8 +131,9 @@ async def get_session(
 async def delete_session(
     session_id: uuid.UUID,
     session: DBSession,
+    access: manager.ConversationAccess = Depends(get_conversation_access),
 ) -> None:
-    await manager.delete_session(session, session_id)
+    await manager.delete_session(session, session_id, access=access)
 
 
 # ── transcript ──────────────────────────────────────────────────────────────
@@ -141,11 +147,11 @@ async def list_messages(
     session_id: uuid.UUID,
     session: DBSession,
     limit: int = Query(100, ge=1, le=500),
+    access: manager.ConversationAccess = Depends(get_conversation_access),
 ) -> MessageListResponse:
-    # Ensure the session exists so callers get a 404 (not an empty list)
-    # when they hit a stale id.
-    await manager.get_session(session, session_id)
-    messages = await manager.get_recent_messages(session, session_id, limit=limit)
+    _conversation, messages = await manager.get_recent_messages_for_access(
+        session, session_id, access=access, limit=limit
+    )
     return MessageListResponse(
         session_id=session_id,
         messages=messages,
@@ -176,11 +182,14 @@ async def send_message(
     body: SendMessageRequest,
     session: DBSession,
     settings: SettingsDep,
+    access: manager.ConversationAccess = Depends(get_conversation_access),
 ) -> StreamingResponse:
-    # Probe the session up-front so we can return a 404 cleanly before
-    # opening the SSE stream — clients much prefer a status code over a
-    # malformed event stream.
-    await manager.get_session(session, session_id)
+    # Resolve ownership before constructing the stream. This prevents an
+    # unauthorized caller from reaching model calls, file-query execution, or
+    # the generator that writes messages to the transcript.
+    conversation = await manager.get_session_for_access(
+        session, session_id, access=access
+    )
 
     async def event_stream() -> AsyncIterator[bytes]:
         try:
@@ -189,6 +198,8 @@ async def send_message(
                 user_message=body.message,
                 session_db=session,
                 settings=settings,
+                authorized_session=conversation.session,
+                authorized_dataset=conversation.dataset,
             ):
                 yield _encode_sse(event)
         except Exception as exc:  # pragma: no cover — top-level safety
