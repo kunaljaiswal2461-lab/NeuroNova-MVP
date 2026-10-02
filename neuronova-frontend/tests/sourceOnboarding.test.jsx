@@ -227,7 +227,7 @@ it('saves exact selected scope once, clears transient credentials, and refreshes
 
   saved = true
   await act(async () => resolveSave(created))
-  await screen.findByText('Connection saved. Metadata synchronization and database querying will be available in later stages.')
+  await screen.findByText('Connection saved. Select View metadata to request structural metadata synchronization.')
   expect(screen.getByLabelText('Username').value).toBe('')
   expect(screen.getByLabelText('Password').value).toBe('')
   expect(screen.getByText('Previously tested')).toBeTruthy()
@@ -266,6 +266,35 @@ it('does not render an unexpected source status as a catalog-readiness claim', a
   await screen.findByText('Production analytics')
   expect(screen.getByText('Status unavailable')).toBeTruthy()
   expect(screen.queryByText('CATALOG_READY')).toBeNull()
+})
+
+it('opens the saved-source metadata inspector without changing the file upload flow', async () => {
+  api.get.mockImplementation(path => {
+    if (path === '/datasets') return Promise.resolve({ items: [] })
+    if (path === '/sources') return Promise.resolve({ items: [sourceSummary] })
+    if (path === '/sources/source-1/catalog') {
+      return Promise.resolve({
+        source_id: 'source-1', latest_run: null,
+        current_snapshot_id: null, current_snapshot_published_at: null,
+        older_snapshot_available: false,
+      })
+    }
+    return Promise.resolve({ items: [] })
+  })
+  renderUpload()
+  await openDatabase()
+  await screen.findByText('Production analytics')
+
+  fireEvent.click(screen.getByRole('button', { name: 'View metadata' }))
+  await screen.findByRole('heading', { name: 'Metadata: Production analytics' })
+  expect(api.get).toHaveBeenCalledWith('/sources/source-1/catalog', expect.objectContaining({
+    requireJwt: true,
+    preserveErrorBody: true,
+  }))
+  expect(screen.getByRole('heading', { name: 'Metadata not synchronized' })).toBeTruthy()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Close metadata' }))
+  expect(screen.queryByRole('heading', { name: 'Metadata: Production analytics' })).toBeNull()
 })
 
 it('requires a fresh test when the backend says the selected scope changed during save', async () => {

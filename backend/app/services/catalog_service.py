@@ -20,9 +20,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.db.models.catalog import (
     CatalogAsset,
@@ -92,6 +93,16 @@ class CatalogRunLeaseLostError(CatalogServiceError):
 
     def __init__(self):
         super().__init__("catalog synchronization lease is no longer valid")
+
+
+class CatalogInspectionInputError(CatalogServiceError):
+    """A bounded public catalog-inspection request was malformed."""
+
+    status_code = 422
+    code = "invalid_catalog_inspection_request"
+
+    def __init__(self, message: str = "catalog inspection request is invalid"):
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -168,6 +179,165 @@ class CatalogAvailability:
     source_id: uuid.UUID
     latest_run: CatalogSyncRun | None
     current_snapshot: CatalogSnapshot | None
+
+
+@dataclass(frozen=True)
+class CatalogAssetReference:
+    """Structured table identity for a safe public catalog response."""
+
+    asset_id: uuid.UUID
+    schema_name: str
+    table_name: str
+
+
+@dataclass(frozen=True)
+class CatalogAssetSummary:
+    asset_id: uuid.UUID
+    schema_name: str
+    table_name: str
+    table_comment: str | None
+
+
+@dataclass(frozen=True)
+class CatalogColumnMetadata:
+    column_name: str
+    ordinal_position: int
+    is_nullable: bool
+    formatted_native_type: str
+    native_type_schema: str | None
+    native_type_name: str | None
+    native_type_oid: int | None
+    native_type_modifier: int | None
+    column_comment: str | None
+
+
+@dataclass(frozen=True)
+class CatalogDeclaredKeyMetadata:
+    constraint_name: str
+    key_kind: CatalogKeyKind
+    column_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CatalogForeignKeyColumnMapping:
+    ordinal_position: int
+    referencing_column_name: str
+    referenced_column_name: str
+
+
+@dataclass(frozen=True)
+class CatalogForeignKeyMetadata:
+    """A public FK representation with target data redacted when necessary."""
+
+    constraint_name: str
+    target_status: CatalogForeignKeyTargetStatus
+    referenced_asset: CatalogAssetReference | None
+    column_mappings: tuple[CatalogForeignKeyColumnMapping, ...]
+
+
+@dataclass(frozen=True)
+class CatalogAssetDetail:
+    source_id: uuid.UUID
+    snapshot: CatalogSnapshot
+    scope_matches_current_selection: bool
+    asset: CatalogAssetSummary
+    columns: tuple[CatalogColumnMetadata, ...]
+    declared_keys: tuple[CatalogDeclaredKeyMetadata, ...]
+    foreign_keys: tuple[CatalogForeignKeyMetadata, ...]
+
+
+@dataclass(frozen=True)
+class CatalogAssetPage:
+    source_id: uuid.UUID
+    snapshot: CatalogSnapshot
+    scope_matches_current_selection: bool
+    page: int
+    page_size: int
+    total: int
+    assets: tuple[CatalogAssetSummary, ...]
+
+
+@dataclass(frozen=True)
+class CatalogTableChange:
+    schema_name: str
+    table_name: str
+
+
+@dataclass(frozen=True)
+class CatalogColumnIdentityChange:
+    schema_name: str
+    table_name: str
+    column_name: str
+
+
+@dataclass(frozen=True)
+class CatalogColumnChange:
+    schema_name: str
+    table_name: str
+    column_name: str
+    previous_formatted_native_type: str
+    current_formatted_native_type: str
+    previous_is_nullable: bool
+    current_is_nullable: bool
+
+
+@dataclass(frozen=True)
+class CatalogKeyChange:
+    change: str
+    schema_name: str
+    table_name: str
+    constraint_name: str
+    key_kind: CatalogKeyKind
+    column_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CatalogForeignKeyChange:
+    change: str
+    schema_name: str
+    table_name: str
+    constraint_name: str
+    target_status: CatalogForeignKeyTargetStatus
+    referenced_asset: CatalogAssetReference | None
+    column_mappings: tuple[CatalogForeignKeyColumnMapping, ...]
+
+
+@dataclass(frozen=True)
+class CatalogCommentChange:
+    subject: str
+    schema_name: str
+    table_name: str
+    column_name: str | None
+    previous_comment: str | None
+    current_comment: str | None
+
+
+@dataclass(frozen=True)
+class CatalogStructuralDiff:
+    """Deterministic, bounded structural comparison for two snapshots."""
+
+    source_id: uuid.UUID
+    snapshot: CatalogSnapshot
+    state: str
+    previous_snapshot: CatalogSnapshot | None
+    truncated: bool
+    change_limit: int
+    tables_added: tuple[CatalogTableChange, ...] = ()
+    tables_removed: tuple[CatalogTableChange, ...] = ()
+    columns_added: tuple[CatalogColumnIdentityChange, ...] = ()
+    columns_removed: tuple[CatalogColumnIdentityChange, ...] = ()
+    columns_changed: tuple[CatalogColumnChange, ...] = ()
+    keys_changed: tuple[CatalogKeyChange, ...] = ()
+    foreign_keys_changed: tuple[CatalogForeignKeyChange, ...] = ()
+    comments_changed: tuple[CatalogCommentChange, ...] = ()
+
+
+@dataclass(frozen=True)
+class _CatalogAssetState:
+    asset: CatalogAssetSummary
+    columns: tuple[CatalogColumnMetadata, ...]
+    declared_keys: tuple[CatalogDeclaredKeyMetadata, ...]
+    foreign_keys: tuple[CatalogForeignKeyMetadata, ...]
 
 
 _SAFE_FAILURE_CODE = re.compile(r"^[a-z0-9_]{1,64}$")
@@ -1075,6 +1245,973 @@ def _persist_snapshot_children(
                 )
 
 
+_CATALOG_INSPECTION_MAX_PAGE_SIZE = 100
+_CATALOG_INSPECTION_MAX_PAGE = 10_000
+_CATALOG_INSPECTION_MAX_SEARCH_BYTES = 128
+_CATALOG_DIFF_CHANGE_LIMIT = 500
+
+
+def _asset_summary(asset: CatalogAsset) -> CatalogAssetSummary:
+    return CatalogAssetSummary(
+        asset_id=asset.id,
+        schema_name=asset.schema_name,
+        table_name=asset.table_name,
+        table_comment=asset.table_comment,
+    )
+
+
+def _asset_reference(asset: CatalogAsset) -> CatalogAssetReference:
+    return CatalogAssetReference(
+        asset_id=asset.id,
+        schema_name=asset.schema_name,
+        table_name=asset.table_name,
+    )
+
+
+def _column_metadata(column: CatalogColumn) -> CatalogColumnMetadata:
+    return CatalogColumnMetadata(
+        column_name=column.column_name,
+        ordinal_position=column.ordinal_position,
+        is_nullable=column.is_nullable,
+        formatted_native_type=column.formatted_native_type,
+        native_type_schema=column.native_type_schema,
+        native_type_name=column.native_type_name,
+        native_type_oid=column.native_type_oid,
+        native_type_modifier=column.native_type_modifier,
+        column_comment=column.column_comment,
+    )
+
+
+def _scope_key_from_asset(asset: CatalogAsset) -> tuple[str, str]:
+    return (asset.schema_name, asset.table_name)
+
+
+def _validated_inspection_page(page: int, page_size: int) -> tuple[int, int]:
+    if (
+        not isinstance(page, int)
+        or isinstance(page, bool)
+        or page < 1
+        or page > _CATALOG_INSPECTION_MAX_PAGE
+        or not isinstance(page_size, int)
+        or isinstance(page_size, bool)
+        or page_size < 1
+        or page_size > _CATALOG_INSPECTION_MAX_PAGE_SIZE
+    ):
+        raise CatalogInspectionInputError("catalog page parameters are invalid")
+    return page, page_size
+
+
+def _normalized_asset_search(search: str | None) -> str | None:
+    if search is None:
+        return None
+    if not isinstance(search, str) or "\x00" in search:
+        raise CatalogInspectionInputError("catalog search is invalid")
+    search = search.strip()
+    if not search:
+        return None
+    if len(search.encode("utf-8")) > _CATALOG_INSPECTION_MAX_SEARCH_BYTES:
+        raise CatalogInspectionInputError("catalog search is too long")
+    return search
+
+
+def _literal_ilike_pattern(value: str) -> str:
+    """Escape wildcard characters so metadata search is literal and bounded."""
+
+    return "%" + value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+async def _catalog_snapshot_for_source_or_raise(
+    session: AsyncSession,
+    *,
+    source_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+) -> CatalogSnapshot:
+    snapshot = (
+        await session.execute(
+            select(CatalogSnapshot).where(
+                CatalogSnapshot.id == snapshot_id,
+                CatalogSnapshot.source_id == source_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if snapshot is None:
+        await _rollback_quietly(session)
+        raise NotFoundError("catalog snapshot not found")
+    return snapshot
+
+
+async def _current_scope_keys(
+    session: AsyncSession,
+    *,
+    source_id: uuid.UUID,
+) -> tuple[CatalogTableIdentity, ...]:
+    return await _current_scope(session, source_id)
+
+
+def _scope_matches_snapshot(
+    snapshot: CatalogSnapshot,
+    current_scope: tuple[CatalogTableIdentity, ...],
+) -> bool:
+    return snapshot.scope_fingerprint == canonical_scope_fingerprint(current_scope)
+
+
+def _scope_asset_join():
+    return and_(
+        SourceTableScope.source_id == CatalogAsset.source_id,
+        SourceTableScope.schema_name == CatalogAsset.schema_name,
+        SourceTableScope.table_name == CatalogAsset.table_name,
+    )
+
+
+async def list_catalog_assets_for_owner(
+    session: AsyncSession,
+    *,
+    source_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+    page: int,
+    page_size: int,
+    search: str | None = None,
+) -> CatalogAssetPage:
+    """List one explicitly pinned snapshot's assets within the *current* scope.
+
+    The source scope is intentionally re-applied to every historical read.
+    An asset removed from the current authorization scope is neither counted
+    nor returned solely because an immutable old snapshot retained it.
+    """
+
+    page, page_size = _validated_inspection_page(page, page_size)
+    search = _normalized_asset_search(search)
+    try:
+        await _owned_source_or_raise(
+            session, source_id=source_id, owner_user_id=owner_user_id
+        )
+        snapshot = await _catalog_snapshot_for_source_or_raise(
+            session, source_id=source_id, snapshot_id=snapshot_id
+        )
+        current_scope = await _current_scope_keys(session, source_id=source_id)
+        conditions = [
+            CatalogAsset.source_id == source_id,
+            CatalogAsset.snapshot_id == snapshot_id,
+        ]
+        if search is not None:
+            pattern = _literal_ilike_pattern(search)
+            conditions.append(
+                or_(
+                    CatalogAsset.schema_name.ilike(pattern, escape="\\"),
+                    CatalogAsset.table_name.ilike(pattern, escape="\\"),
+                )
+            )
+        total = (
+            await session.execute(
+                select(func.count())
+                .select_from(CatalogAsset)
+                .join(SourceTableScope, _scope_asset_join())
+                .where(*conditions)
+            )
+        ).scalar_one()
+        assets = (
+            await session.execute(
+                select(CatalogAsset)
+                .join(SourceTableScope, _scope_asset_join())
+                .where(*conditions)
+                .order_by(
+                    CatalogAsset.schema_name,
+                    CatalogAsset.table_name,
+                    CatalogAsset.id,
+                )
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        ).scalars().all()
+        return CatalogAssetPage(
+            source_id=source_id,
+            snapshot=snapshot,
+            scope_matches_current_selection=_scope_matches_snapshot(snapshot, current_scope),
+            page=page,
+            page_size=page_size,
+            total=int(total),
+            assets=tuple(_asset_summary(asset) for asset in assets),
+        )
+    except SQLAlchemyError:
+        await _rollback_quietly(session)
+        raise CatalogPersistenceError() from None
+
+
+async def _load_catalog_asset_detail(
+    session: AsyncSession,
+    *,
+    source_id: uuid.UUID,
+    snapshot: CatalogSnapshot,
+    asset: CatalogAsset,
+    current_scope: tuple[CatalogTableIdentity, ...],
+) -> CatalogAssetDetail:
+    """Read a single permitted asset's normalized children in stable order."""
+
+    columns = (
+        await session.execute(
+            select(CatalogColumn)
+            .where(
+                CatalogColumn.source_id == source_id,
+                CatalogColumn.snapshot_id == snapshot.id,
+                CatalogColumn.asset_id == asset.id,
+            )
+            .order_by(CatalogColumn.ordinal_position, CatalogColumn.id)
+        )
+    ).scalars().all()
+
+    key_rows = (
+        await session.execute(
+            select(
+                CatalogDeclaredKey,
+                CatalogDeclaredKeyColumn.ordinal_position,
+                CatalogColumn.column_name,
+            )
+            .join(
+                CatalogDeclaredKeyColumn,
+                and_(
+                    CatalogDeclaredKeyColumn.source_id == CatalogDeclaredKey.source_id,
+                    CatalogDeclaredKeyColumn.snapshot_id == CatalogDeclaredKey.snapshot_id,
+                    CatalogDeclaredKeyColumn.asset_id == CatalogDeclaredKey.asset_id,
+                    CatalogDeclaredKeyColumn.key_id == CatalogDeclaredKey.id,
+                ),
+            )
+            .join(
+                CatalogColumn,
+                and_(
+                    CatalogColumn.source_id == CatalogDeclaredKeyColumn.source_id,
+                    CatalogColumn.snapshot_id == CatalogDeclaredKeyColumn.snapshot_id,
+                    CatalogColumn.asset_id == CatalogDeclaredKeyColumn.asset_id,
+                    CatalogColumn.id == CatalogDeclaredKeyColumn.column_id,
+                ),
+            )
+            .where(
+                CatalogDeclaredKey.source_id == source_id,
+                CatalogDeclaredKey.snapshot_id == snapshot.id,
+                CatalogDeclaredKey.asset_id == asset.id,
+            )
+            .order_by(
+                CatalogDeclaredKey.constraint_name,
+                CatalogDeclaredKey.id,
+                CatalogDeclaredKeyColumn.ordinal_position,
+            )
+        )
+    ).all()
+    key_parts: dict[uuid.UUID, tuple[CatalogDeclaredKey, list[str]]] = {}
+    for key, _ordinal, column_name in key_rows:
+        existing = key_parts.get(key.id)
+        if existing is None:
+            existing = (key, [])
+            key_parts[key.id] = existing
+        existing[1].append(str(column_name))
+    declared_keys = tuple(
+        CatalogDeclaredKeyMetadata(
+            constraint_name=key.constraint_name,
+            key_kind=key.key_kind,
+            column_names=tuple(column_names),
+        )
+        for key, column_names in key_parts.values()
+    )
+
+    target_asset = aliased(CatalogAsset)
+    foreign_key_rows = (
+        await session.execute(
+            select(CatalogForeignKey, target_asset)
+            .outerjoin(
+                target_asset,
+                and_(
+                    target_asset.source_id == CatalogForeignKey.source_id,
+                    target_asset.snapshot_id == CatalogForeignKey.snapshot_id,
+                    target_asset.id == CatalogForeignKey.referenced_asset_id,
+                ),
+            )
+            .where(
+                CatalogForeignKey.source_id == source_id,
+                CatalogForeignKey.snapshot_id == snapshot.id,
+                CatalogForeignKey.referencing_asset_id == asset.id,
+            )
+            .order_by(CatalogForeignKey.constraint_name, CatalogForeignKey.id)
+        )
+    ).all()
+    foreign_key_ids = [foreign_key.id for foreign_key, _target in foreign_key_rows]
+    mappings_by_foreign_key: dict[uuid.UUID, list[CatalogForeignKeyColumnMapping]] = {}
+    if foreign_key_ids:
+        referencing_column = aliased(CatalogColumn)
+        referenced_column = aliased(CatalogColumn)
+        mapping_rows = (
+            await session.execute(
+                select(
+                    CatalogForeignKeyColumn.foreign_key_id,
+                    CatalogForeignKeyColumn.ordinal_position,
+                    referencing_column.column_name,
+                    referenced_column.column_name,
+                )
+                .join(
+                    referencing_column,
+                    and_(
+                        referencing_column.source_id == CatalogForeignKeyColumn.source_id,
+                        referencing_column.snapshot_id == CatalogForeignKeyColumn.snapshot_id,
+                        referencing_column.asset_id
+                        == CatalogForeignKeyColumn.referencing_asset_id,
+                        referencing_column.id == CatalogForeignKeyColumn.referencing_column_id,
+                    ),
+                )
+                .join(
+                    referenced_column,
+                    and_(
+                        referenced_column.source_id == CatalogForeignKeyColumn.source_id,
+                        referenced_column.snapshot_id == CatalogForeignKeyColumn.snapshot_id,
+                        referenced_column.asset_id
+                        == CatalogForeignKeyColumn.referenced_asset_id,
+                        referenced_column.id == CatalogForeignKeyColumn.referenced_column_id,
+                    ),
+                )
+                .where(
+                    CatalogForeignKeyColumn.source_id == source_id,
+                    CatalogForeignKeyColumn.snapshot_id == snapshot.id,
+                    CatalogForeignKeyColumn.foreign_key_id.in_(foreign_key_ids),
+                )
+                .order_by(
+                    CatalogForeignKeyColumn.foreign_key_id,
+                    CatalogForeignKeyColumn.ordinal_position,
+                )
+            )
+        ).all()
+        for foreign_key_id, ordinal_position, referencing_name, referenced_name in mapping_rows:
+            mappings_by_foreign_key.setdefault(foreign_key_id, []).append(
+                CatalogForeignKeyColumnMapping(
+                    ordinal_position=ordinal_position,
+                    referencing_column_name=str(referencing_name),
+                    referenced_column_name=str(referenced_name),
+                )
+            )
+
+    permitted_scope = {(item.schema_name, item.table_name) for item in current_scope}
+    foreign_keys: list[CatalogForeignKeyMetadata] = []
+    for foreign_key, target in foreign_key_rows:
+        target_is_permitted = (
+            foreign_key.target_status is CatalogForeignKeyTargetStatus.IN_SCOPE
+            and target is not None
+            and _scope_key_from_asset(target) in permitted_scope
+        )
+        if target_is_permitted:
+            foreign_keys.append(
+                CatalogForeignKeyMetadata(
+                    constraint_name=foreign_key.constraint_name,
+                    target_status=CatalogForeignKeyTargetStatus.IN_SCOPE,
+                    referenced_asset=_asset_reference(target),
+                    column_mappings=tuple(mappings_by_foreign_key.get(foreign_key.id, [])),
+                )
+            )
+        else:
+            # A historical relationship may have been in scope when captured
+            # but its target can no longer be named after the owner narrows
+            # the saved scope. Present the established omission indicator,
+            # never the old target identity or mapping.
+            foreign_keys.append(
+                CatalogForeignKeyMetadata(
+                    constraint_name=foreign_key.constraint_name,
+                    target_status=CatalogForeignKeyTargetStatus.TARGET_OUT_OF_SCOPE,
+                    referenced_asset=None,
+                    column_mappings=(),
+                )
+            )
+    return CatalogAssetDetail(
+        source_id=source_id,
+        snapshot=snapshot,
+        scope_matches_current_selection=_scope_matches_snapshot(snapshot, current_scope),
+        asset=_asset_summary(asset),
+        columns=tuple(_column_metadata(column) for column in columns),
+        declared_keys=declared_keys,
+        foreign_keys=tuple(foreign_keys),
+    )
+
+
+async def get_catalog_asset_detail_for_owner(
+    session: AsyncSession,
+    *,
+    source_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+) -> CatalogAssetDetail:
+    """Return one explicitly pinned, currently authorized catalog asset."""
+
+    try:
+        await _owned_source_or_raise(
+            session, source_id=source_id, owner_user_id=owner_user_id
+        )
+        snapshot = await _catalog_snapshot_for_source_or_raise(
+            session, source_id=source_id, snapshot_id=snapshot_id
+        )
+        current_scope = await _current_scope_keys(session, source_id=source_id)
+        asset = (
+            await session.execute(
+                select(CatalogAsset)
+                .join(SourceTableScope, _scope_asset_join())
+                .where(
+                    CatalogAsset.id == asset_id,
+                    CatalogAsset.source_id == source_id,
+                    CatalogAsset.snapshot_id == snapshot_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if asset is None:
+            await _rollback_quietly(session)
+            raise NotFoundError("catalog asset not found")
+        return await _load_catalog_asset_detail(
+            session,
+            source_id=source_id,
+            snapshot=snapshot,
+            asset=asset,
+            current_scope=current_scope,
+        )
+    except SQLAlchemyError:
+        await _rollback_quietly(session)
+        raise CatalogPersistenceError() from None
+
+
+async def _preceding_catalog_snapshot(
+    session: AsyncSession,
+    *,
+    source_id: uuid.UUID,
+    snapshot: CatalogSnapshot,
+) -> CatalogSnapshot | None:
+    current_sequence = (
+        await session.execute(
+            select(CatalogSyncRun.request_sequence).where(
+                CatalogSyncRun.source_id == source_id,
+                CatalogSyncRun.id == snapshot.sync_run_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if current_sequence is None:
+        # The composite snapshot FK makes this unreachable without database
+        # corruption. Do not manufacture a comparison from incomplete state.
+        raise CatalogPersistenceError()
+    return (
+        await session.execute(
+            select(CatalogSnapshot)
+            .join(
+                CatalogSyncRun,
+                and_(
+                    CatalogSyncRun.source_id == CatalogSnapshot.source_id,
+                    CatalogSyncRun.id == CatalogSnapshot.sync_run_id,
+                ),
+            )
+            .where(
+                CatalogSnapshot.source_id == source_id,
+                CatalogSyncRun.request_sequence < current_sequence,
+            )
+            .order_by(CatalogSyncRun.request_sequence.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def _load_snapshot_asset_states(
+    session: AsyncSession,
+    *,
+    source_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    permitted_scope: set[tuple[str, str]],
+) -> dict[tuple[str, str], _CatalogAssetState]:
+    """Load one safe structural state in a bounded set of metadata queries."""
+
+    assets = (
+        await session.execute(
+            select(CatalogAsset)
+            .where(
+                CatalogAsset.source_id == source_id,
+                CatalogAsset.snapshot_id == snapshot_id,
+            )
+            .order_by(CatalogAsset.schema_name, CatalogAsset.table_name, CatalogAsset.id)
+        )
+    ).scalars().all()
+    permitted_assets = [asset for asset in assets if _scope_key_from_asset(asset) in permitted_scope]
+    asset_ids = [asset.id for asset in permitted_assets]
+    if not asset_ids:
+        return {}
+
+    column_rows = (
+        await session.execute(
+            select(CatalogColumn)
+            .where(
+                CatalogColumn.source_id == source_id,
+                CatalogColumn.snapshot_id == snapshot_id,
+                CatalogColumn.asset_id.in_(asset_ids),
+            )
+            .order_by(CatalogColumn.asset_id, CatalogColumn.ordinal_position, CatalogColumn.id)
+        )
+    ).scalars().all()
+    columns_by_asset: dict[uuid.UUID, list[CatalogColumnMetadata]] = {}
+    for column in column_rows:
+        columns_by_asset.setdefault(column.asset_id, []).append(_column_metadata(column))
+
+    key_rows = (
+        await session.execute(
+            select(
+                CatalogDeclaredKey,
+                CatalogDeclaredKeyColumn.ordinal_position,
+                CatalogColumn.column_name,
+            )
+            .join(
+                CatalogDeclaredKeyColumn,
+                and_(
+                    CatalogDeclaredKeyColumn.source_id == CatalogDeclaredKey.source_id,
+                    CatalogDeclaredKeyColumn.snapshot_id == CatalogDeclaredKey.snapshot_id,
+                    CatalogDeclaredKeyColumn.asset_id == CatalogDeclaredKey.asset_id,
+                    CatalogDeclaredKeyColumn.key_id == CatalogDeclaredKey.id,
+                ),
+            )
+            .join(
+                CatalogColumn,
+                and_(
+                    CatalogColumn.source_id == CatalogDeclaredKeyColumn.source_id,
+                    CatalogColumn.snapshot_id == CatalogDeclaredKeyColumn.snapshot_id,
+                    CatalogColumn.asset_id == CatalogDeclaredKeyColumn.asset_id,
+                    CatalogColumn.id == CatalogDeclaredKeyColumn.column_id,
+                ),
+            )
+            .where(
+                CatalogDeclaredKey.source_id == source_id,
+                CatalogDeclaredKey.snapshot_id == snapshot_id,
+                CatalogDeclaredKey.asset_id.in_(asset_ids),
+            )
+            .order_by(
+                CatalogDeclaredKey.asset_id,
+                CatalogDeclaredKey.constraint_name,
+                CatalogDeclaredKey.id,
+                CatalogDeclaredKeyColumn.ordinal_position,
+            )
+        )
+    ).all()
+    key_parts: dict[uuid.UUID, tuple[CatalogDeclaredKey, list[str]]] = {}
+    for key, _ordinal, column_name in key_rows:
+        existing = key_parts.get(key.id)
+        if existing is None:
+            existing = (key, [])
+            key_parts[key.id] = existing
+        existing[1].append(str(column_name))
+    keys_by_asset: dict[uuid.UUID, list[CatalogDeclaredKeyMetadata]] = {}
+    for key, column_names in key_parts.values():
+        keys_by_asset.setdefault(key.asset_id, []).append(
+            CatalogDeclaredKeyMetadata(
+                constraint_name=key.constraint_name,
+                key_kind=key.key_kind,
+                column_names=tuple(column_names),
+            )
+        )
+
+    target_asset = aliased(CatalogAsset)
+    foreign_key_rows = (
+        await session.execute(
+            select(CatalogForeignKey, target_asset)
+            .outerjoin(
+                target_asset,
+                and_(
+                    target_asset.source_id == CatalogForeignKey.source_id,
+                    target_asset.snapshot_id == CatalogForeignKey.snapshot_id,
+                    target_asset.id == CatalogForeignKey.referenced_asset_id,
+                ),
+            )
+            .where(
+                CatalogForeignKey.source_id == source_id,
+                CatalogForeignKey.snapshot_id == snapshot_id,
+                CatalogForeignKey.referencing_asset_id.in_(asset_ids),
+            )
+            .order_by(
+                CatalogForeignKey.referencing_asset_id,
+                CatalogForeignKey.constraint_name,
+                CatalogForeignKey.id,
+            )
+        )
+    ).all()
+    foreign_key_ids = [foreign_key.id for foreign_key, _target in foreign_key_rows]
+    mappings_by_foreign_key: dict[uuid.UUID, list[CatalogForeignKeyColumnMapping]] = {}
+    if foreign_key_ids:
+        referencing_column = aliased(CatalogColumn)
+        referenced_column = aliased(CatalogColumn)
+        mapping_rows = (
+            await session.execute(
+                select(
+                    CatalogForeignKeyColumn.foreign_key_id,
+                    CatalogForeignKeyColumn.ordinal_position,
+                    referencing_column.column_name,
+                    referenced_column.column_name,
+                )
+                .join(
+                    referencing_column,
+                    and_(
+                        referencing_column.source_id == CatalogForeignKeyColumn.source_id,
+                        referencing_column.snapshot_id == CatalogForeignKeyColumn.snapshot_id,
+                        referencing_column.asset_id
+                        == CatalogForeignKeyColumn.referencing_asset_id,
+                        referencing_column.id == CatalogForeignKeyColumn.referencing_column_id,
+                    ),
+                )
+                .join(
+                    referenced_column,
+                    and_(
+                        referenced_column.source_id == CatalogForeignKeyColumn.source_id,
+                        referenced_column.snapshot_id == CatalogForeignKeyColumn.snapshot_id,
+                        referenced_column.asset_id
+                        == CatalogForeignKeyColumn.referenced_asset_id,
+                        referenced_column.id == CatalogForeignKeyColumn.referenced_column_id,
+                    ),
+                )
+                .where(
+                    CatalogForeignKeyColumn.source_id == source_id,
+                    CatalogForeignKeyColumn.snapshot_id == snapshot_id,
+                    CatalogForeignKeyColumn.foreign_key_id.in_(foreign_key_ids),
+                )
+                .order_by(
+                    CatalogForeignKeyColumn.foreign_key_id,
+                    CatalogForeignKeyColumn.ordinal_position,
+                )
+            )
+        ).all()
+        for foreign_key_id, ordinal_position, referencing_name, referenced_name in mapping_rows:
+            mappings_by_foreign_key.setdefault(foreign_key_id, []).append(
+                CatalogForeignKeyColumnMapping(
+                    ordinal_position=ordinal_position,
+                    referencing_column_name=str(referencing_name),
+                    referenced_column_name=str(referenced_name),
+                )
+            )
+
+    foreign_keys_by_asset: dict[uuid.UUID, list[CatalogForeignKeyMetadata]] = {}
+    for foreign_key, target in foreign_key_rows:
+        target_is_permitted = (
+            foreign_key.target_status is CatalogForeignKeyTargetStatus.IN_SCOPE
+            and target is not None
+            and _scope_key_from_asset(target) in permitted_scope
+        )
+        if target_is_permitted:
+            metadata = CatalogForeignKeyMetadata(
+                constraint_name=foreign_key.constraint_name,
+                target_status=CatalogForeignKeyTargetStatus.IN_SCOPE,
+                referenced_asset=_asset_reference(target),
+                column_mappings=tuple(mappings_by_foreign_key.get(foreign_key.id, [])),
+            )
+        else:
+            metadata = CatalogForeignKeyMetadata(
+                constraint_name=foreign_key.constraint_name,
+                target_status=CatalogForeignKeyTargetStatus.TARGET_OUT_OF_SCOPE,
+                referenced_asset=None,
+                column_mappings=(),
+            )
+        foreign_keys_by_asset.setdefault(foreign_key.referencing_asset_id, []).append(metadata)
+
+    states: dict[tuple[str, str], _CatalogAssetState] = {}
+    for asset in permitted_assets:
+        states[_scope_key_from_asset(asset)] = _CatalogAssetState(
+            asset=_asset_summary(asset),
+            columns=tuple(columns_by_asset.get(asset.id, [])),
+            declared_keys=tuple(keys_by_asset.get(asset.id, [])),
+            foreign_keys=tuple(foreign_keys_by_asset.get(asset.id, [])),
+        )
+    return states
+
+
+def _key_signature(key: CatalogDeclaredKeyMetadata) -> tuple[str, str, tuple[str, ...]]:
+    return (key.constraint_name, key.key_kind.value, key.column_names)
+
+
+def _foreign_key_signature(
+    foreign_key: CatalogForeignKeyMetadata,
+) -> tuple[
+    str,
+    str,
+    tuple[str, str] | None,
+    tuple[tuple[int, str, str], ...],
+]:
+    target_identity = (
+        (foreign_key.referenced_asset.schema_name, foreign_key.referenced_asset.table_name)
+        if foreign_key.referenced_asset is not None
+        else None
+    )
+    mappings = tuple(
+        (
+            mapping.ordinal_position,
+            mapping.referencing_column_name,
+            mapping.referenced_column_name,
+        )
+        for mapping in foreign_key.column_mappings
+    )
+    return (foreign_key.constraint_name, foreign_key.target_status.value, target_identity, mappings)
+
+
+def _build_catalog_structural_diff(
+    *,
+    source_id: uuid.UUID,
+    snapshot: CatalogSnapshot,
+    previous_snapshot: CatalogSnapshot,
+    previous: dict[tuple[str, str], _CatalogAssetState],
+    current: dict[tuple[str, str], _CatalogAssetState],
+    change_limit: int = _CATALOG_DIFF_CHANGE_LIMIT,
+) -> CatalogStructuralDiff:
+    """Compare safe normalized metadata without heuristic rename detection."""
+
+    tables_added: list[CatalogTableChange] = []
+    tables_removed: list[CatalogTableChange] = []
+    columns_added: list[CatalogColumnIdentityChange] = []
+    columns_removed: list[CatalogColumnIdentityChange] = []
+    columns_changed: list[CatalogColumnChange] = []
+    keys_changed: list[CatalogKeyChange] = []
+    foreign_keys_changed: list[CatalogForeignKeyChange] = []
+    comments_changed: list[CatalogCommentChange] = []
+    remaining = change_limit
+    truncated = False
+
+    def add(destination: list, value: object) -> None:
+        nonlocal remaining, truncated
+        if remaining <= 0:
+            truncated = True
+            return
+        destination.append(value)
+        remaining -= 1
+
+    previous_tables = set(previous)
+    current_tables = set(current)
+    for schema_name, table_name in sorted(current_tables - previous_tables):
+        add(tables_added, CatalogTableChange(schema_name=schema_name, table_name=table_name))
+    for schema_name, table_name in sorted(previous_tables - current_tables):
+        add(tables_removed, CatalogTableChange(schema_name=schema_name, table_name=table_name))
+
+    for identity in sorted(previous_tables & current_tables):
+        previous_asset = previous[identity]
+        current_asset = current[identity]
+        schema_name, table_name = identity
+        previous_columns = {column.column_name: column for column in previous_asset.columns}
+        current_columns = {column.column_name: column for column in current_asset.columns}
+        for column_name in sorted(current_columns.keys() - previous_columns.keys()):
+            add(
+                columns_added,
+                CatalogColumnIdentityChange(
+                    schema_name=schema_name,
+                    table_name=table_name,
+                    column_name=column_name,
+                ),
+            )
+        for column_name in sorted(previous_columns.keys() - current_columns.keys()):
+            add(
+                columns_removed,
+                CatalogColumnIdentityChange(
+                    schema_name=schema_name,
+                    table_name=table_name,
+                    column_name=column_name,
+                ),
+            )
+        for column_name in sorted(previous_columns.keys() & current_columns.keys()):
+            before = previous_columns[column_name]
+            after = current_columns[column_name]
+            if (
+                before.formatted_native_type != after.formatted_native_type
+                or before.is_nullable != after.is_nullable
+            ):
+                add(
+                    columns_changed,
+                    CatalogColumnChange(
+                        schema_name=schema_name,
+                        table_name=table_name,
+                        column_name=column_name,
+                        previous_formatted_native_type=before.formatted_native_type,
+                        current_formatted_native_type=after.formatted_native_type,
+                        previous_is_nullable=before.is_nullable,
+                        current_is_nullable=after.is_nullable,
+                    ),
+                )
+
+        previous_keys = {_key_signature(key): key for key in previous_asset.declared_keys}
+        current_keys = {_key_signature(key): key for key in current_asset.declared_keys}
+        for signature in sorted(current_keys.keys() - previous_keys.keys()):
+            key = current_keys[signature]
+            add(
+                keys_changed,
+                CatalogKeyChange(
+                    change="added",
+                    schema_name=schema_name,
+                    table_name=table_name,
+                    constraint_name=key.constraint_name,
+                    key_kind=key.key_kind,
+                    column_names=key.column_names,
+                ),
+            )
+        for signature in sorted(previous_keys.keys() - current_keys.keys()):
+            key = previous_keys[signature]
+            add(
+                keys_changed,
+                CatalogKeyChange(
+                    change="removed",
+                    schema_name=schema_name,
+                    table_name=table_name,
+                    constraint_name=key.constraint_name,
+                    key_kind=key.key_kind,
+                    column_names=key.column_names,
+                ),
+            )
+
+        previous_foreign_keys = {
+            _foreign_key_signature(foreign_key): foreign_key
+            for foreign_key in previous_asset.foreign_keys
+        }
+        current_foreign_keys = {
+            _foreign_key_signature(foreign_key): foreign_key
+            for foreign_key in current_asset.foreign_keys
+        }
+        for signature in sorted(current_foreign_keys.keys() - previous_foreign_keys.keys()):
+            foreign_key = current_foreign_keys[signature]
+            add(
+                foreign_keys_changed,
+                CatalogForeignKeyChange(
+                    change="added",
+                    schema_name=schema_name,
+                    table_name=table_name,
+                    constraint_name=foreign_key.constraint_name,
+                    target_status=foreign_key.target_status,
+                    referenced_asset=foreign_key.referenced_asset,
+                    column_mappings=foreign_key.column_mappings,
+                ),
+            )
+        for signature in sorted(previous_foreign_keys.keys() - current_foreign_keys.keys()):
+            foreign_key = previous_foreign_keys[signature]
+            add(
+                foreign_keys_changed,
+                CatalogForeignKeyChange(
+                    change="removed",
+                    schema_name=schema_name,
+                    table_name=table_name,
+                    constraint_name=foreign_key.constraint_name,
+                    target_status=foreign_key.target_status,
+                    referenced_asset=foreign_key.referenced_asset,
+                    column_mappings=foreign_key.column_mappings,
+                ),
+            )
+
+        if previous_asset.asset.table_comment != current_asset.asset.table_comment:
+            add(
+                comments_changed,
+                CatalogCommentChange(
+                    subject="table",
+                    schema_name=schema_name,
+                    table_name=table_name,
+                    column_name=None,
+                    previous_comment=previous_asset.asset.table_comment,
+                    current_comment=current_asset.asset.table_comment,
+                ),
+            )
+        for column_name in sorted(previous_columns.keys() & current_columns.keys()):
+            before = previous_columns[column_name]
+            after = current_columns[column_name]
+            if before.column_comment != after.column_comment:
+                add(
+                    comments_changed,
+                    CatalogCommentChange(
+                        subject="column",
+                        schema_name=schema_name,
+                        table_name=table_name,
+                        column_name=column_name,
+                        previous_comment=before.column_comment,
+                        current_comment=after.column_comment,
+                    ),
+                )
+
+    return CatalogStructuralDiff(
+        source_id=source_id,
+        snapshot=snapshot,
+        state="compared",
+        previous_snapshot=previous_snapshot,
+        truncated=truncated,
+        change_limit=change_limit,
+        tables_added=tuple(tables_added),
+        tables_removed=tuple(tables_removed),
+        columns_added=tuple(columns_added),
+        columns_removed=tuple(columns_removed),
+        columns_changed=tuple(columns_changed),
+        keys_changed=tuple(keys_changed),
+        foreign_keys_changed=tuple(foreign_keys_changed),
+        comments_changed=tuple(comments_changed),
+    )
+
+
+async def get_catalog_structural_diff_for_owner(
+    session: AsyncSession,
+    *,
+    source_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+) -> CatalogStructuralDiff:
+    """Compare a pinned snapshot to its preceding publication when safe.
+
+    Any captured/current scope mismatch is deliberately a non-comparison. It
+    avoids asserting that an unselected table was dropped and prevents older
+    out-of-scope metadata from entering a diff response.
+    """
+
+    try:
+        await _owned_source_or_raise(
+            session, source_id=source_id, owner_user_id=owner_user_id
+        )
+        snapshot = await _catalog_snapshot_for_source_or_raise(
+            session, source_id=source_id, snapshot_id=snapshot_id
+        )
+        current_scope = await _current_scope_keys(session, source_id=source_id)
+        permitted_scope = {(item.schema_name, item.table_name) for item in current_scope}
+        if not _scope_matches_snapshot(snapshot, current_scope):
+            return CatalogStructuralDiff(
+                source_id=source_id,
+                snapshot=snapshot,
+                state="scope_changed",
+                previous_snapshot=None,
+                truncated=False,
+                change_limit=_CATALOG_DIFF_CHANGE_LIMIT,
+            )
+        previous_snapshot = await _preceding_catalog_snapshot(
+            session, source_id=source_id, snapshot=snapshot
+        )
+        if previous_snapshot is None:
+            return CatalogStructuralDiff(
+                source_id=source_id,
+                snapshot=snapshot,
+                state="baseline",
+                previous_snapshot=None,
+                truncated=False,
+                change_limit=_CATALOG_DIFF_CHANGE_LIMIT,
+            )
+        if previous_snapshot.scope_fingerprint != snapshot.scope_fingerprint:
+            return CatalogStructuralDiff(
+                source_id=source_id,
+                snapshot=snapshot,
+                state="scope_changed",
+                previous_snapshot=None,
+                truncated=False,
+                change_limit=_CATALOG_DIFF_CHANGE_LIMIT,
+            )
+        previous = await _load_snapshot_asset_states(
+            session,
+            source_id=source_id,
+            snapshot_id=previous_snapshot.id,
+            permitted_scope=permitted_scope,
+        )
+        current = await _load_snapshot_asset_states(
+            session,
+            source_id=source_id,
+            snapshot_id=snapshot.id,
+            permitted_scope=permitted_scope,
+        )
+        return _build_catalog_structural_diff(
+            source_id=source_id,
+            snapshot=snapshot,
+            previous_snapshot=previous_snapshot,
+            previous=previous,
+            current=current,
+        )
+    except SQLAlchemyError:
+        await _rollback_quietly(session)
+        raise CatalogPersistenceError() from None
+
+
 async def get_current_catalog_snapshot_for_owner(
     session: AsyncSession,
     *,
@@ -1206,12 +2343,26 @@ async def get_catalog_availability_for_owner(
 
 
 __all__ = [
+    "CatalogAssetDetail",
     "CatalogAssetInput",
+    "CatalogAssetPage",
+    "CatalogAssetReference",
+    "CatalogAssetSummary",
     "CatalogAvailability",
+    "CatalogColumnChange",
+    "CatalogColumnIdentityChange",
     "CatalogColumnInput",
+    "CatalogColumnMetadata",
+    "CatalogCommentChange",
+    "CatalogDeclaredKeyMetadata",
+    "CatalogForeignKeyChange",
+    "CatalogForeignKeyColumnMapping",
     "CatalogForeignKeyColumnInput",
     "CatalogForeignKeyInput",
+    "CatalogForeignKeyMetadata",
     "CatalogInputError",
+    "CatalogInspectionInputError",
+    "CatalogKeyChange",
     "CatalogKeyInput",
     "CatalogPersistenceError",
     "CatalogRunLeaseLostError",
@@ -1219,7 +2370,9 @@ __all__ = [
     "CatalogRunSupersededError",
     "CatalogScopeChangedError",
     "CatalogSnapshotInput",
+    "CatalogStructuralDiff",
     "CatalogSyncLease",
+    "CatalogTableChange",
     "CatalogTableIdentity",
     "cancel_catalog_sync_run_for_owner",
     "canonical_scope_fingerprint",
@@ -1227,10 +2380,13 @@ __all__ = [
     "fail_catalog_sync_run",
     "finalize_catalog_sync_worker_failure",
     "get_catalog_availability_for_owner",
+    "get_catalog_asset_detail_for_owner",
+    "get_catalog_structural_diff_for_owner",
     "get_catalog_sync_run_for_owner",
     "get_catalog_snapshot_for_owner",
     "get_current_catalog_snapshot_for_owner",
     "mark_catalog_sync_running",
+    "list_catalog_assets_for_owner",
     "publish_catalog_snapshot",
     "renew_catalog_sync_lease",
     "request_catalog_sync_for_owner",

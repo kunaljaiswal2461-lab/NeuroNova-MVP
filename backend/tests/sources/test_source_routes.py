@@ -18,7 +18,11 @@ from app.core.config import Settings, get_settings
 from app.core.dependencies import get_session
 from app.core.security import create_access_token
 from app.db.models.source import SourceStatus, SourceType, TLSMode
-from app.db.models.catalog import CatalogSyncRunStatus
+from app.db.models.catalog import (
+    CatalogForeignKeyTargetStatus,
+    CatalogKeyKind,
+    CatalogSyncRunStatus,
+)
 from app.db.models.user import User, UserRole
 from app.exceptions.custom_exceptions import NotFoundError
 from app.schemas.source_schemas import (
@@ -86,6 +90,109 @@ def route_context(monkeypatch):
         next_attempt_at=None,
         failure_code=None,
     )
+    catalog_snapshot = SimpleNamespace(
+        id=uuid.uuid4(),
+        published_at=datetime.now(timezone.utc),
+    )
+    previous_catalog_snapshot = SimpleNamespace(
+        id=uuid.uuid4(),
+        published_at=datetime.now(timezone.utc),
+    )
+    catalog_asset = catalog_service.CatalogAssetSummary(
+        asset_id=uuid.uuid4(),
+        schema_name="public",
+        table_name="orders",
+        table_comment="<img src=x onerror=alert(1)>",
+    )
+    customer_asset = catalog_service.CatalogAssetReference(
+        asset_id=uuid.uuid4(),
+        schema_name="public",
+        table_name="customers",
+    )
+    catalog_page = catalog_service.CatalogAssetPage(
+        source_id=source.source_id,
+        snapshot=catalog_snapshot,
+        scope_matches_current_selection=True,
+        page=1,
+        page_size=50,
+        total=1,
+        assets=(catalog_asset,),
+    )
+    catalog_detail = catalog_service.CatalogAssetDetail(
+        source_id=source.source_id,
+        snapshot=catalog_snapshot,
+        scope_matches_current_selection=True,
+        asset=catalog_asset,
+        columns=(
+            catalog_service.CatalogColumnMetadata(
+                column_name="tenant_id",
+                ordinal_position=1,
+                is_nullable=False,
+                formatted_native_type="integer",
+                native_type_schema="pg_catalog",
+                native_type_name="int4",
+                native_type_oid=23,
+                native_type_modifier=-1,
+                column_comment="database column comment",
+            ),
+            catalog_service.CatalogColumnMetadata(
+                column_name="customer_id",
+                ordinal_position=2,
+                is_nullable=False,
+                formatted_native_type="integer",
+                native_type_schema="pg_catalog",
+                native_type_name="int4",
+                native_type_oid=23,
+                native_type_modifier=-1,
+                column_comment=None,
+            ),
+        ),
+        declared_keys=(
+            catalog_service.CatalogDeclaredKeyMetadata(
+                constraint_name="orders_customer_key",
+                key_kind=CatalogKeyKind.UNIQUE,
+                column_names=("tenant_id", "customer_id"),
+            ),
+        ),
+        foreign_keys=(
+            catalog_service.CatalogForeignKeyMetadata(
+                constraint_name="orders_customer_fkey",
+                target_status=CatalogForeignKeyTargetStatus.IN_SCOPE,
+                referenced_asset=customer_asset,
+                column_mappings=(
+                    catalog_service.CatalogForeignKeyColumnMapping(
+                        ordinal_position=1,
+                        referencing_column_name="tenant_id",
+                        referenced_column_name="tenant_id",
+                    ),
+                    catalog_service.CatalogForeignKeyColumnMapping(
+                        ordinal_position=2,
+                        referencing_column_name="customer_id",
+                        referenced_column_name="customer_id",
+                    ),
+                ),
+            ),
+        ),
+    )
+    catalog_diff = catalog_service.CatalogStructuralDiff(
+        source_id=source.source_id,
+        snapshot=catalog_snapshot,
+        state="compared",
+        previous_snapshot=previous_catalog_snapshot,
+        truncated=False,
+        change_limit=500,
+        columns_changed=(
+            catalog_service.CatalogColumnChange(
+                schema_name="public",
+                table_name="orders",
+                column_name="tenant_id",
+                previous_formatted_native_type="integer",
+                current_formatted_native_type="bigint",
+                previous_is_nullable=False,
+                current_is_nullable=False,
+            ),
+        ),
+    )
 
     async def fake_test(body, *, settings):
         calls.append(("test", None))
@@ -143,6 +250,56 @@ def route_context(monkeypatch):
         catalog_run.completed_at = datetime.now(timezone.utc)
         return catalog_run
 
+    async def fake_catalog_assets(
+        _session,
+        *,
+        source_id,
+        snapshot_id,
+        owner_user_id,
+        page,
+        page_size,
+        search,
+    ):
+        calls.append(("catalog_assets", owner_user_id))
+        if (
+            source_id != source.source_id
+            or snapshot_id != catalog_snapshot.id
+            or owner_user_id != owner.id
+        ):
+            raise NotFoundError("catalog snapshot not found")
+        assert page == 1
+        assert page_size == 50
+        assert search is None
+        return catalog_page
+
+    async def fake_catalog_asset_detail(
+        _session,
+        *,
+        source_id,
+        snapshot_id,
+        asset_id,
+        owner_user_id,
+    ):
+        calls.append(("catalog_asset_detail", owner_user_id))
+        if (
+            source_id != source.source_id
+            or snapshot_id != catalog_snapshot.id
+            or asset_id != catalog_asset.asset_id
+            or owner_user_id != owner.id
+        ):
+            raise NotFoundError("catalog asset not found")
+        return catalog_detail
+
+    async def fake_catalog_diff(_session, *, source_id, snapshot_id, owner_user_id):
+        calls.append(("catalog_diff", owner_user_id))
+        if (
+            source_id != source.source_id
+            or snapshot_id != catalog_snapshot.id
+            or owner_user_id != owner.id
+        ):
+            raise NotFoundError("catalog snapshot not found")
+        return catalog_diff
+
     monkeypatch.setattr(source_service, "test_postgresql_source", fake_test)
     monkeypatch.setattr(source_service, "create_postgresql_source", fake_create)
     monkeypatch.setattr(source_service, "list_sources_for_owner", fake_list)
@@ -152,6 +309,12 @@ def route_context(monkeypatch):
     monkeypatch.setattr(catalog_service, "get_catalog_availability_for_owner", fake_catalog_availability)
     monkeypatch.setattr(catalog_service, "get_catalog_sync_run_for_owner", fake_catalog_run)
     monkeypatch.setattr(catalog_service, "cancel_catalog_sync_run_for_owner", fake_catalog_cancel)
+    monkeypatch.setattr(catalog_service, "list_catalog_assets_for_owner", fake_catalog_assets)
+    monkeypatch.setattr(catalog_service, "get_catalog_asset_detail_for_owner", fake_catalog_asset_detail)
+    monkeypatch.setattr(catalog_service, "get_catalog_structural_diff_for_owner", fake_catalog_diff)
+
+    catalog_run.catalog_snapshot = catalog_snapshot
+    catalog_run.catalog_asset = catalog_asset
 
     app = create_app()
 
@@ -447,3 +610,121 @@ async def test_catalog_sync_request_fails_closed_when_connectors_are_disabled(
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "connectors_disabled"
     assert calls == []
+
+
+async def test_catalog_inspection_routes_are_pinned_jwt_only_and_use_safe_shapes(
+    route_client, route_context
+):
+    _app, owner, _other, source, _settings, headers, calls, catalog_run = route_context
+    snapshot = catalog_run.catalog_snapshot
+    asset = catalog_run.catalog_asset
+    owner_headers = headers(owner)
+
+    listed = await route_client.get(
+        f"/api/v1/sources/{source.source_id}/catalog/assets",
+        params={"snapshot_id": str(snapshot.id)},
+        headers=owner_headers,
+    )
+    assert listed.status_code == 200
+    list_body = listed.json()
+    assert list_body["snapshot_id"] == str(snapshot.id)
+    assert list_body["scope_matches_current_selection"] is True
+    assert list_body["items"] == [
+        {
+            "asset_id": str(asset.asset_id),
+            "schema_name": "public",
+            "table_name": "orders",
+            "table_comment": "<img src=x onerror=alert(1)>",
+        }
+    ]
+
+    detail = await route_client.get(
+        f"/api/v1/sources/{source.source_id}/catalog/assets/{asset.asset_id}",
+        params={"snapshot_id": str(snapshot.id)},
+        headers=owner_headers,
+    )
+    assert detail.status_code == 200
+    detail_body = detail.json()
+    assert [column["column_name"] for column in detail_body["columns"]] == [
+        "tenant_id",
+        "customer_id",
+    ]
+    assert detail_body["declared_keys"][0]["column_names"] == ["tenant_id", "customer_id"]
+    assert [item["ordinal_position"] for item in detail_body["foreign_keys"][0]["column_mappings"]] == [
+        1,
+        2,
+    ]
+
+    diff = await route_client.get(
+        f"/api/v1/sources/{source.source_id}/catalog/diff",
+        params={"snapshot_id": str(snapshot.id)},
+        headers=owner_headers,
+    )
+    assert diff.status_code == 200
+    diff_body = diff.json()
+    assert diff_body["state"] == "compared"
+    assert diff_body["columns_changed"] == [
+        {
+            "schema_name": "public",
+            "table_name": "orders",
+            "column_name": "tenant_id",
+            "previous_formatted_native_type": "integer",
+            "current_formatted_native_type": "bigint",
+            "previous_is_nullable": False,
+            "current_is_nullable": False,
+        }
+    ]
+    assert [name for name, _owner_id in calls] == [
+        "catalog_assets",
+        "catalog_asset_detail",
+        "catalog_diff",
+    ]
+
+
+async def test_catalog_inspection_routes_reject_other_users_api_key_and_cross_source_ids(
+    route_client, route_context
+):
+    _app, owner, other, source, _settings, headers, calls, catalog_run = route_context
+    snapshot = catalog_run.catalog_snapshot
+    asset = catalog_run.catalog_asset
+
+    other_response = await route_client.get(
+        f"/api/v1/sources/{source.source_id}/catalog/assets/{asset.asset_id}",
+        params={"snapshot_id": str(snapshot.id)},
+        headers=headers(other),
+    )
+    assert other_response.status_code == 404
+    cross_snapshot = await route_client.get(
+        f"/api/v1/sources/{source.source_id}/catalog/assets",
+        params={"snapshot_id": str(uuid.uuid4())},
+        headers=headers(owner),
+    )
+    assert cross_snapshot.status_code == 404
+    api_key = await route_client.get(
+        f"/api/v1/sources/{source.source_id}/catalog/diff",
+        params={"snapshot_id": str(snapshot.id)},
+        headers={"X-API-Key": "stage2b-route-test-api-key"},
+    )
+    assert api_key.status_code == 401
+    unauthenticated = await route_client.get(
+        f"/api/v1/sources/{source.source_id}/catalog/assets",
+        params={"snapshot_id": str(snapshot.id)},
+    )
+    assert unauthenticated.status_code == 401
+    missing_snapshot = await route_client.get(
+        f"/api/v1/sources/{source.source_id}/catalog/assets",
+        headers=headers(owner),
+    )
+    assert missing_snapshot.status_code == 422
+    oversized_page = await route_client.get(
+        f"/api/v1/sources/{source.source_id}/catalog/assets",
+        params={"snapshot_id": str(snapshot.id), "page": "10001"},
+        headers=headers(owner),
+    )
+    assert oversized_page.status_code == 422
+    # JWTs reach the source-scoped services; API-key-only/no-auth requests
+    # are rejected before a service call.
+    assert [name for name, _owner_id in calls] == [
+        "catalog_asset_detail",
+        "catalog_assets",
+    ]

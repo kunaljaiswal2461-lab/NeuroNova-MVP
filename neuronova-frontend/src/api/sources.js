@@ -37,4 +37,61 @@ export const sourceApi = {
   deleteSource(sourceId, options) {
     return api.delete(`/sources/${encodeURIComponent(sourceId)}`, undefined, jwtSourceOptions(options))
   },
+
+  // Catalog routes deliberately use the same JWT-only transport as source
+  // onboarding. A catalog snapshot, asset, or sync-run id is never itself an
+  // authorization capability.
+  getCatalog(sourceId, options) {
+    return api.get(`/sources/${encodeURIComponent(sourceId)}/catalog`, jwtSourceOptions(options))
+  },
+
+  requestCatalogSync(sourceId, options) {
+    return api.post(`/sources/${encodeURIComponent(sourceId)}/catalog-syncs`, {}, jwtSourceOptions(options))
+  },
+
+  getCatalogSyncRun(sourceId, runId, options) {
+    return api.get(
+      `/sources/${encodeURIComponent(sourceId)}/catalog-syncs/${encodeURIComponent(runId)}`,
+      jwtSourceOptions(options),
+    )
+  },
+
+  cancelCatalogSync(sourceId, runId, options) {
+    return api.post(
+      `/sources/${encodeURIComponent(sourceId)}/catalog-syncs/${encodeURIComponent(runId)}/cancel`,
+      {},
+      jwtSourceOptions(options),
+    )
+  },
+
+  listCatalogAssets(sourceId, { snapshotId, page = 1, pageSize = 50, search = '' } = {}, options) {
+    const query = new URLSearchParams()
+    if (snapshotId) query.set('snapshot_id', snapshotId)
+    query.set('page', String(page))
+    query.set('page_size', String(pageSize))
+    if (search) query.set('search', search)
+    return api.get(
+      `/sources/${encodeURIComponent(sourceId)}/catalog/assets?${query.toString()}`,
+      jwtSourceOptions(options),
+    )
+  },
+
+  getCatalogAsset(sourceId, assetId, { snapshotId } = {}, options) {
+    const query = new URLSearchParams()
+    if (snapshotId) query.set('snapshot_id', snapshotId)
+    return api.get(
+      `/sources/${encodeURIComponent(sourceId)}/catalog/assets/${encodeURIComponent(assetId)}?${query.toString()}`,
+      jwtSourceOptions(options),
+    )
+  },
+
+  getCatalogDiff(sourceId, { snapshotId } = {}, options) {
+    const query = new URLSearchParams()
+    if (snapshotId) query.set('snapshot_id', snapshotId)
+    const suffix = query.size ? `?${query.toString()}` : ''
+    return api.get(
+      `/sources/${encodeURIComponent(sourceId)}/catalog/diff${suffix}`,
+      jwtSourceOptions(options),
+    )
+  },
 }

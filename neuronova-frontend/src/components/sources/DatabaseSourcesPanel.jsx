@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { sourceApi, sourceErrorCode } from '../../api/sources'
+import CatalogInspector from './CatalogInspector'
 
 const EMPTY_FORM = {
   displayName: '',
@@ -148,6 +149,7 @@ export default function DatabaseSourcesPanel({ active }) {
   const [detailLoadingId, setDetailLoadingId] = useState(null)
   const [detailErrorById, setDetailErrorById] = useState({})
   const [expandedSourceId, setExpandedSourceId] = useState(null)
+  const [metadataSourceId, setMetadataSourceId] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleteError, setDeleteError] = useState(null)
   const [deletingId, setDeletingId] = useState(null)
@@ -249,6 +251,10 @@ export default function DatabaseSourcesPanel({ active }) {
   })).filter(schema => schema.tables.length > 0), [normalizedFilter, schemas])
 
   const allCurrentTablesSelected = Boolean(inventory?.length) && inventory.every(table => hasScope(selectedTables, table))
+  const metadataSource = useMemo(
+    () => sources.find(source => source.source_id === metadataSourceId) || null,
+    [metadataSourceId, sources],
+  )
 
   function updateField(field, value) {
     if (formRef.current[field] === value) return
@@ -349,7 +355,7 @@ export default function DatabaseSourcesPanel({ active }) {
       setSelectedTables([])
       setTableFilter('')
       clearTransientForm()
-      setNotice('Connection saved. Metadata synchronization and database querying will be available in later stages.')
+      setNotice('Connection saved. Select View metadata to request structural metadata synchronization.')
       await loadSources()
     } catch (error) {
       if (!controller.signal.aborted && mountedRef.current) {
@@ -413,6 +419,7 @@ export default function DatabaseSourcesPanel({ active }) {
       if (controller.signal.aborted || !mountedRef.current) return
       setSources(current => current.filter(source => source.source_id !== deleteTarget.source_id))
       setExpandedSourceId(current => current === deleteTarget.source_id ? null : current)
+      setMetadataSourceId(current => current === deleteTarget.source_id ? null : current)
       setDetailsById(current => {
         const next = { ...current }
         delete next[deleteTarget.source_id]
@@ -662,6 +669,9 @@ export default function DatabaseSourcesPanel({ active }) {
                     <button className="btn btn-ghost-neutral btn-sm" type="button" onClick={() => showSourceDetails(source.source_id)}>
                       {expanded ? 'Hide selected tables' : 'View selected tables'}
                     </button>
+                    <button className="btn btn-ghost-neutral btn-sm" type="button" onClick={() => setMetadataSourceId(source.source_id)}>
+                      View metadata
+                    </button>
                     <button className="btn btn-ghost-neutral btn-sm source-delete-button" type="button" onClick={() => { setDeleteTarget(source); setDeleteError(null) }}>
                       Delete connection
                     </button>
@@ -685,6 +695,7 @@ export default function DatabaseSourcesPanel({ active }) {
             })}
           </div>
         )}
+        {metadataSource && <CatalogInspector key={metadataSource.source_id} source={metadataSource} onClose={() => setMetadataSourceId(null)} />}
       </section>
 
       {deleteTarget && (

@@ -15,6 +15,11 @@ distributions, profiles, embeddings, inferred relationships, semantic
 definitions, or database-chat results. File upload, Polars execution, and
 file chat are unchanged.
 
+Stage 3C adds the owner-scoped UI and HTTP read contracts for inspecting a
+published snapshot and comparing safe successive snapshots. See the
+[Stage 3C catalog-inspection guide](stage3c-catalog-inspection.md); it does
+not change this worker's discovery boundary.
+
 ## Deployment and startup
 
 Apply migrations, run the web process, and run the discovery worker as

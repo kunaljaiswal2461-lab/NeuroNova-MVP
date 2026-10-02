@@ -13,7 +13,11 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from app.db.models.source import SourceStatus, SourceType, TLSMode
-from app.db.models.catalog import CatalogSyncRunStatus
+from app.db.models.catalog import (
+    CatalogForeignKeyTargetStatus,
+    CatalogKeyKind,
+    CatalogSyncRunStatus,
+)
 
 
 def _bounded_text(value: str, *, maximum: int, field_name: str) -> str:
@@ -177,3 +181,135 @@ class CatalogAvailabilityResponse(BaseModel):
     current_snapshot_id: uuid.UUID | None
     current_snapshot_published_at: datetime | None
     older_snapshot_available: bool
+
+
+class CatalogAssetReferenceResponse(BaseModel):
+    """Structured identity; clients must not parse a dotted display name."""
+
+    asset_id: uuid.UUID
+    schema_name: str
+    table_name: str
+
+
+class CatalogAssetSummaryResponse(CatalogAssetReferenceResponse):
+    # Raw database comments are descriptive source text. Clients must render
+    # them as text, never as trusted markup or a business definition.
+    table_comment: str | None
+
+
+class CatalogAssetListResponse(BaseModel):
+    source_id: uuid.UUID
+    snapshot_id: uuid.UUID
+    snapshot_published_at: datetime
+    scope_matches_current_selection: bool
+    page: int
+    page_size: int
+    total: int
+    items: list[CatalogAssetSummaryResponse]
+
+
+class CatalogColumnResponse(BaseModel):
+    column_name: str
+    ordinal_position: int
+    is_nullable: bool
+    formatted_native_type: str
+    native_type_schema: str | None
+    native_type_name: str | None
+    native_type_oid: int | None
+    native_type_modifier: int | None
+    column_comment: str | None
+
+
+class CatalogDeclaredKeyResponse(BaseModel):
+    constraint_name: str
+    key_kind: CatalogKeyKind
+    column_names: list[str]
+
+
+class CatalogForeignKeyColumnMappingResponse(BaseModel):
+    ordinal_position: int
+    referencing_column_name: str
+    referenced_column_name: str
+
+
+class CatalogForeignKeyResponse(BaseModel):
+    constraint_name: str
+    # An old in-scope target that is no longer selected is deliberately
+    # rendered as TARGET_OUT_OF_SCOPE, with no target or mapping fields.
+    target_status: CatalogForeignKeyTargetStatus
+    referenced_asset: CatalogAssetReferenceResponse | None
+    column_mappings: list[CatalogForeignKeyColumnMappingResponse]
+
+
+class CatalogAssetDetailResponse(BaseModel):
+    source_id: uuid.UUID
+    snapshot_id: uuid.UUID
+    snapshot_published_at: datetime
+    scope_matches_current_selection: bool
+    asset: CatalogAssetSummaryResponse
+    columns: list[CatalogColumnResponse]
+    declared_keys: list[CatalogDeclaredKeyResponse]
+    foreign_keys: list[CatalogForeignKeyResponse]
+
+
+class CatalogTableChangeResponse(BaseModel):
+    schema_name: str
+    table_name: str
+
+
+class CatalogColumnIdentityChangeResponse(CatalogTableChangeResponse):
+    column_name: str
+
+
+class CatalogColumnChangeResponse(CatalogColumnIdentityChangeResponse):
+    previous_formatted_native_type: str
+    current_formatted_native_type: str
+    previous_is_nullable: bool
+    current_is_nullable: bool
+
+
+class CatalogKeyChangeResponse(BaseModel):
+    change: Literal["added", "removed"]
+    schema_name: str
+    table_name: str
+    constraint_name: str
+    key_kind: CatalogKeyKind
+    column_names: list[str]
+
+
+class CatalogForeignKeyChangeResponse(BaseModel):
+    change: Literal["added", "removed"]
+    schema_name: str
+    table_name: str
+    constraint_name: str
+    target_status: CatalogForeignKeyTargetStatus
+    referenced_asset: CatalogAssetReferenceResponse | None
+    column_mappings: list[CatalogForeignKeyColumnMappingResponse]
+
+
+class CatalogCommentChangeResponse(BaseModel):
+    subject: Literal["table", "column"]
+    schema_name: str
+    table_name: str
+    column_name: str | None
+    previous_comment: str | None
+    current_comment: str | None
+
+
+class CatalogStructuralDiffResponse(BaseModel):
+    source_id: uuid.UUID
+    snapshot_id: uuid.UUID
+    snapshot_published_at: datetime
+    state: Literal["baseline", "compared", "scope_changed"]
+    previous_snapshot_id: uuid.UUID | None
+    previous_snapshot_published_at: datetime | None
+    truncated: bool
+    change_limit: int
+    tables_added: list[CatalogTableChangeResponse]
+    tables_removed: list[CatalogTableChangeResponse]
+    columns_added: list[CatalogColumnIdentityChangeResponse]
+    columns_removed: list[CatalogColumnIdentityChangeResponse]
+    columns_changed: list[CatalogColumnChangeResponse]
+    keys_changed: list[CatalogKeyChangeResponse]
+    foreign_keys_changed: list[CatalogForeignKeyChangeResponse]
+    comments_changed: list[CatalogCommentChangeResponse]
