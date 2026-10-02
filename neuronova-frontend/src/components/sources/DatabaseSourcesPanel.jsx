@@ -36,6 +36,17 @@ function scopeKey(table) {
   return JSON.stringify([table.schema_name, table.table_name])
 }
 
+function quoteIdentifier(identifier) {
+  // PostgreSQL identifiers can themselves contain dots and double quotes.
+  // Quote each tuple component for display so valid pairs cannot collapse
+  // into the same visible or accessible name.
+  return `"${identifier.replace(/"/g, '""')}"`
+}
+
+function tableLabel(table) {
+  return `${quoteIdentifier(table.schema_name)}.${quoteIdentifier(table.table_name)}`
+}
+
 function sameScope(left, right) {
   return left.schema_name === right.schema_name && left.table_name === right.table_name
 }
@@ -75,14 +86,25 @@ function dateText(value) {
   return Number.isNaN(date.getTime()) ? 'Test time unavailable' : date.toLocaleString()
 }
 
+function sourceStatusLabel(status) {
+  if (status === 'TESTED') return 'Previously tested'
+  if (status === 'CONNECTION_FAILED') return 'Connection needs retesting'
+  if (status === 'CREDENTIAL_UNAVAILABLE') return 'Credentials unavailable'
+  // Never turn an unexpected persisted value into a premature catalog/query
+  // readiness claim in the Stage 2 onboarding UI.
+  return 'Status unavailable'
+}
+
 function sourceStatusText(source) {
   if (source.status === 'TESTED') {
     return `Saved after a successful test · ${dateText(source.last_tested_at)}`
   }
-  return `Saved status: ${source.status || 'unknown'}`
+  if (source.status === 'CONNECTION_FAILED') return 'This saved connection needs retesting.'
+  if (source.status === 'CREDENTIAL_UNAVAILABLE') return 'Credentials need administrator attention before a later-stage use.'
+  return 'Saved connection status is unavailable.'
 }
 
-function SchemaSelectionCheckbox({ schemaName, tables, selectedTables, onChange }) {
+function SchemaSelectionCheckbox({ schemaName, tables, selectedTables, onChange, disabled }) {
   const checkboxRef = useRef(null)
   const selectedCount = tables.filter(table => hasScope(selectedTables, table)).length
   const allSelected = tables.length > 0 && selectedCount === tables.length
@@ -101,6 +123,7 @@ function SchemaSelectionCheckbox({ schemaName, tables, selectedTables, onChange 
         aria-label={`${schemaName} schema selection`}
         aria-checked={partial ? 'mixed' : allSelected}
         onChange={event => onChange(event.target.checked)}
+        disabled={disabled}
       />
       <span>{schemaName}</span>
       <span className="source-count">{selectedCount}/{tables.length}</span>
@@ -551,6 +574,7 @@ export default function DatabaseSourcesPanel({ active }) {
                     value={tableFilter}
                     onChange={event => setTableFilter(event.target.value)}
                     placeholder="Filter schemas or tables"
+                    disabled={saving}
                   />
                 </label>
                 <button className="btn btn-ghost-neutral btn-sm" type="button" onClick={toggleAllCurrentTables} disabled={saving}>
@@ -569,11 +593,12 @@ export default function DatabaseSourcesPanel({ active }) {
                       tables={allTables}
                       selectedTables={selectedTables}
                       onChange={checked => toggleSchema(allTables, checked)}
+                      disabled={saving}
                     />
                     <div className="source-table-list">
                       {tables.map(table => {
                         const checked = hasScope(selectedTables, table)
-                        const label = `${table.schema_name}.${table.table_name}`
+                        const label = tableLabel(table)
                         return (
                           <label className="source-table-toggle" key={scopeKey(table)}>
                             <input type="checkbox" checked={checked} onChange={event => toggleTable(table, event.target.checked)} disabled={saving} />
@@ -625,7 +650,7 @@ export default function DatabaseSourcesPanel({ active }) {
                       <h4>{source.display_name}</h4>
                       <p>{source.host}:{source.port} · {source.database_name}</p>
                     </div>
-                    <span className="source-status-chip">{source.status === 'TESTED' ? 'Previously tested' : source.status}</span>
+                    <span className="source-status-chip">{sourceStatusLabel(source.status)}</span>
                   </div>
                   <dl className="source-summary-fields">
                     <div><dt>Scope</dt><dd>{source.scope_count} table{source.scope_count === 1 ? '' : 's'}</dd></div>
@@ -649,7 +674,7 @@ export default function DatabaseSourcesPanel({ active }) {
                         <>
                           <h5>Selected table scope</h5>
                           <ul>
-                            {detail.selected_tables.map(table => <li key={scopeKey(table)}>{table.schema_name}.{table.table_name}</li>)}
+                            {detail.selected_tables.map(table => <li key={scopeKey(table)}>{tableLabel(table)}</li>)}
                           </ul>
                         </>
                       )}

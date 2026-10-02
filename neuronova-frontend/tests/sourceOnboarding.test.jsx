@@ -126,8 +126,8 @@ it('uses default-deny table scope with partial schemas, filtering, select-all, a
   await testConnection()
 
   const publicSchema = screen.getByRole('checkbox', { name: 'public schema selection' })
-  const orders = screen.getByRole('checkbox', { name: 'public.orders' })
-  const customers = screen.getByRole('checkbox', { name: 'public.customers' })
+  const orders = screen.getByRole('checkbox', { name: '"public"."orders"' })
+  const customers = screen.getByRole('checkbox', { name: '"public"."customers"' })
   expect(orders.checked).toBe(false)
   expect(publicSchema.checked).toBe(false)
 
@@ -144,7 +144,7 @@ it('uses default-deny table scope with partial schemas, filtering, select-all, a
   expect(screen.getByText('1 selected')).toBeTruthy()
 
   fireEvent.change(screen.getByPlaceholderText('Filter schemas or tables'), { target: { value: 'customers' } })
-  expect(screen.queryByRole('checkbox', { name: 'public.orders' })).toBeNull()
+  expect(screen.queryByRole('checkbox', { name: '"public"."orders"' })).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: /Select all current tables/ }))
   expect(screen.getByText('3 selected')).toBeTruthy()
 
@@ -176,7 +176,7 @@ it('invalidates inventory and ignores a stale test response after connection set
     : Promise.resolve({ ...sourceSummary, selected_tables: [] }))
   fireEvent.click(screen.getByRole('button', { name: 'Test connection' }))
   await screen.findByRole('heading', { name: 'Eligible tables' })
-  fireEvent.click(screen.getByRole('checkbox', { name: 'public.orders' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: '"public"."orders"' }))
   expect(screen.getByText('1 selected')).toBeTruthy()
   fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'changed-secret' } })
   expect(screen.queryByRole('heading', { name: 'Eligible tables' })).toBeNull()
@@ -207,11 +207,13 @@ it('saves exact selected scope once, clears transient credentials, and refreshes
   await openDatabase()
   fillConnection()
   await testConnection([unusualTable])
-  fireEvent.click(screen.getByRole('checkbox', { name: 'billing.prod.orders:2026' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: '"billing.prod"."orders:2026"' }))
   const save = screen.getByRole('button', { name: 'Save selected connection' })
   fireEvent.click(save)
   fireEvent.click(save)
   expect(api.post.mock.calls.filter(([path]) => path === '/sources')).toHaveLength(1)
+  expect(screen.getByRole('checkbox', { name: 'billing.prod schema selection' }).disabled).toBe(true)
+  expect(screen.getByPlaceholderText('Filter schemas or tables').disabled).toBe(true)
   expect(api.post).toHaveBeenLastCalledWith('/sources', {
     host: 'db.example.com',
     port: 5432,
@@ -232,6 +234,40 @@ it('saves exact selected scope once, clears transient credentials, and refreshes
   expect(setItem).not.toHaveBeenCalled()
 })
 
+it('renders quoted schema and table identities without dot collisions', async () => {
+  const ambiguousScopes = [
+    { schema_name: 'a.b', table_name: 'c' },
+    { schema_name: 'a', table_name: 'b.c' },
+  ]
+  const savedDetail = { ...sourceSummary, selected_tables: ambiguousScopes, scope_count: 2 }
+  api.get.mockImplementation(path => {
+    if (path === '/datasets') return Promise.resolve({ items: [] })
+    if (path === '/sources/source-1') return Promise.resolve(savedDetail)
+    return Promise.resolve({ items: [{ ...sourceSummary, scope_count: 2 }] })
+  })
+
+  renderUpload()
+  await openDatabase()
+  await screen.findByText('Production analytics')
+  fireEvent.click(screen.getByRole('button', { name: 'View selected tables' }))
+
+  await screen.findByText('"a.b"."c"')
+  expect(screen.getByText('"a"."b.c"')).toBeTruthy()
+})
+
+it('does not render an unexpected source status as a catalog-readiness claim', async () => {
+  api.get.mockImplementation(path => {
+    if (path === '/datasets') return Promise.resolve({ items: [] })
+    return Promise.resolve({ items: [{ ...sourceSummary, status: 'CATALOG_READY' }] })
+  })
+
+  renderUpload()
+  await openDatabase()
+  await screen.findByText('Production analytics')
+  expect(screen.getByText('Status unavailable')).toBeTruthy()
+  expect(screen.queryByText('CATALOG_READY')).toBeNull()
+})
+
 it('requires a fresh test when the backend says the selected scope changed during save', async () => {
   api.post.mockImplementation(path => {
     if (path === '/sources/postgresql/test') {
@@ -243,7 +279,7 @@ it('requires a fresh test when the backend says the selected scope changed durin
   await openDatabase()
   fillConnection()
   await testConnection()
-  fireEvent.click(screen.getByRole('checkbox', { name: 'public.orders' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: '"public"."orders"' }))
   fireEvent.click(screen.getByRole('button', { name: 'Save selected connection' }))
   const alert = await screen.findByRole('alert')
   expect(alert.textContent).toContain('eligible table scope changed')
@@ -292,7 +328,7 @@ it('lists selected scopes and allows deletion recovery without suggesting client
   await openDatabase()
   await screen.findByText('Production analytics')
   fireEvent.click(screen.getByRole('button', { name: 'View selected tables' }))
-  await screen.findByText('public.orders')
+  await screen.findByText('"public"."orders"')
 
   fireEvent.click(screen.getByRole('button', { name: 'Delete connection' }))
   expect(screen.getByRole('alertdialog').textContent).toContain('does not delete tables or records from the client database')

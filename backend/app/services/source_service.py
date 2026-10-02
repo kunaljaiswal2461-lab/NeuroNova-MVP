@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -136,6 +137,16 @@ class InvalidSourceScopeError(SourceServiceError):
         super().__init__("one or more selected tables are no longer eligible for this source")
 
 
+class SourcePersistenceError(SourceServiceError):
+    """Safe boundary for application-database failures on source routes."""
+
+    status_code = 503
+    code = "source_persistence_failed"
+
+    def __init__(self):
+        super().__init__("could not complete the source configuration request")
+
+
 _operation_gates: dict[int, asyncio.Semaphore] = {}
 
 
@@ -189,13 +200,18 @@ async def _test_and_inventory(
     request: PostgresTestRequest | CreateSourceRequest,
     *,
     settings: Settings,
-    adapter_factory: AdapterFactory = _build_adapter,
+    adapter_factory: AdapterFactory | None = None,
 ) -> list[InventoryTable]:
     _require_credential_operations(settings)
     username, password, custom_ca_pem = _request_secrets(request)
     try:
         async with _outbound_operation_slot(settings.connector_max_concurrent_operations):
-            return await adapter_factory(settings).test_and_list_tables(
+            # Resolve the default only at invocation. A same-process
+            # disposable integration fixture can explicitly monkeypatch this
+            # factory to inject its test-only destination policy; no request
+            # field or deployment setting can select that policy.
+            factory = adapter_factory or _build_adapter
+            return await factory(settings).test_and_list_tables(
                 host=request.host,
                 port=request.port,
                 database_name=request.database_name,
@@ -221,7 +237,7 @@ async def test_postgresql_source(
     request: PostgresTestRequest,
     *,
     settings: Settings,
-    adapter_factory: AdapterFactory = _build_adapter,
+    adapter_factory: AdapterFactory | None = None,
 ) -> PostgresTestResponse:
     inventory = await _test_and_inventory(request, settings=settings, adapter_factory=adapter_factory)
     tables = [
@@ -237,7 +253,7 @@ async def create_postgresql_source(
     owner_user_id: uuid.UUID,
     request: CreateSourceRequest,
     settings: Settings,
-    adapter_factory: AdapterFactory = _build_adapter,
+    adapter_factory: AdapterFactory | None = None,
 ) -> SourceDetailResponse:
     # Network work is intentionally complete before the first application DB
     # write; no transaction stays open while a customer host is contacted.
@@ -285,9 +301,11 @@ async def create_postgresql_source(
     try:
         session.add(source)
         await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
+    except SQLAlchemyError:
+        await _rollback_quietly(session)
+        # Do not re-raise driver/SQL strings: the global fallback logs them
+        # verbatim and some dialects include bound persistence parameters.
+        raise SourcePersistenceError() from None
     # Re-read with explicit scope loading. ``AsyncSession.refresh`` expires
     # relationships, and allowing a response serializer to lazy-load them
     # would fail outside SQLAlchemy's async greenlet context.
@@ -301,12 +319,15 @@ async def list_sources_for_owner(
     *,
     owner_user_id: uuid.UUID,
 ) -> SourceListResponse:
-    result = await session.execute(
-        select(DataSource)
-        .where(DataSource.owner_user_id == owner_user_id)
-        .options(selectinload(DataSource.table_scopes))
-        .order_by(DataSource.created_at.desc())
-    )
+    try:
+        result = await session.execute(
+            select(DataSource)
+            .where(DataSource.owner_user_id == owner_user_id)
+            .options(selectinload(DataSource.table_scopes))
+            .order_by(DataSource.created_at.desc())
+        )
+    except SQLAlchemyError:
+        raise SourcePersistenceError() from None
     sources = list(result.scalars().unique().all())
     return SourceListResponse(items=[_source_summary(source) for source in sources], count=len(sources))
 
@@ -317,11 +338,14 @@ async def get_source_for_owner(
     source_id: uuid.UUID,
     owner_user_id: uuid.UUID,
 ) -> DataSource:
-    result = await session.execute(
-        select(DataSource)
-        .where(DataSource.id == source_id, DataSource.owner_user_id == owner_user_id)
-        .options(selectinload(DataSource.table_scopes))
-    )
+    try:
+        result = await session.execute(
+            select(DataSource)
+            .where(DataSource.id == source_id, DataSource.owner_user_id == owner_user_id)
+            .options(selectinload(DataSource.table_scopes))
+        )
+    except SQLAlchemyError:
+        raise SourcePersistenceError() from None
     source = result.scalar_one_or_none()
     if source is None:
         raise NotFoundError("source not found")
@@ -354,9 +378,17 @@ async def delete_source_for_owner(
     try:
         await session.delete(source)
         await session.commit()
-    except Exception:
+    except SQLAlchemyError:
+        await _rollback_quietly(session)
+        raise SourcePersistenceError() from None
+
+
+async def _rollback_quietly(session: AsyncSession) -> None:
+    """Leave source persistence failures safe even when rollback also fails."""
+    try:
         await session.rollback()
-        raise
+    except Exception:
+        pass
 
 
 def _source_summary(source: DataSource) -> SourceSummaryResponse:

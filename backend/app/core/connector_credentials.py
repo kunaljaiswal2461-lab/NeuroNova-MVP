@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -43,9 +43,11 @@ class CredentialBundle:
     """Secret plaintext held only while a request is being processed."""
 
     source_id: uuid.UUID
-    username: str
-    password: str
-    custom_ca_pem: str | None = None
+    # This value can be carried through exception context by a caller. Keep
+    # every secret field out of the default dataclass repr/str boundary.
+    username: str = field(repr=False)
+    password: str = field(repr=False)
+    custom_ca_pem: str | None = field(default=None, repr=False)
 
     def serialize(self) -> bytes:
         return json.dumps(

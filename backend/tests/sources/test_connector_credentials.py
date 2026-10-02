@@ -56,6 +56,20 @@ def test_credentials_are_authenticated_and_bound_to_the_source_identity():
         )
 
 
+def test_credential_bundle_repr_and_str_do_not_expose_secret_fields():
+    bundle = CredentialBundle(
+        uuid.uuid4(),
+        "synthetic-username-marker",
+        "synthetic-password-marker",
+        "synthetic-ca-marker",
+    )
+
+    for representation in (repr(bundle), str(bundle)):
+        assert "synthetic-username-marker" not in representation
+        assert "synthetic-password-marker" not in representation
+        assert "synthetic-ca-marker" not in representation
+
+
 def test_previous_key_decrypts_and_reencrypts_to_active_key():
     old_key = Fernet.generate_key().decode()
     old_protector = CredentialProtector.from_settings(_settings(active_key=old_key, active_id="old"))

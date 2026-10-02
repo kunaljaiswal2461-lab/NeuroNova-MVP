@@ -29,7 +29,6 @@ def _types() -> tuple[sa.Enum, sa.Enum, sa.Enum]:
         sa.Enum("POSTGRESQL", name=SOURCE_TYPE_ENUM),
         sa.Enum(
             "TESTED",
-            "CATALOG_READY",
             "CONNECTION_FAILED",
             "CREDENTIAL_UNAVAILABLE",
             name=SOURCE_STATUS_ENUM,

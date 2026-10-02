@@ -30,7 +30,12 @@ public-DNS policy, disabling certificate verification, or changing application
 settings. In the integration fixture only, inject
 `PostgresConnectionPolicy.for_disposable_test(resolver)` into
 `PostgresOnboardingAdapter`, with a resolver that returns the private fixture
-address. That explicit constructor is the only permitted test exception.
+address. The source-service default factory is intentionally resolved at call
+time so a same-process integration fixture can monkeypatch
+`app.services.source_service._build_adapter` before issuing an HTTP request
+with that explicit adapter factory. No request field, environment variable, or
+application setting can select the test policy. That explicit constructor is
+the only permitted test exception.
 
 Generate a Fernet key in the test harness for each run and pass it only through
 the test process environment. Do not put it, database passwords, CA private

@@ -169,3 +169,34 @@ async def test_adapter_maps_timeout_and_closes_after_cancelled_fetch():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert connection.closed is True
+
+
+@pytest.mark.asyncio
+async def test_adapter_operation_timeout_bounds_dns_validation_before_connecting():
+    async def slow_resolver(_host: str, _port: int) -> list[str]:
+        await asyncio.Event().wait()
+        return []
+
+    connected = False
+
+    async def connect(**_kwargs):
+        nonlocal connected
+        connected = True
+        return _Connection([])
+
+    adapter = PostgresOnboardingAdapter(
+        settings=_settings(connector_operation_timeout_seconds=0.01),
+        policy=PostgresConnectionPolicy(resolver=slow_resolver),
+        connect=connect,
+    )
+
+    with pytest.raises(PostgresTimeoutError):
+        await adapter.test_and_list_tables(
+            host="database.example.com",
+            port=5432,
+            database_name="app",
+            username="u",
+            password="p",
+            custom_ca_pem=None,
+        )
+    assert connected is False

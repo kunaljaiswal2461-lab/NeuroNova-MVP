@@ -25,8 +25,6 @@ class SourceStatus(str, enum.Enum):
     # A successful test/save observation. It does not claim that a catalog has
     # been built or that the remote database will stay reachable.
     TESTED = "TESTED"
-    # Reserved for future catalog stages; Stage 2B never sets this state.
-    CATALOG_READY = "CATALOG_READY"
     CONNECTION_FAILED = "CONNECTION_FAILED"
     CREDENTIAL_UNAVAILABLE = "CREDENTIAL_UNAVAILABLE"
 

@@ -11,6 +11,8 @@ import pytest
 os.environ.setdefault("API_KEY", "stage2b-route-test-api-key")
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://x:x@localhost/x")
 
+from app.connectors.connection_policy import PostgresConnectionPolicy
+from app.connectors.postgres_adapter import PostgresOnboardingAdapter
 from app.core.config import Settings, get_settings
 from app.core.dependencies import get_session
 from app.core.security import create_access_token
@@ -187,6 +189,116 @@ async def test_source_validation_never_reflects_password_or_ca(route_client, rou
     assert "do-not-reflect-this-password" not in response.text
     assert "x" * 64 not in response.text
     assert calls == []
+
+
+@pytest.mark.parametrize("custom_ca_pem", ["", " \n\t "])
+async def test_blank_custom_ca_is_rejected_without_contacting_the_adapter(
+    route_client,
+    route_context,
+    custom_ca_pem,
+):
+    _app, owner, _other, _source, _settings, headers, calls = route_context
+    payload = _test_payload()
+    payload["tls"] = {"mode": "verify-full", "custom_ca_pem": custom_ca_pem}
+
+    response = await route_client.post(
+        "/api/v1/sources/postgresql/test", headers=headers(owner), json=payload
+    )
+
+    assert response.status_code == 422
+    assert calls == []
+
+
+class _FixtureTransaction:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+
+class _FixtureConnection:
+    def __init__(self):
+        self.closed = False
+
+    def transaction(self, *, readonly):
+        assert readonly is True
+        return _FixtureTransaction()
+
+    async def fetch(self, *_args):
+        return [{"table_schema": "fixture", "table_name": "allowed"}]
+
+    async def close(self):
+        self.closed = True
+
+
+async def test_http_fixture_can_inject_the_explicit_disposable_destination_policy(monkeypatch):
+    owner = User(
+        id=uuid.uuid4(),
+        email="fixture-owner@example.test",
+        name="Fixture owner",
+        role=UserRole.USER,
+        is_active=True,
+    )
+    settings = Settings(
+        _env_file=None,
+        api_key="stage2b-route-test-api-key",
+        database_url="postgresql+asyncpg://x:x@localhost/x",
+        jwt_secret_key="stage2b-route-test-jwt-secret",
+        connectors_enabled=True,
+        connector_egress_policy_configured=True,
+        connector_credentials_active_key_id="test",
+        connector_credentials_active_key="M2Secr7H2lWLMX6wAHxxJUT_lag81Dmkto5bDCoK1GU=",
+    )
+
+    async def private_fixture_resolver(host: str, port: int) -> list[str]:
+        assert host == "client-postgres.stage2d.test"
+        assert port == 5432
+        return ["127.0.0.1"]
+
+    connection = _FixtureConnection()
+
+    async def connect(**_kwargs):
+        return connection
+
+    adapter = PostgresOnboardingAdapter(
+        settings=settings,
+        policy=PostgresConnectionPolicy.for_disposable_test(private_fixture_resolver),
+        connect=connect,
+    )
+    monkeypatch.setattr(source_service, "_build_adapter", lambda _settings: adapter)
+
+    app = create_app()
+
+    async def override_session():
+        yield _AuthSession({owner.id: owner})
+
+    app.dependency_overrides[get_session] = override_session
+    app.dependency_overrides[get_settings] = lambda: settings
+    headers = {
+        "Authorization": "Bearer " + create_access_token(
+            str(owner.id), owner.email, owner.role.value, settings.jwt_secret_key, 30
+        )
+    }
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/v1/sources/postgresql/test",
+                headers=headers,
+                json={
+                    "host": "client-postgres.stage2d.test",
+                    "database_name": "client_fixture",
+                    "credentials": {"username": "reader", "password": "synthetic-password"},
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["eligible_tables"] == [{"schema_name": "fixture", "table_name": "allowed"}]
+    assert connection.closed is True
 
 
 async def test_profiling_cannot_be_enabled_in_stage_2b(route_client, route_context):

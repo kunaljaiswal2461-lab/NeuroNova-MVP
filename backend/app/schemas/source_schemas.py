@@ -31,8 +31,15 @@ class PostgresTLSRequest(BaseModel):
     @field_validator("custom_ca_pem")
     @classmethod
     def validate_ca_size(cls, value: SecretStr | None) -> SecretStr | None:
-        if value is not None and len(value.get_secret_value().encode("utf-8")) > 64 * 1024:
-            raise ValueError("custom CA bundle is too large")
+        if value is not None:
+            custom_ca_pem = value.get_secret_value()
+            # An empty field must behave as absent at the HTTP boundary. If it
+            # were accepted, the adapter would use system trust while the
+            # saved source incorrectly claimed a custom CA was configured.
+            if not custom_ca_pem.strip():
+                raise ValueError("custom CA bundle is invalid")
+            if len(custom_ca_pem.encode("utf-8")) > 64 * 1024:
+                raise ValueError("custom CA bundle is too large")
         return value
 
 

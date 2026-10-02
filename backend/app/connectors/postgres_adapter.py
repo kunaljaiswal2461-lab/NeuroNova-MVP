@@ -108,11 +108,14 @@ class PostgresOnboardingAdapter:
         password: str,
         custom_ca_pem: str | None,
     ) -> list[InventoryTable]:
-        normalized_host = await self._policy.validate(host=host, port=port)
-        ssl_context = self._policy.build_ssl_context(custom_ca_pem)
         connection: Any | None = None
         try:
+            # Destination validation can perform DNS resolution. It belongs in
+            # the same bounded operation as the handshake and inventory so a
+            # stalled resolver cannot occupy an outbound slot indefinitely.
             async with asyncio.timeout(self._settings.connector_operation_timeout_seconds):
+                normalized_host = await self._policy.validate(host=host, port=port)
+                ssl_context = self._policy.build_ssl_context(custom_ca_pem)
                 connection = await self._connect(
                     host=normalized_host,
                     port=port,

@@ -211,6 +211,25 @@ test('JWT-only requests preserve structured connector errors without retrying th
   assert.equal(calls, 1)
 })
 
+test('JWT-only source POST refreshes only after a rejected request and never sends the API key', async () => {
+  const sourceRequests = []
+  const { api } = harness(async (url, init) => {
+    if (url.endsWith('/auth/refresh')) return json({ access_token: 'new' })
+    sourceRequests.push(init)
+    return sourceRequests.length === 1 ? json({}, 401) : json({ source_id: 'source-1' }, 201)
+  })
+
+  assert.deepEqual(
+    await api.post('/sources', { display_name: 'Fixture' }, { requireJwt: true }),
+    { source_id: 'source-1' },
+  )
+  assert.equal(sourceRequests.length, 2)
+  assert.equal(sourceRequests[0].headers.Authorization, 'Bearer old')
+  assert.equal(sourceRequests[1].headers.Authorization, 'Bearer new')
+  assert.equal(sourceRequests[0].headers['X-API-Key'], undefined)
+  assert.equal(sourceRequests[1].headers['X-API-Key'], undefined)
+})
+
 test('DELETE sends the confirmation payload once and handles a 204 response', async () => {
   let captured
   const { api } = harness(async (_url, init) => {

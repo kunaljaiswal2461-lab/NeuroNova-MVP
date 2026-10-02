@@ -5,12 +5,13 @@ import uuid
 import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import event, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.connectors.postgres_adapter import InventoryTable
 from app.core.config import Settings
 from app.core.connector_credentials import CredentialProtector
-from app.db.models.source import DataSource, SourceCredential, SourceTableScope
+from app.db.models.source import DataSource, SourceCredential, SourceStatus, SourceTableScope
 from app.db.models.user import User, UserRole
 from app.exceptions.custom_exceptions import NotFoundError
 from app.schemas.source_schemas import CreateSourceRequest, PostgresTestRequest
@@ -202,3 +203,63 @@ async def test_missing_credential_key_fails_before_contacting_adapter():
             settings=settings,
             adapter_factory=lambda _settings: (_ for _ in ()).throw(AssertionError("adapter should not run")),
         )
+
+
+@pytest.mark.asyncio
+async def test_default_adapter_factory_is_resolved_at_request_time_for_disposable_fixtures(monkeypatch):
+    adapter = _Adapter([InventoryTable("fixture", "allowed")])
+    monkeypatch.setattr(source_service, "_build_adapter", lambda _settings: adapter)
+    request = PostgresTestRequest(
+        host="fixture.example.test",
+        database_name="analytics",
+        credentials={"username": "reader", "password": "test-password"},
+    )
+
+    response = await source_service.test_postgresql_source(request, settings=_settings())
+
+    assert response.count == 1
+    assert response.eligible_tables[0].schema_name == "fixture"
+    assert adapter.calls == 1
+
+
+class _FailingCommitSession:
+    def __init__(self):
+        self.added = None
+        self.rolled_back = False
+
+    def add(self, value):
+        self.added = value
+
+    async def commit(self):
+        raise IntegrityError(
+            "INSERT INTO source_credentials",
+            {"ciphertext": "synthetic-ciphertext-marker"},
+            RuntimeError("synthetic-driver-marker"),
+        )
+
+    async def rollback(self):
+        self.rolled_back = True
+
+
+@pytest.mark.asyncio
+async def test_create_masks_persistence_errors_after_rolling_back():
+    session = _FailingCommitSession()
+    adapter = _Adapter([InventoryTable("public", "orders")])
+
+    with pytest.raises(source_service.SourcePersistenceError) as error:
+        await source_service.create_postgresql_source(
+            session,
+            owner_user_id=uuid.uuid4(),
+            request=_request(),
+            settings=_settings(),
+            adapter_factory=lambda _settings: adapter,
+        )
+
+    assert session.added is not None
+    assert session.rolled_back is True
+    assert "synthetic-ciphertext-marker" not in str(error.value)
+    assert "synthetic-driver-marker" not in str(error.value)
+
+
+def test_stage_2_source_statuses_do_not_claim_catalog_readiness():
+    assert "CATALOG_READY" not in {status.value for status in SourceStatus}
