@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import DatasetAccess
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.db.models.dataset import DatasetRecord, DatasetStatus, FileType
@@ -214,14 +215,16 @@ async def get_dataset(
     *,
     user_id: uuid.UUID | None = None,
 ) -> DatasetRecord:
-    """Fetch a dataset, optionally scoped to a caller's identity.
+    """Fetch a dataset for trusted internal work or an explicitly scoped caller.
 
     When ``user_id`` is provided, the row must match BOTH the dataset id
     and the owning ``user_id``. A mismatch raises ``NotFoundError`` (404,
     never 403) so callers cannot enumerate other tenants' dataset ids.
 
-    Legacy ``X-API-Key`` callers pass ``user_id=None`` and continue to
-    see all datasets — they share the static server key.
+    ``user_id=None`` intentionally remains an unscoped lookup for trusted
+    pipeline/internal callers. Public request handlers must use
+    :func:`get_dataset_for_access` instead; a global legacy API key is not a
+    trusted system actor.
     """
     if user_id is None:
         record = await session.get(DatasetRecord, dataset_id)
@@ -240,6 +243,27 @@ async def get_dataset(
     return record
 
 
+async def get_dataset_for_access(
+    session: AsyncSession,
+    dataset_id: uuid.UUID,
+    *,
+    access: DatasetAccess,
+) -> DatasetRecord:
+    """Return a dataset visible to ``access`` or a non-enumerating 404.
+
+    JWT users may read only records they own. A global legacy API key can read
+    only records with no owner, preserving the explicitly legacy namespace
+    without granting access to a JWT user's data.
+    """
+    record = await session.get(DatasetRecord, dataset_id)
+    if record is None or not _can_access_dataset(record, access):
+        raise NotFoundError(
+            f"dataset {dataset_id} not found",
+            details={"dataset_id": str(dataset_id)},
+        )
+    return record
+
+
 async def list_datasets(
     session: AsyncSession,
     *,
@@ -247,6 +271,11 @@ async def list_datasets(
     offset: int = 0,
     user_id: uuid.UUID | None = None,
 ) -> tuple[list[DatasetRecord], int]:
+    """List datasets for trusted internal work or a scoped user id.
+
+    Public request handlers must use :func:`list_datasets_for_access` so a
+    legacy API key cannot inherit the historic unscoped ``None`` behavior.
+    """
     stmt = select(DatasetRecord).order_by(DatasetRecord.created_at.desc())
     count_stmt = select(DatasetRecord.id)
 
@@ -264,6 +293,49 @@ async def list_datasets(
     total = len(count_result.all())
 
     return items, total
+
+
+async def list_datasets_for_access(
+    session: AsyncSession,
+    *,
+    access: DatasetAccess,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[DatasetRecord], int]:
+    """List only datasets visible to an explicit public-request actor."""
+    ownership_filter = _dataset_ownership_filter(access)
+    stmt = (
+        select(DatasetRecord)
+        .where(ownership_filter)
+        .order_by(DatasetRecord.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    count_stmt = select(func.count(DatasetRecord.id)).where(ownership_filter)
+
+    result = await session.execute(stmt)
+    # Keep an in-memory check as defense in depth for unusual session wrappers
+    # and future query edits. The SQL predicate remains the primary boundary.
+    items = [
+        record
+        for record in result.scalars().all()
+        if _can_access_dataset(record, access)
+    ]
+    count_result = await session.execute(count_stmt)
+    total = int(count_result.scalar() or 0)
+    return items, total
+
+
+def _dataset_ownership_filter(access: DatasetAccess):
+    if access.legacy_api_key:
+        return DatasetRecord.user_id.is_(None)
+    return DatasetRecord.user_id == access.user_id
+
+
+def _can_access_dataset(record: DatasetRecord, access: DatasetAccess) -> bool:
+    if access.legacy_api_key:
+        return record.user_id is None
+    return record.user_id == access.user_id
 
 
 async def mark_status(

@@ -23,10 +23,11 @@ other work to bundle.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
@@ -36,6 +37,7 @@ from app.db.models.conversation import (
     ConversationModeDB,
     ConversationSessionRow,
 )
+from app.db.models.dataset import DatasetRecord, DatasetStatus
 from app.exceptions.custom_exceptions import NotFoundError
 from agentic_engine.conversational.models import (
     MAX_HISTORY_MESSAGES,
@@ -53,7 +55,93 @@ from agentic_engine.llm_engine.models import TokenUsage
 logger = get_logger("conversational.manager")
 
 
+@dataclass(frozen=True)
+class ConversationAccess:
+    """Trusted caller identity used to scope conversation operations.
+
+    A JWT user owns conversations through their ``user_id``. A legacy global
+    API key has no user identity, so it is deliberately restricted to the
+    pre-authentication namespace where both the dataset and conversation are
+    unowned. ``None`` must never mean "all users" here.
+    """
+
+    user_id: uuid.UUID | None
+    legacy_api_key: bool
+
+    def __post_init__(self) -> None:
+        if self.legacy_api_key and self.user_id is not None:
+            raise ValueError("legacy API-key access cannot carry a user id")
+        if not self.legacy_api_key and self.user_id is None:
+            raise ValueError("user conversation access requires a user id")
+
+    @classmethod
+    def for_user(cls, user_id: uuid.UUID) -> "ConversationAccess":
+        return cls(user_id=user_id, legacy_api_key=False)
+
+    @classmethod
+    def for_legacy_api_key(cls) -> "ConversationAccess":
+        return cls(user_id=None, legacy_api_key=True)
+
+
+@dataclass(frozen=True)
+class AuthorizedConversation:
+    """A session and dataset already checked against a trusted actor."""
+
+    session: ConversationSession
+    dataset: DatasetRecord
+
+
 # ── sessions ────────────────────────────────────────────────────────────────
+
+async def create_session_for_access(
+    *,
+    session_db: AsyncSession,
+    dataset_id: uuid.UUID,
+    mode: ConversationMode = ConversationMode.AUTO,
+    access: ConversationAccess,
+) -> ConversationSession:
+    """Create a session only after authorizing the dataset for ``access``."""
+    record = await get_dataset_for_access(session_db, dataset_id, access=access)
+    if record.status is not DatasetStatus.COMPLETE:
+        raise NotFoundError(
+            f"dataset {dataset_id} is not ready for chat",
+            details={"status": record.status.value},
+        )
+    return await create_session(
+        session_db=session_db,
+        dataset_id=dataset_id,
+        mode=mode,
+        user_id=None if access.legacy_api_key else access.user_id,
+    )
+
+
+async def get_dataset_for_access(
+    session_db: AsyncSession,
+    dataset_id: uuid.UUID,
+    *,
+    access: ConversationAccess,
+) -> DatasetRecord:
+    """Return a dataset visible to this conversation actor or a non-enumerating 404."""
+    record = await session_db.get(DatasetRecord, dataset_id)
+    if record is None or not _can_access_dataset(record, access):
+        raise NotFoundError(
+            f"dataset {dataset_id} not found",
+            details={"dataset_id": str(dataset_id)},
+        )
+    return record
+
+
+async def get_session_for_access(
+    session_db: AsyncSession,
+    session_id: uuid.UUID,
+    *,
+    access: ConversationAccess,
+) -> AuthorizedConversation:
+    """Load a session and its dataset after enforcing ownership centrally."""
+    row, dataset = await _get_session_row_for_access(
+        session_db, session_id, access=access
+    )
+    return AuthorizedConversation(session=_row_to_session(row), dataset=dataset)
 
 async def create_session(
     *,
@@ -88,7 +176,10 @@ async def create_session(
 async def get_session(
     session_db: AsyncSession, session_id: uuid.UUID
 ) -> ConversationSession:
-    """Fetch a session by id or raise :class:`NotFoundError`."""
+    """Fetch a session for trusted internal orchestration only.
+
+    HTTP handlers must use :func:`get_session_for_access` instead.
+    """
     row = await _get_session_row(session_db, session_id)
     return _row_to_session(row)
 
@@ -98,23 +189,43 @@ async def list_sessions_for_dataset(
     dataset_id: uuid.UUID,
     *,
     limit: int = 50,
+    access: ConversationAccess,
 ) -> list[ConversationSession]:
-    """List a dataset's sessions, most-recently-active first."""
+    """List only sessions visible to ``access``, most-recently-active first."""
+    dataset = await get_dataset_for_access(session_db, dataset_id, access=access)
     stmt = (
         select(ConversationSessionRow)
         .where(ConversationSessionRow.dataset_id == dataset_id)
         .order_by(ConversationSessionRow.last_active_at.desc())
         .limit(limit)
     )
+    if access.legacy_api_key:
+        stmt = stmt.where(ConversationSessionRow.user_id.is_(None))
+    else:
+        stmt = stmt.where(
+            or_(
+                ConversationSessionRow.user_id == access.user_id,
+                ConversationSessionRow.user_id.is_(None),
+            )
+        )
     result = await session_db.execute(stmt)
-    return [_row_to_session(row) for row in result.scalars().all()]
+    return [
+        _row_to_session(row)
+        for row in result.scalars().all()
+        if _can_access_conversation(row, dataset, access)
+    ]
 
 
 async def delete_session(
-    session_db: AsyncSession, session_id: uuid.UUID
+    session_db: AsyncSession,
+    session_id: uuid.UUID,
+    *,
+    access: ConversationAccess,
 ) -> None:
-    """Hard-delete a session and (via FK cascade) all its messages."""
-    row = await _get_session_row(session_db, session_id)
+    """Hard-delete an actor-authorized session and its messages."""
+    row, _dataset = await _get_session_row_for_access(
+        session_db, session_id, access=access
+    )
     await session_db.delete(row)
     await session_db.commit()
     logger.info("conversation.session_deleted", session_id=str(session_id))
@@ -203,6 +314,21 @@ async def get_recent_messages(
     return [_row_to_message(row) for row in rows]
 
 
+async def get_recent_messages_for_access(
+    session_db: AsyncSession,
+    session_id: uuid.UUID,
+    *,
+    access: ConversationAccess,
+    limit: int = MAX_HISTORY_MESSAGES,
+) -> tuple[AuthorizedConversation, list[ChatMessage]]:
+    """Read a transcript only after resolving the shared ownership boundary."""
+    conversation = await get_session_for_access(
+        session_db, session_id, access=access
+    )
+    messages = await get_recent_messages(session_db, session_id, limit=limit)
+    return conversation, messages
+
+
 async def count_messages(
     session_db: AsyncSession, session_id: uuid.UUID
 ) -> int:
@@ -250,6 +376,60 @@ async def _get_session_row(
             details={"session_id": str(session_id)},
         )
     return row
+
+
+async def _get_session_row_for_access(
+    session_db: AsyncSession,
+    session_id: uuid.UUID,
+    *,
+    access: ConversationAccess,
+) -> tuple[ConversationSessionRow, DatasetRecord]:
+    """Resolve the session/dataset pair without disclosing ownership mismatches."""
+    row = await session_db.get(ConversationSessionRow, session_id)
+    if row is None:
+        _raise_session_not_found(session_id)
+
+    dataset = await session_db.get(DatasetRecord, row.dataset_id)
+    if (
+        dataset is None
+        or not _can_access_dataset(dataset, access)
+        or not _can_access_conversation(row, dataset, access)
+    ):
+        _raise_session_not_found(session_id)
+    return row, dataset
+
+
+def _can_access_dataset(
+    dataset: DatasetRecord, access: ConversationAccess
+) -> bool:
+    if access.legacy_api_key:
+        return dataset.user_id is None
+    return dataset.user_id == access.user_id
+
+
+def _can_access_conversation(
+    conversation: ConversationSessionRow,
+    dataset: DatasetRecord,
+    access: ConversationAccess,
+) -> bool:
+    """Enforce a single ownership policy for all session operations.
+
+    JWT callers must own the linked dataset and either own the session or be
+    reclaiming a historical null-owned session attached to their dataset.
+    Legacy API-key callers can use only completely legacy (null-owned) pairs.
+    """
+    if not _can_access_dataset(dataset, access):
+        return False
+    if access.legacy_api_key:
+        return conversation.user_id is None
+    return conversation.user_id == access.user_id or conversation.user_id is None
+
+
+def _raise_session_not_found(session_id: uuid.UUID) -> None:
+    raise NotFoundError(
+        f"conversation session {session_id} not found",
+        details={"session_id": str(session_id)},
+    )
 
 
 def _row_to_session(row: ConversationSessionRow) -> ConversationSession:

@@ -44,6 +44,7 @@ from agentic_engine.conversational.models import (
     ChatStreamEvent,
     ChatStreamEventType,
     ConversationMode,
+    ConversationSession,
     IntentDecision,
     QueryResult,
     RagCitation,
@@ -74,6 +75,8 @@ async def stream_chat_turn(
     settings: Settings | None = None,
     llm: LLMClient | None = None,
     embedder: Embedder | None = None,
+    authorized_session: ConversationSession | None = None,
+    authorized_dataset: DatasetRecord | None = None,
 ) -> AsyncIterator[ChatStreamEvent]:
     """Stream one chat turn — yields typed :class:`ChatStreamEvent`s.
 
@@ -91,10 +94,24 @@ async def stream_chat_turn(
     )
 
     # ── 1. Load session + dataset metadata. ───────────────────────────────
-    session = await manager.get_session(session_db, session_id)
-    dataset_record = await dataset_service.get_dataset(
-        session_db, session.dataset_id
-    )
+    # HTTP callers pre-authorize this pair before opening their SSE stream and
+    # pass it here. The fallback keeps this lower-level orchestrator usable by
+    # existing internal callers and focused unit tests; it is not an HTTP
+    # authorization boundary.
+    if (authorized_session is None) != (authorized_dataset is None):
+        raise ValueError(
+            "authorized_session and authorized_dataset must be provided together"
+        )
+    if authorized_session is None:
+        session = await manager.get_session(session_db, session_id)
+        dataset_record = await dataset_service.get_dataset(
+            session_db, session.dataset_id
+        )
+    else:
+        session = authorized_session
+        dataset_record = authorized_dataset
+        if session.session_id != session_id or session.dataset_id != dataset_record.id:
+            raise ValueError("authorized conversation context does not match session id")
 
     if dataset_record.status is not DatasetStatus.COMPLETE:
         # Dataset is still being processed — refuse the turn rather than

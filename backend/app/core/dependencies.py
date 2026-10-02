@@ -8,6 +8,7 @@ from fastapi import Depends, Header
 from jose import JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import DatasetAccess
 from app.core.config import Settings, get_settings
 from app.core.security import decode_access_token
 from app.db.session import get_session
@@ -91,12 +92,27 @@ async def get_auth_context(
     raise UnauthorizedError("authentication required — provide Bearer token or X-API-Key")
 
 
+async def get_dataset_access(
+    current_user=Depends(get_auth_context),
+) -> DatasetAccess:
+    """Build a dataset actor only from verified authentication context.
+
+    A valid legacy API key deliberately receives an explicit legacy scope,
+    rather than a bare ``None`` user id. Dataset services can then restrict it
+    to unowned legacy records instead of treating it as global access.
+    """
+    if current_user is None:
+        return DatasetAccess.for_legacy_api_key()
+    return DatasetAccess.for_user(current_user.id)
+
+
 # ── typed aliases ─────────────────────────────────────────────────────────────
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 DBSession = Annotated[AsyncSession, Depends(get_session)]
 AuthRequired = Depends(require_api_key)           # legacy — kept so existing usages compile
 AuthContext = Depends(get_auth_context)           # new combined auth
+DatasetAccessDep = Annotated[DatasetAccess, Depends(get_dataset_access)]
 
 
 # ── storage ───────────────────────────────────────────────────────────────────
