@@ -421,6 +421,50 @@ async def test_legacy_api_key_cannot_access_jwt_owned_conversation_resources_or_
     assert not chat_test_context.fakes.stream_calls
 
 
+@pytest.mark.parametrize(
+    "authorization",
+    ["Bearer", "Basic ignored", "Bearer-not-a-token", "Bearer invalid-token"],
+)
+async def test_malformed_authorization_cannot_downgrade_to_legacy_sse_access(
+    chat_client, chat_test_context, authorization
+):
+    """An Authorization header is authoritative even when a valid key is sent."""
+    response = await chat_client.post(
+        f"/api/v1/chat/sessions/{chat_test_context.fakes.session_id}/message",
+        headers={
+            "Authorization": authorization,
+            "X-API-Key": chat_test_context.settings.api_key,
+        },
+        json={"message": "do not start a stream"},
+    )
+
+    assert response.status_code == 401
+    assert not chat_test_context.fakes.calls
+    assert not chat_test_context.fakes.stream_calls
+
+
+async def test_jwt_takes_precedence_over_a_valid_legacy_api_key(
+    chat_client, chat_test_context
+):
+    token = chat_test_context.headers_for(chat_test_context.owner)["Authorization"]
+    headers = {
+        # Authentication schemes are case-insensitive; preserve the JWT actor
+        # rather than falling through to the less-privileged key namespace.
+        "Authorization": token.replace("Bearer ", "bearer ", 1),
+        "X-API-Key": chat_test_context.settings.api_key,
+    }
+
+    response = await chat_client.get(
+        f"/api/v1/chat/sessions/{chat_test_context.fakes.session_id}",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert chat_test_context.fakes.calls == [
+        ("session", manager.ConversationAccess.for_user(chat_test_context.owner.id))
+    ]
+
+
 class _OwnershipSession:
     """Minimal async session for manager ownership checks without a live DB."""
 
@@ -594,3 +638,25 @@ async def test_manager_legacy_scope_requires_unowned_dataset_and_session():
             historic_conversation.id,
             access=manager.ConversationAccess.for_legacy_api_key(),
         )
+
+
+async def test_manager_fails_closed_for_conflicting_session_and_dataset_owners():
+    dataset_owner = uuid.uuid4()
+    session_owner = uuid.uuid4()
+    conversation, dataset = _ownership_rows(
+        dataset_owner=dataset_owner,
+        session_owner=session_owner,
+    )
+    db = _OwnershipSession(conversation, dataset)
+
+    for access in (
+        manager.ConversationAccess.for_user(dataset_owner),
+        manager.ConversationAccess.for_user(session_owner),
+        manager.ConversationAccess.for_legacy_api_key(),
+    ):
+        with pytest.raises(NotFoundError):
+            await manager.get_session_for_access(
+                db, conversation.id, access=access
+            )
+
+    assert not db.deleted

@@ -1,5 +1,6 @@
 """Pilot configuration and real multipart/storage boundary checks."""
 from io import BytesIO
+import uuid
 from unittest.mock import AsyncMock, Mock
 
 import httpx
@@ -111,3 +112,39 @@ async def test_request_cap_rejects_before_handler(settings):
     assert response.json()["max_bytes"] == 22020096
     assert "request body exceeds" in response.json()["message"]
     handler.assert_not_called()
+
+
+async def test_jwt_upload_owner_is_present_at_the_first_commit(settings):
+    """A private upload must never be committed as a legacy/null-owned row."""
+
+    class RecordingSession:
+        def __init__(self):
+            self.record = None
+            self.owners_at_commit = []
+
+        def add(self, record):
+            self.record = record
+
+        async def commit(self):
+            self.owners_at_commit.append(self.record.user_id)
+
+        async def refresh(self, _record):
+            pass
+
+    owner_id = uuid.uuid4()
+    session = RecordingSession()
+    upload = UploadFile(
+        filename="private.csv",
+        file=BytesIO(b"value\n1\n"),
+    )
+
+    record = await create_dataset_from_upload(
+        upload=upload,
+        session=session,
+        storage=LocalStorage(settings.raw_dir),
+        settings=settings,
+        owner_user_id=owner_id,
+    )
+
+    assert record.user_id == owner_id
+    assert session.owners_at_commit == [owner_id]

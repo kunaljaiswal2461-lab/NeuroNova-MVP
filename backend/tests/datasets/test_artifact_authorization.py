@@ -5,10 +5,11 @@ import json
 import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
+from jose import jwt
 
 # ``main`` constructs an app at import time, so provide the required settings
 # before importing the application factory.
@@ -309,6 +310,19 @@ async def _request(client, dataset_id: uuid.UUID, kind: str, headers: dict | Non
     )
 
 
+def _signed_access_token(settings: Settings, **claims) -> str:
+    """Build a correctly signed token with intentionally malformed claims."""
+    return jwt.encode(
+        {
+            "type": "access",
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+            **claims,
+        },
+        settings.jwt_secret_key,
+        algorithm="HS256",
+    )
+
+
 @pytest.mark.parametrize(
     "kind",
     [
@@ -340,6 +354,7 @@ async def test_owner_can_read_its_dataset_and_artifacts(client, artifact_context
         assert response.json()["dataset_id"] == str(artifact_context.owned.id)
     elif kind == "legacy_viz":
         assert response.json()["secret"] == "owner-only viz"
+        assert response.headers["cache-control"] == "no-store"
     elif kind == "insights":
         assert response.json()["executive_summary"]["headline"] == "owner-only insight"
     elif kind == "pdf":
@@ -402,6 +417,142 @@ async def test_unauthenticated_requests_cannot_read_dataset_artifacts(
     artifact_context.calls.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "authorization",
+    ["Bearer", "Basic ignored", "Bearer-not-a-token", "Bearer invalid-token"],
+)
+async def test_malformed_authorization_cannot_downgrade_to_legacy_artifact_access(
+    client, artifact_context, authorization
+):
+    response = await _request(
+        client,
+        artifact_context.legacy.id,
+        "profile",
+        {
+            "Authorization": authorization,
+            "X-API-Key": artifact_context.settings.api_key,
+        },
+    )
+
+    assert response.status_code == 401
+    artifact_context.calls.assert_not_called()
+
+
+@pytest.mark.parametrize("claims", [{}, {"sub": "not-a-uuid"}, {"sub": None}])
+async def test_malformed_signed_access_claims_return_401_not_500(
+    client, artifact_context, claims
+):
+    token = _signed_access_token(artifact_context.settings, **claims)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-API-Key": artifact_context.settings.api_key,
+    }
+
+    dataset_response = await _request(
+        client, artifact_context.owned.id, "profile", headers
+    )
+    account_response = await client.get("/api/v1/auth/me", headers=headers)
+
+    assert dataset_response.status_code == 401
+    assert account_response.status_code == 401
+    artifact_context.calls.assert_not_called()
+
+
+async def test_jwt_precedence_over_a_global_key_preserves_dataset_scope(
+    client, artifact_context
+):
+    owner_headers = {
+        **artifact_context.headers_for(artifact_context.owner),
+        "X-API-Key": artifact_context.settings.api_key,
+    }
+    other_headers = {
+        **artifact_context.headers_for(artifact_context.other),
+        "X-API-Key": artifact_context.settings.api_key,
+    }
+
+    owner = await _request(
+        client, artifact_context.owned.id, "profile", owner_headers
+    )
+    assert owner.status_code == 200
+
+    artifact_context.calls.profile = 0
+    other = await _request(
+        client, artifact_context.owned.id, "profile", other_headers
+    )
+    assert other.status_code == 404
+    artifact_context.calls.assert_not_called()
+
+
+async def test_unknown_and_inaccessible_dataset_ids_are_non_disclosing(
+    client, artifact_context
+):
+    other_headers = artifact_context.headers_for(artifact_context.other)
+    inaccessible = await _request(
+        client, artifact_context.owned.id, "profile", other_headers
+    )
+    unknown = await _request(client, uuid.uuid4(), "profile", other_headers)
+
+    assert inaccessible.status_code == unknown.status_code == 404
+    assert inaccessible.json()["error"]["code"] == "not_found"
+    assert unknown.json()["error"]["code"] == "not_found"
+    assert "owner-only" not in inaccessible.text
+    assert "owner-only" not in unknown.text
+    artifact_context.calls.assert_not_called()
+
+
+async def test_invalid_legacy_key_cannot_read_dataset_artifacts(client, artifact_context):
+    response = await _request(
+        client,
+        artifact_context.owned.id,
+        "profile",
+        {"X-API-Key": "not-the-configured-key"},
+    )
+
+    assert response.status_code == 401
+    artifact_context.calls.assert_not_called()
+
+
+async def test_upload_passes_only_trusted_auth_identity_to_first_persistence_step(
+    client, artifact_context, monkeypatch
+):
+    captured: list[dict] = []
+    profiled: list[uuid.UUID] = []
+
+    async def fake_create_dataset_from_upload(**kwargs):
+        captured.append(kwargs)
+        return (
+            artifact_context.owned
+            if kwargs["owner_user_id"] is not None
+            else artifact_context.legacy
+        )
+
+    async def fake_run_profiling(dataset_id):
+        profiled.append(dataset_id)
+
+    monkeypatch.setattr(
+        dataset_routes.dataset_service,
+        "create_dataset_from_upload",
+        fake_create_dataset_from_upload,
+    )
+    monkeypatch.setattr(dataset_routes, "run_profiling", fake_run_profiling)
+
+    owner = await client.post(
+        "/api/v1/upload",
+        headers=artifact_context.headers_for(artifact_context.owner),
+        files={"file": ("private.csv", b"value\n1\n", "text/csv")},
+    )
+    legacy = await client.post(
+        "/api/v1/upload",
+        headers=artifact_context.legacy_headers,
+        files={"file": ("legacy.csv", b"value\n1\n", "text/csv")},
+    )
+
+    assert owner.status_code == legacy.status_code == 202
+    assert [call["owner_user_id"] for call in captured] == [
+        artifact_context.owner.id,
+        None,
+    ]
+    assert profiled == [artifact_context.owned.id, artifact_context.legacy.id]
 
 
 async def test_dataset_lists_are_scoped_for_jwt_and_legacy_callers(

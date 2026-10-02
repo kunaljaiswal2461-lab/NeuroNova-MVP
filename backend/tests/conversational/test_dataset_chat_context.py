@@ -147,6 +147,44 @@ async def _install_chat_fakes(monkeypatch, *, dataset_id, record, mode):
     return session, saved, commits
 
 
+@pytest.mark.asyncio
+async def test_mismatched_authorized_context_is_rejected_before_clients_or_persistence(
+    monkeypatch, settings_with_key
+):
+    session = ConversationSession(
+        session_id=uuid.uuid4(),
+        dataset_id=uuid.uuid4(),
+        mode=ConversationMode.AUTO,
+    )
+    mismatched_dataset = SimpleNamespace(
+        id=uuid.uuid4(), status=DatasetStatus.COMPLETE
+    )
+
+    def should_not_build_client(*_args, **_kwargs):
+        pytest.fail("a mismatched authorized context must not construct an LLM client")
+
+    def should_not_build_embedder(*_args, **_kwargs):
+        pytest.fail("a mismatched authorized context must not construct an embedder")
+
+    async def should_not_persist(*_args, **_kwargs):
+        pytest.fail("a mismatched authorized context must not persist messages")
+
+    monkeypatch.setattr(chat_agent, "build_client", should_not_build_client)
+    monkeypatch.setattr(chat_agent, "build_embedder", should_not_build_embedder)
+    monkeypatch.setattr(chat_agent.manager, "append_message", should_not_persist)
+
+    with pytest.raises(ValueError, match="authorized conversation context"):
+        async for _event in stream_chat_turn(
+            session_id=session.session_id,
+            user_message="must not run",
+            session_db=object(),
+            settings=settings_with_key,
+            authorized_session=session,
+            authorized_dataset=mismatched_dataset,
+        ):
+            pass
+
+
 def test_load_profile_report_returns_typed_model_and_handles_missing_invalid_files(settings_with_key):
     dataset_id = uuid.uuid4()
     assert load_profile_report(dataset_id, settings_with_key) is None

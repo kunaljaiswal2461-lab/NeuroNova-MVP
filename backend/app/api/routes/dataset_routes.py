@@ -63,11 +63,8 @@ async def upload_dataset(
         session=session,
         storage=storage,
         settings=settings,
+        owner_user_id=current_user.id if current_user is not None else None,
     )
-    # Stamp the uploading user so we can trace which user owns which dataset
-    if current_user is not None:
-        record.user_id = current_user.id
-        await session.commit()
     background_tasks.add_task(run_profiling, record.id)
     return UploadAck.model_validate(record)
 
