@@ -10,7 +10,19 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, LargeBinary, String, func, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -35,6 +47,12 @@ class TLSMode(str, enum.Enum):
 
 class DataSource(Base, TimestampMixin):
     __tablename__ = "data_sources"
+    __table_args__ = (
+        CheckConstraint("catalog_sync_sequence >= 0", name="catalog_sync_sequence_nonnegative"),
+        # The catalog run composite FK uses this exact key to prove that the
+        # recorded requester was the source owner when the run was created.
+        Index("uq_data_sources_id_owner_user_id", "id", "owner_user_id", unique=True),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True),
@@ -78,6 +96,11 @@ class DataSource(Base, TimestampMixin):
     # Stored now for the later profiling stage; it cannot be enabled in 2B.
     profiling_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    # Monotonic source-local generation allocated under a database row lock by
+    # the catalog service. It is separate from connection-test status.
+    catalog_sync_sequence: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
     )
 
     credential: Mapped["SourceCredential | None"] = relationship(

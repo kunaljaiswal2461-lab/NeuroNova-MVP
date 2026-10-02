@@ -77,6 +77,56 @@ databases, using separately supplied disposable database URLs:
 Do not count `alembic upgrade --sql`, SQLite tests, or a manually inspected
 migration as PostgreSQL migration verification.
 
+## Stage 3A catalog-persistence checks
+
+Stage 3A adds only application-database catalog records; it must not trigger
+client database discovery. Before testing an upgrade, inspect the target
+application database's `source_status_enum`. If it contains `CATALOG_READY`
+from the earlier, unreleased form of `0007_postgres_sources`, stop: a separate
+forward compatibility migration is required before this branch can be used.
+Editing the historical `0007` file cannot repair an already-applied enum.
+
+The catalog run lifecycle is `QUEUED` → `RUNNING` → `SUCCEEDED`, with
+`FAILED` or `CANCELLED` available from either non-terminal state. Terminal
+states do not transition. A stale generation is cancelled and a changed scope
+fails the run. The unique `catalog_snapshots.sync_run_id` is the successful
+run's published-snapshot reference; publication moves the separate
+source-current-head pointer only after the complete immutable snapshot commits.
+
+Using synthetic application-db users, sources, and explicit scope rows only:
+
+1. Upgrade a fresh application database and a database already at the current
+   `0007_postgres_sources` revision to `0008_catalog_persistence`. Inspect the
+   native enum, composite foreign-key, unique-index, and check-constraint DDL.
+2. Call the internal catalog service with normalized fixture metadata, without
+   invoking the connector. Verify a queued run becomes running, then publishes
+   a complete snapshot containing comments, ordered native columns, composite
+   keys, and composite foreign-key mappings. Verify dotted, quoted, and colon
+   identifier parts remain separate schema/table/column values.
+3. Attempt direct cross-source and cross-snapshot inserts for a catalog asset,
+   key mapping, relationship, and current-head pointer. Each must fail at the
+   database boundary. Verify an out-of-scope relationship has only its local
+   constraint identity and omission status; it must not persist excluded target
+   table or column details.
+4. With two application-db sessions and a synchronization barrier, queue two
+   runs for one source. Publish the newer generation first and prove the older
+   run cannot replace the current head. Verify `SELECT ... FOR UPDATE` and
+   transaction isolation, not merely a process-local test lock, provide this
+   behavior. In a separate barrier case, try to add or delete a selected scope
+   row while a run captures or rechecks scope; source and scope-row locks must
+   prevent a current head from being published for a stale scope. Future scope
+   mutation code must acquire the source lock before any scope-row lock.
+5. Inject a fixture constraint failure while publishing after an earlier
+   snapshot exists. Confirm every row for the new snapshot rolls back, the old
+   current head remains, and a cancelled or terminal run cannot publish.
+6. Delete a source directly, then separately use normal account deletion.
+   Confirm every catalog run, snapshot, head, asset, column, key, and
+   relationship child is removed by database cascades.
+
+Record only synthetic identifiers, revision names, counts, and safe failure
+codes. These checks verify application-database catalog persistence only; they
+do not replace the Stage 2D client TLS, ACL, or onboarding checks.
+
 ## Adapter and HTTP integration checks
 
 Start the backend against one of the disposable application databases with

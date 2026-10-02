@@ -4,6 +4,20 @@ from app.db.models.conversation import (
     ConversationModeDB,
     ConversationSessionRow,
 )
+from app.db.models.catalog import (
+    CatalogAsset,
+    CatalogColumn,
+    CatalogDeclaredKey,
+    CatalogDeclaredKeyColumn,
+    CatalogForeignKey,
+    CatalogForeignKeyColumn,
+    CatalogForeignKeyTargetStatus,
+    CatalogKeyKind,
+    CatalogSnapshot,
+    CatalogSyncRun,
+    CatalogSyncRunStatus,
+    SourceCatalogHead,
+)
 from app.db.models.dataset import DatasetRecord, DatasetStatus, FileType
 from app.db.models.finding_embedding import EMBEDDING_DIMENSION, FindingEmbedding
 from app.db.models.source import (
@@ -17,6 +31,17 @@ from app.db.models.source import (
 from app.db.models.user import RefreshToken, User, UserRole
 
 __all__ = [
+    "CatalogAsset",
+    "CatalogColumn",
+    "CatalogDeclaredKey",
+    "CatalogDeclaredKeyColumn",
+    "CatalogForeignKey",
+    "CatalogForeignKeyColumn",
+    "CatalogForeignKeyTargetStatus",
+    "CatalogKeyKind",
+    "CatalogSnapshot",
+    "CatalogSyncRun",
+    "CatalogSyncRunStatus",
     "ChatMessageRow",
     "ChatRoleDB",
     "ConversationModeDB",
@@ -28,6 +53,7 @@ __all__ = [
     "EMBEDDING_DIMENSION",
     "DataSource",
     "SourceCredential",
+    "SourceCatalogHead",
     "SourceStatus",
     "SourceTableScope",
     "SourceType",
