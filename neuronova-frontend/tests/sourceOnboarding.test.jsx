@@ -291,7 +291,7 @@ it('opens the saved-source metadata inspector without changing the file upload f
     requireJwt: true,
     preserveErrorBody: true,
   }))
-  expect(screen.getByRole('heading', { name: 'Metadata not synchronized' })).toBeTruthy()
+  expect(await screen.findByRole('heading', { name: 'Metadata not synchronized' })).toBeTruthy()
 
   fireEvent.click(screen.getByRole('button', { name: 'Close metadata' }))
   expect(screen.queryByRole('heading', { name: 'Metadata: Production analytics' })).toBeNull()

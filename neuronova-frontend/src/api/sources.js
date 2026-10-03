@@ -94,4 +94,54 @@ export const sourceApi = {
       jwtSourceOptions(options),
     )
   },
+
+  // Database conversations are explicitly source-bound and JWT-only. A
+  // session id is not itself an authorization capability; generic session
+  // reads are still authenticated and resolved by the server.
+  createChatSession(sourceId, body = { mode: 'AUTO' }, options) {
+    return api.post(
+      `/sources/${encodeURIComponent(sourceId)}/chat/sessions`,
+      body,
+      jwtSourceOptions(options),
+    )
+  },
+
+  listChatSessions(sourceId, { limit = 50 } = {}, options) {
+    const query = new URLSearchParams({ limit: String(limit) })
+    return api.get(
+      `/sources/${encodeURIComponent(sourceId)}/chat/sessions?${query.toString()}`,
+      jwtSourceOptions(options),
+    )
+  },
+
+  getChatSession(sessionId, options) {
+    return api.get(`/chat/sessions/${encodeURIComponent(sessionId)}`, jwtSourceOptions(options))
+  },
+
+  getChatMessages(sessionId, { limit = 500 } = {}, options) {
+    const query = new URLSearchParams({ limit: String(limit) })
+    return api.get(
+      `/chat/sessions/${encodeURIComponent(sessionId)}/messages?${query.toString()}`,
+      jwtSourceOptions(options),
+    )
+  },
+
+  streamChatMessage(sessionId, body, options) {
+    return api.streamSSE(
+      `/chat/sessions/${encodeURIComponent(sessionId)}/message`,
+      body,
+      jwtSourceOptions(options),
+    )
+  },
+
+  cancelChatTurn(sessionId, turnId, options) {
+    return api.post(
+      `/chat/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/cancel`,
+      {},
+      {
+        ...jwtSourceOptions(options),
+        expectEmptyResponse: true,
+      },
+    )
+  },
 }

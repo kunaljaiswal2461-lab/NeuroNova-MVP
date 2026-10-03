@@ -7,7 +7,8 @@ which keeps the orchestrator free of session-handling boilerplate.
 
 Three responsibilities:
 
-  * Create / fetch / list / delete :class:`ConversationSession`s.
+  * Create / fetch / list / delete :class:`ConversationSession`s bound to an
+    uploaded dataset or a creator-owned PostgreSQL source.
   * Append a :class:`ChatMessage` while keeping the denormalised
     ``last_active_at`` and ``message_count`` columns in sync.
   * Read the rolling window of recent messages used as LLM context
@@ -38,7 +39,9 @@ from app.db.models.conversation import (
     ConversationSessionRow,
 )
 from app.db.models.dataset import DatasetRecord, DatasetStatus
+from app.db.models.source import DataSource
 from app.exceptions.custom_exceptions import NotFoundError
+from app.services.postgres_query_executor import PostgresQueryExecutionResult
 from agentic_engine.conversational.models import (
     MAX_HISTORY_MESSAGES,
     ChatMessage,
@@ -46,6 +49,7 @@ from agentic_engine.conversational.models import (
     ConversationMode,
     ConversationSession,
     IntentDecision,
+    PostgresChatResult,
     QueryResult,
     RagCitation,
 )
@@ -85,10 +89,31 @@ class ConversationAccess:
 
 @dataclass(frozen=True)
 class AuthorizedConversation:
-    """A session and dataset already checked against a trusted actor."""
+    """A session and its one authorized backing resource.
+
+    Uploaded-file chat sessions retain ``dataset``; PostgreSQL chat sessions
+    have ``source`` instead.  The invariant is checked here as a second
+    in-process boundary in addition to the persistence-level XOR check.
+    """
 
     session: ConversationSession
-    dataset: DatasetRecord
+    dataset: DatasetRecord | None = None
+    source: DataSource | None = None
+
+    def __post_init__(self) -> None:
+        if (self.dataset is None) == (self.source is None):
+            raise ValueError("authorized conversation must have exactly one resource")
+        if self.dataset is not None:
+            if (
+                self.session.dataset_id != self.dataset.id
+                or self.session.source_id is not None
+            ):
+                raise ValueError("authorized conversation dataset binding does not match session")
+        elif self.source is not None and (
+            self.session.source_id != self.source.id
+            or self.session.dataset_id is not None
+        ):
+            raise ValueError("authorized conversation source binding does not match session")
 
 
 # ── sessions ────────────────────────────────────────────────────────────────
@@ -131,32 +156,87 @@ async def get_dataset_for_access(
     return record
 
 
+async def get_source_for_access(
+    session_db: AsyncSession,
+    source_id: uuid.UUID,
+    *,
+    access: ConversationAccess,
+) -> DataSource:
+    """Return a creator-owned source visible to a JWT conversation actor.
+
+    Sources have no legacy/null-owner namespace.  Rejecting a valid legacy
+    API key here (rather than relying on a route convention) makes the
+    JWT-only database-chat boundary central and reusable by every lifecycle
+    operation.
+    """
+    if access.legacy_api_key:
+        _raise_source_not_found(source_id)
+
+    record = await session_db.get(DataSource, source_id)
+    if record is None or record.owner_user_id != access.user_id:
+        _raise_source_not_found(source_id)
+    return record
+
+
 async def get_session_for_access(
     session_db: AsyncSession,
     session_id: uuid.UUID,
     *,
     access: ConversationAccess,
 ) -> AuthorizedConversation:
-    """Load a session and its dataset after enforcing ownership centrally."""
-    row, dataset = await _get_session_row_for_access(
+    """Load a session and its one backing resource after central authorization."""
+    row, dataset, source = await _get_session_row_for_access(
         session_db, session_id, access=access
     )
-    return AuthorizedConversation(session=_row_to_session(row), dataset=dataset)
+    return AuthorizedConversation(
+        session=_row_to_session(row), dataset=dataset, source=source
+    )
+
+
+async def create_database_session_for_access(
+    *,
+    session_db: AsyncSession,
+    source_id: uuid.UUID,
+    mode: ConversationMode = ConversationMode.AUTO,
+    access: ConversationAccess,
+) -> ConversationSession:
+    """Create a JWT-only session bound to one currently owner-authorized source.
+
+    Readiness of a catalog snapshot is deliberately not inferred from source
+    connection status here.  The Stage 4C planner/executor resolves the
+    current authorized snapshot for every turn; this function only establishes
+    the durable ownership binding.
+    """
+    source = await get_source_for_access(session_db, source_id, access=access)
+    # ``get_source_for_access`` rejects legacy actors and only returns a
+    # source for a non-null JWT owner.  Keep this assertion explicit so a
+    # future change cannot create a null-owned source transcript.
+    if access.user_id is None:  # pragma: no cover - guarded by ConversationAccess
+        _raise_source_not_found(source_id)
+    return await create_database_session(
+        session_db=session_db,
+        source_id=source.id,
+        mode=mode,
+        user_id=access.user_id,
+    )
 
 async def create_session(
     *,
     session_db: AsyncSession,
-    dataset_id: uuid.UUID,
+    dataset_id: uuid.UUID | None = None,
+    source_id: uuid.UUID | None = None,
     mode: ConversationMode = ConversationMode.AUTO,
     user_id: uuid.UUID | None = None,
 ) -> ConversationSession:
-    """Create a new conversation session for a dataset.
+    """Create a new conversation session for exactly one resource.
 
     Commits on success so the caller can immediately hand the new
     session id back to the client.
     """
+    _require_exactly_one_binding(dataset_id=dataset_id, source_id=source_id)
     row = ConversationSessionRow(
         dataset_id=dataset_id,
+        source_id=source_id,
         mode=ConversationModeDB(mode.value),
         user_id=user_id,
     )
@@ -167,10 +247,31 @@ async def create_session(
     logger.info(
         "conversation.session_created",
         session_id=str(row.id),
-        dataset_id=str(dataset_id),
+        dataset_id=str(dataset_id) if dataset_id is not None else None,
+        source_id=str(source_id) if source_id is not None else None,
         mode=mode.value,
     )
     return _row_to_session(row)
+
+
+async def create_database_session(
+    *,
+    session_db: AsyncSession,
+    source_id: uuid.UUID,
+    mode: ConversationMode = ConversationMode.AUTO,
+    user_id: uuid.UUID,
+) -> ConversationSession:
+    """Create a source-bound session for trusted internal orchestration.
+
+    HTTP paths must use :func:`create_database_session_for_access` so source
+    ownership is checked before this trusted primitive is reached.
+    """
+    return await create_session(
+        session_db=session_db,
+        source_id=source_id,
+        mode=mode,
+        user_id=user_id,
+    )
 
 
 async def get_session(
@@ -216,6 +317,36 @@ async def list_sessions_for_dataset(
     ]
 
 
+async def list_sessions_for_source(
+    session_db: AsyncSession,
+    source_id: uuid.UUID,
+    *,
+    limit: int = 50,
+    access: ConversationAccess,
+) -> list[ConversationSession]:
+    """List source-bound sessions owned by the current JWT source creator.
+
+    The initial source authorization is intentionally performed before the
+    session query.  That keeps an unknown source and a foreign-owned source
+    indistinguishable, and it prevents the legacy API-key namespace from
+    observing database-chat history.
+    """
+    source = await get_source_for_access(session_db, source_id, access=access)
+    stmt = (
+        select(ConversationSessionRow)
+        .where(ConversationSessionRow.source_id == source.id)
+        .where(ConversationSessionRow.user_id == access.user_id)
+        .order_by(ConversationSessionRow.last_active_at.desc())
+        .limit(limit)
+    )
+    result = await session_db.execute(stmt)
+    return [
+        _row_to_session(row)
+        for row in result.scalars().all()
+        if _can_access_source_conversation(row, source, access)
+    ]
+
+
 async def delete_session(
     session_db: AsyncSession,
     session_id: uuid.UUID,
@@ -223,7 +354,7 @@ async def delete_session(
     access: ConversationAccess,
 ) -> None:
     """Hard-delete an actor-authorized session and its messages."""
-    row, _dataset = await _get_session_row_for_access(
+    row, _dataset, _source = await _get_session_row_for_access(
         session_db, session_id, access=access
     )
     await session_db.delete(row)
@@ -243,6 +374,7 @@ async def append_message(
     intent: IntentDecision | None = None,
     citations: list[RagCitation] | None = None,
     query_result: QueryResult | None = None,
+    postgres_result: PostgresChatResult | PostgresQueryExecutionResult | None = None,
     degraded: bool = False,
     degraded_reason: str | None = None,
     unsupported: bool = False,
@@ -257,6 +389,7 @@ async def append_message(
     rows land atomically.
     """
     session_row = await _get_session_row(session_db, session_id)
+    normalized_postgres_result = _normalize_postgres_result(postgres_result)
 
     message_row = ChatMessageRow(
         session_id=session_id,
@@ -270,6 +403,11 @@ async def append_message(
             else None
         ),
         query_result=query_result.model_dump(mode="json") if query_result else None,
+        postgres_result=(
+            normalized_postgres_result.model_dump(mode="json")
+            if normalized_postgres_result is not None
+            else None
+        ),
         degraded=degraded,
         degraded_reason=degraded_reason,
         unsupported=unsupported,
@@ -370,7 +508,7 @@ async def _get_session_row(
     session_db: AsyncSession, session_id: uuid.UUID
 ) -> ConversationSessionRow:
     row = await session_db.get(ConversationSessionRow, session_id)
-    if row is None:
+    if row is None or not _has_exactly_one_binding(row):
         raise NotFoundError(
             f"conversation session {session_id} not found",
             details={"session_id": str(session_id)},
@@ -383,20 +521,37 @@ async def _get_session_row_for_access(
     session_id: uuid.UUID,
     *,
     access: ConversationAccess,
-) -> tuple[ConversationSessionRow, DatasetRecord]:
-    """Resolve the session/dataset pair without disclosing ownership mismatches."""
+) -> tuple[ConversationSessionRow, DatasetRecord | None, DataSource | None]:
+    """Resolve the one session resource without disclosing ownership mismatches.
+
+    A session is always re-resolved through its backing resource.  In
+    particular, a source-bound row whose source disappeared is indistinguish-
+    able from an unknown session even if an incomplete migration or a disabled
+    database foreign-key setting left the row behind.
+    """
     row = await session_db.get(ConversationSessionRow, session_id)
-    if row is None:
+    if row is None or not _has_exactly_one_binding(row):
         _raise_session_not_found(session_id)
 
-    dataset = await session_db.get(DatasetRecord, row.dataset_id)
-    if (
-        dataset is None
-        or not _can_access_dataset(dataset, access)
-        or not _can_access_conversation(row, dataset, access)
-    ):
+    if row.dataset_id is not None:
+        dataset = await session_db.get(DatasetRecord, row.dataset_id)
+        if (
+            dataset is None
+            or not _can_access_dataset(dataset, access)
+            or not _can_access_conversation(row, dataset, access)
+        ):
+            _raise_session_not_found(session_id)
+        return row, dataset, None
+
+    # The XOR guard above proves this is non-null, but retain a local guard so
+    # type checkers and future schema changes cannot accidentally turn it into
+    # an unscoped lookup.
+    if row.source_id is None:  # pragma: no cover - guarded by XOR above
         _raise_session_not_found(session_id)
-    return row, dataset
+    source = await session_db.get(DataSource, row.source_id)
+    if source is None or not _can_access_source_conversation(row, source, access):
+        _raise_session_not_found(session_id)
+    return row, None, source
 
 
 def _can_access_dataset(
@@ -425,6 +580,37 @@ def _can_access_conversation(
     return conversation.user_id == access.user_id or conversation.user_id is None
 
 
+def _can_access_source_conversation(
+    conversation: ConversationSessionRow,
+    source: DataSource,
+    access: ConversationAccess,
+) -> bool:
+    """Return whether a JWT owner may use a source-bound session.
+
+    Unlike dataset sessions, source sessions cannot be reclaimed from a legacy
+    null-owner namespace.  Requiring all three identities to agree prevents a
+    historical message row from being served after source access changes.
+    """
+    return (
+        not access.legacy_api_key
+        and access.user_id is not None
+        and conversation.source_id == source.id
+        and source.owner_user_id == access.user_id
+        and conversation.user_id == access.user_id
+    )
+
+
+def _has_exactly_one_binding(row: ConversationSessionRow) -> bool:
+    return (row.dataset_id is None) != (row.source_id is None)
+
+
+def _require_exactly_one_binding(
+    *, dataset_id: uuid.UUID | None, source_id: uuid.UUID | None
+) -> None:
+    if (dataset_id is None) == (source_id is None):
+        raise ValueError("conversation session must bind exactly one dataset or source")
+
+
 def _raise_session_not_found(session_id: uuid.UUID) -> None:
     raise NotFoundError(
         f"conversation session {session_id} not found",
@@ -432,10 +618,19 @@ def _raise_session_not_found(session_id: uuid.UUID) -> None:
     )
 
 
+def _raise_source_not_found(source_id: uuid.UUID) -> None:
+    """Keep unknown and foreign source authorization failures non-enumerating."""
+    raise NotFoundError(
+        f"source {source_id} not found",
+        details={"source_id": str(source_id)},
+    )
+
+
 def _row_to_session(row: ConversationSessionRow) -> ConversationSession:
     return ConversationSession(
         session_id=row.id,
         dataset_id=row.dataset_id,
+        source_id=row.source_id,
         mode=ConversationMode(row.mode.value),
         created_at=row.created_at,
         last_active_at=row.last_active_at,
@@ -447,6 +642,7 @@ def _row_to_message(row: ChatMessageRow) -> ChatMessage:
     intent = _decode_intent(row.intent)
     citations = _decode_citations(row.citations)
     query_result = _decode_query_result(row.query_result)
+    postgres_result = _decode_postgres_result(row.postgres_result)
     token_usage = _decode_token_usage(row.token_input, row.token_output)
 
     return ChatMessage(
@@ -459,6 +655,7 @@ def _row_to_message(row: ChatMessageRow) -> ChatMessage:
         intent=intent,
         citations=citations,
         query_result=query_result,
+        postgres_result=postgres_result,
         # ``expression`` is the exact normalised string that the query
         # executor validated and compiled. It remains display-only: prompt
         # history is built solely from ``content`` above.
@@ -499,6 +696,36 @@ def _decode_query_result(blob: dict[str, Any] | None) -> QueryResult | None:
         return QueryResult.model_validate(blob)
     except Exception as exc:  # pragma: no cover — schema drift guard
         logger.warning("conversation.query_result_decode_failed", error=str(exc))
+        return None
+
+
+def _normalize_postgres_result(
+    result: PostgresChatResult | PostgresQueryExecutionResult | None,
+) -> PostgresChatResult | None:
+    """Normalize the executor's typed outcome before persistence.
+
+    The public executor intentionally returns ``PostgresQueryExecutionResult``
+    while chat exposes its identically shaped ``PostgresChatResult``.  Dumping
+    then validating keeps the boundary explicit and means arbitrary mappings
+    cannot be slipped into the transcript blob.
+    """
+    if result is None:
+        return None
+    if isinstance(result, PostgresChatResult):
+        return result
+    return PostgresChatResult.model_validate(result.model_dump(mode="python"))
+
+
+def _decode_postgres_result(blob: dict[str, Any] | None) -> PostgresChatResult | None:
+    """Decode only the strict Stage 4B result shape without logging row values."""
+    if not blob:
+        return None
+    try:
+        return PostgresChatResult.model_validate(blob)
+    except Exception:  # pragma: no cover - schema drift / corrupt-row guard
+        # Validation errors can echo an invalid value (including a result cell),
+        # so deliberately avoid serializing the exception into audit logs.
+        logger.warning("conversation.postgres_result_decode_failed")
         return None
 
 

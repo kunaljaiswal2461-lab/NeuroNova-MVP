@@ -175,6 +175,23 @@ it('shows an unsynchronized source and requests a JWT-only metadata refresh', as
   expect(screen.getByText(/queued until a worker claims it/i)).toBeTruthy()
 })
 
+it('only enables the database-chat entry after a current snapshot is published', async () => {
+  const first = renderInspector()
+  const unavailable = await screen.findByRole('button', { name: 'Chat with this database' })
+  expect(unavailable.disabled).toBe(true)
+  first.unmount()
+
+  api.get.mockImplementation(path => {
+    if (path === '/sources/source-1/catalog') return Promise.resolve(publishedCatalog)
+    if (path.startsWith('/sources/source-1/catalog/assets?')) return Promise.resolve(assetPage)
+    return Promise.resolve(emptyCatalog)
+  })
+  renderInspector()
+
+  const entry = await screen.findByRole('link', { name: 'Chat with this database' })
+  expect(entry.getAttribute('href')).toBe('/sources/source-1/chat')
+})
+
 it('pins list and detail reads to one published snapshot and renders composite metadata safely', async () => {
   api.get.mockImplementation(path => {
     if (path === '/sources/source-1/catalog') return Promise.resolve(publishedCatalog)

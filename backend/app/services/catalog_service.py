@@ -219,6 +219,23 @@ class PostgresQueryCatalogContext:
 
 
 @dataclass(frozen=True)
+class PostgresChatCatalogContext:
+    """The current, owner-authorized catalog surface for PostgreSQL chat.
+
+    This is deliberately structural metadata only.  It is not an execution
+    capability, does not contain credentials, and is useful only while its
+    ``snapshot`` remains the current published head with an unchanged saved
+    scope.  The Stage 4B gateway re-checks all of those facts before remote
+    I/O and again before it releases result rows.
+    """
+
+    source_id: uuid.UUID
+    snapshot: CatalogSnapshot
+    assets: tuple[CatalogAsset, ...]
+    current_scope_fingerprint: str
+
+
+@dataclass(frozen=True)
 class CatalogAssetReference:
     """Structured table identity for a safe public catalog response."""
 
@@ -1543,6 +1560,145 @@ async def resolve_postgres_query_catalog_context_for_owner(
         raise CatalogPersistenceError() from None
 
 
+async def get_postgres_chat_catalog_context_for_owner(
+    session: AsyncSession,
+    *,
+    source_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+) -> PostgresChatCatalogContext:
+    """Return the sole current catalog surface that database chat may plan on.
+
+    Browsing historical catalog snapshots is intentionally supported elsewhere,
+    but database chat cannot plan from them.  This helper proves owner access,
+    the current head, a successful publication, and an unchanged explicit
+    source scope before exposing *only* currently selected table metadata.
+    It never reads credentials or any customer rows.
+    """
+
+    try:
+        source = await _owned_source_or_raise(
+            session, source_id=source_id, owner_user_id=owner_user_id
+        )
+        if source.source_type is not SourceType.POSTGRESQL:
+            await _rollback_quietly(session)
+            raise CatalogQueryContextError()
+
+        snapshot = (
+            await session.execute(
+                select(CatalogSnapshot)
+                .join(
+                    SourceCatalogHead,
+                    (SourceCatalogHead.source_id == CatalogSnapshot.source_id)
+                    & (SourceCatalogHead.snapshot_id == CatalogSnapshot.id),
+                )
+                .where(SourceCatalogHead.source_id == source.id)
+            )
+        ).scalar_one_or_none()
+        if snapshot is None:
+            await _rollback_quietly(session)
+            raise CatalogQueryContextError()
+
+        run = (
+            await session.execute(
+                select(CatalogSyncRun).where(
+                    CatalogSyncRun.id == snapshot.sync_run_id,
+                    CatalogSyncRun.source_id == source.id,
+                )
+            )
+        ).scalar_one_or_none()
+        current_scope = await _current_scope(session, source.id)
+        if (
+            run is None
+            or run.status is not CatalogSyncRunStatus.SUCCEEDED
+            or not current_scope
+        ):
+            await _rollback_quietly(session)
+            raise CatalogQueryContextError()
+
+        current_scope_fingerprint = canonical_scope_fingerprint(current_scope)
+        if snapshot.scope_fingerprint != current_scope_fingerprint:
+            await _rollback_quietly(session)
+            raise CatalogQueryContextError()
+
+        # Source onboarding caps selected tables.  Keep the safety bound here
+        # too so this helper remains safe if called by future internal paths.
+        assets = (
+            await session.execute(
+                select(CatalogAsset)
+                .join(SourceTableScope, _scope_asset_join())
+                .where(
+                    CatalogAsset.source_id == source.id,
+                    CatalogAsset.snapshot_id == snapshot.id,
+                )
+                .order_by(
+                    CatalogAsset.schema_name,
+                    CatalogAsset.table_name,
+                    CatalogAsset.id,
+                )
+                .limit(1001)
+            )
+        ).scalars().all()
+        if not assets or len(assets) > 1000:
+            await _rollback_quietly(session)
+            raise CatalogQueryContextError()
+        return PostgresChatCatalogContext(
+            source_id=source.id,
+            snapshot=snapshot,
+            assets=tuple(assets),
+            current_scope_fingerprint=current_scope_fingerprint,
+        )
+    except SQLAlchemyError:
+        await _rollback_quietly(session)
+        raise CatalogPersistenceError() from None
+
+
+async def get_postgres_chat_asset_columns_for_owner(
+    session: AsyncSession,
+    *,
+    source_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+    limit: int = 200,
+) -> tuple[CatalogColumn, ...]:
+    """Load a bounded selected asset's columns for a single planning attempt.
+
+    The current-head/scope proof is deliberately repeated here rather than
+    treating a previously returned context as an authorization token.  A
+    source can be deleted or its scope changed between deterministic table
+    selection and prompt construction.
+    """
+
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1 or limit > 500:
+        raise CatalogInspectionInputError("catalog column limit is invalid")
+    context = await get_postgres_chat_catalog_context_for_owner(
+        session, source_id=source_id, owner_user_id=owner_user_id
+    )
+    if context.snapshot.id != snapshot_id or not any(asset.id == asset_id for asset in context.assets):
+        await _rollback_quietly(session)
+        raise CatalogQueryContextError()
+    try:
+        columns = (
+            await session.execute(
+                select(CatalogColumn)
+                .where(
+                    CatalogColumn.source_id == source_id,
+                    CatalogColumn.snapshot_id == snapshot_id,
+                    CatalogColumn.asset_id == asset_id,
+                )
+                .order_by(CatalogColumn.ordinal_position, CatalogColumn.id)
+                .limit(limit + 1)
+            )
+        ).scalars().all()
+        if not columns or len(columns) > limit:
+            await _rollback_quietly(session)
+            raise CatalogQueryContextError()
+        return tuple(columns)
+    except SQLAlchemyError:
+        await _rollback_quietly(session)
+        raise CatalogPersistenceError() from None
+
+
 async def list_catalog_assets_for_owner(
     session: AsyncSession,
     *,
@@ -2556,6 +2712,7 @@ __all__ = [
     "CatalogTableChange",
     "CatalogTableIdentity",
     "PostgresQueryCatalogContext",
+    "PostgresChatCatalogContext",
     "cancel_catalog_sync_run_for_owner",
     "canonical_scope_fingerprint",
     "claim_next_catalog_sync_run",
@@ -2567,6 +2724,8 @@ __all__ = [
     "get_catalog_sync_run_for_owner",
     "get_catalog_snapshot_for_owner",
     "get_current_catalog_snapshot_for_owner",
+    "get_postgres_chat_asset_columns_for_owner",
+    "get_postgres_chat_catalog_context_for_owner",
     "mark_catalog_sync_running",
     "list_catalog_assets_for_owner",
     "publish_catalog_snapshot",

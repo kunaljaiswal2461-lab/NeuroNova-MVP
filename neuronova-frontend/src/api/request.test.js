@@ -434,3 +434,49 @@ test('SSE honors explicit cancellation while reading', async () => {
   controller.abort()
   await assert.rejects(result, { name: 'AbortError' })
 })
+
+test('JWT-only SSE rejects before fetch without a browser token', async () => {
+  let calls = 0
+  const { api, tokens } = harness(async () => { calls++; return json() })
+  tokens.delete('access_token')
+  tokens.delete('refresh_token')
+  await assert.rejects(
+    api.streamSSE('/chat/sessions/source/message', { message: 'count rows' }, { requireJwt: true }).next(),
+    error => error.status === 401 && error.code === 'authentication_required',
+  )
+  assert.equal(calls, 0)
+})
+
+test('JWT-only SSE never refreshes or replays a potentially accepted turn', async () => {
+  let messageCalls = 0
+  let refreshCalls = 0
+  const { api } = harness(async (url, init) => {
+    if (url.endsWith('/auth/refresh')) {
+      refreshCalls++
+      return json({ access_token: 'new' })
+    }
+    messageCalls++
+    assert.equal(init.method, 'POST')
+    assert.equal(init.headers.Authorization, 'Bearer old')
+    assert.equal(init.headers['X-API-Key'], undefined)
+    return json({ error: { code: 'access_revoked', message: 'access changed' } }, 401)
+  })
+
+  await assert.rejects(
+    api.streamSSE('/chat/sessions/source/message', { message: 'count rows' }, { requireJwt: true, preserveErrorBody: true }).next(),
+    error => error.status === 401 && error.response.error.code === 'access_revoked',
+  )
+  assert.equal(messageCalls, 1)
+  assert.equal(refreshCalls, 0)
+})
+
+test('POST accepts an explicitly acknowledged empty cancellation response', async () => {
+  let request
+  const { api } = harness(async (_url, init) => {
+    request = init
+    return new Response(null, { status: 202 })
+  })
+  assert.equal(await api.post('/chat/sessions/source/turns/turn/cancel', {}, { expectEmptyResponse: true }), null)
+  assert.equal(request.method, 'POST')
+  assert.equal(request.body, '{}')
+})

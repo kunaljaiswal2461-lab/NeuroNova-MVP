@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -227,11 +228,29 @@ class PostgresExecutionCancellation:
                 self._connection = None
 
     async def cancel(self) -> None:
-        self._cancelled.set()
         async with self._lock:
+            # Taking the same lock as ``delivery_guard`` gives a completed
+            # result and an accepted cancellation request one clear ordering.
+            # Stage 4C therefore cannot begin storing successful rows after
+            # cancellation has already won.
+            self._cancelled.set()
             connection = self._connection
         if connection is not None:
             await _terminate_quietly(connection)
+
+    @asynccontextmanager
+    async def delivery_guard(self):
+        """Serialize a final result write with a cancellation request.
+
+        The guard is used only after the remote connection has returned.
+        Holding it while Stage 4C persists a terminal result means a
+        cancellation accepted first wins before result rows are stored; a
+        cancellation accepted afterwards is ordered after the completed write
+        and the caller can still suppress SSE disclosure.
+        """
+
+        async with self._lock:
+            yield not self._cancelled.is_set()
 
 
 def _quote_identifier(identifier: str) -> str:

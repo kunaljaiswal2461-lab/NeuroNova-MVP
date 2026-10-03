@@ -645,6 +645,24 @@ export default function CatalogInspector({ source, onClose }) {
             <button className="btn btn-primary" type="button" onClick={requestRefresh} disabled={requestingRefresh || shouldPoll}>
               {requestingRefresh ? 'Requesting refresh…' : shouldPoll ? 'Refresh in progress' : 'Refresh metadata'}
             </button>
+            {hasSnapshot && !summaryLoading ? (
+              <a
+                className="btn btn-ghost-neutral"
+                href={`/sources/${encodeURIComponent(sourceId)}/chat`}
+                title="Start a conversation using this published metadata snapshot"
+              >
+                Chat with this database
+              </a>
+            ) : (
+              <button
+                className="btn btn-ghost-neutral"
+                type="button"
+                disabled
+                title="Synchronize metadata before starting a database conversation"
+              >
+                Chat with this database
+              </button>
+            )}
             {shouldPoll && (
               <button className="btn btn-ghost-neutral" type="button" onClick={cancelRefresh} disabled={cancellationPending}>
                 {cancellationPending ? 'Cancellation requested…' : 'Cancel refresh'}

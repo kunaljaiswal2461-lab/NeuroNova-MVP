@@ -168,12 +168,12 @@ export function createApi({
     return refreshPromise
   }
 
-  async function fetchAuthenticated(path, init, signal, state = {}, responseOptions = {}) {
+  async function fetchAuthenticated(path, init, signal, state = {}, responseOptions = {}, allowAuthRefresh = true) {
     // A prior read attempt or another caller may already have refreshed auth.
     const currentToken = storage.getItem('access_token')
     if (currentToken) init = { ...init, headers: { ...init.headers, Authorization: `Bearer ${currentToken}` } }
     let res = await fetchImpl(`${baseUrl}${path}`, { ...init, signal })
-    if (res.status === 401 && storage.getItem('refresh_token')) {
+    if (allowAuthRefresh && res.status === 401 && storage.getItem('refresh_token')) {
       // Refresh is shared, but each waiting caller can cancel independently.
       await res.body?.cancel()
       state.waitingForRefresh = true
@@ -230,7 +230,10 @@ export function createApi({
   function post(path, body = {}, options = {}) {
     return request(path, {
       method: 'POST', headers: authHeaders(options), body: JSON.stringify(body),
-    }, res => res.json(), options)
+    // A cancellation acknowledgement intentionally has a 202 response with
+    // no JSON body. Keep ordinary POSTs unchanged while allowing that narrow
+    // acknowledged-empty contract to avoid parsing an empty response.
+    }, res => options.expectEmptyResponse ? null : res.json(), options)
   }
 
   function postForm(path, formData, options = {}) {
@@ -250,12 +253,15 @@ export function createApi({
   async function* streamSSE(path, body = {}, options = {}) {
     // One deadline spans connection and body consumption. Streams are never
     // retried: reconnecting a chat mutation could generate a duplicate reply.
+    // Do not replay a stream after a token refresh either: a server may have
+    // accepted the turn before the browser receives a failed stream response.
+    if (options.requireJwt && !storage.getItem('access_token')) throw jwtRequired()
     const scope = deadline(options.signal, options.timeoutMs ?? longTimeoutMs)
     let reader
     try {
       const res = await scope.run(() => fetchAuthenticated(path, {
-        method: 'POST', headers: authHeaders(), body: JSON.stringify(body),
-      }, scope.signal))
+        method: 'POST', headers: authHeaders(options), body: JSON.stringify(body),
+      }, scope.signal, {}, { preserveErrorBody: options.preserveErrorBody }, false))
       reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''

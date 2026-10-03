@@ -64,8 +64,8 @@ export function DatasetProvider({ children }) {
   )
 }
 
-export function useDataset() {
+export function useDataset({ optional = false } = {}) {
   const ctx = useContext(DatasetContext)
-  if (!ctx) throw new Error('useDataset must be used within DatasetProvider')
+  if (!ctx && !optional) throw new Error('useDataset must be used within DatasetProvider')
   return ctx
 }
