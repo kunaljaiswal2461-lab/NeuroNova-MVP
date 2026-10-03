@@ -19,6 +19,8 @@ const SAFE_SOURCE_ERRORS = {
   connector_not_available: 'Database query execution is not available right now.',
   unsupported_execution_configuration: 'This source configuration is not supported for controlled database queries.',
   schema_changed: 'The source schema changed while the query was being prepared. Refresh metadata and try again.',
+  metric_definition_changed: 'The confirmed metric changed before this result could be used. Review it and try again.',
+  relationship_definition_changed: 'The approved relationship changed before this result could be used. Review it and try again.',
   execution_timeout: 'The controlled database query timed out before returning a result.',
   execution_cancelled: 'The database query was cancelled.',
 }
@@ -103,6 +105,66 @@ function ResultMeta({ label, value }) {
   )
 }
 
+function MetricProvenance({ provenance }) {
+  if (!provenance || typeof provenance !== 'object') return null
+  const name = provenance.name ?? null
+  const version = provenance.version_number ?? null
+  const unit = provenance.unit_label ?? null
+  const timeBasis = provenance.default_date_column_name ?? null
+  const timeZone = provenance.default_time_zone ?? null
+  const aggregation = provenance.aggregation ?? null
+  const aggregateColumn = provenance.aggregation_column_name ?? null
+  const fixedFilterCount = provenance.fixed_filter_count
+  if (!name && version == null && !unit && !timeBasis && !timeZone && !aggregation) return null
+
+  const aggregationLabel = {
+    count_all: 'Count rows',
+    count_column: 'Count non-null values',
+    sum: 'Sum',
+    average: 'Average',
+    minimum: 'Minimum',
+    maximum: 'Maximum',
+  }[aggregation] ?? aggregation
+
+  return (
+    <section aria-label="Confirmed metric provenance" style={{ margin: 0, padding: '9px 12px', borderBottom: '1px solid #BFDBFE', background: '#EFF6FF' }}>
+      <strong style={{ display: 'block', fontFamily: 'var(--font-heading)', fontSize: 11, color: '#1D4ED8' }}>Confirmed metric</strong>
+      {(name || version != null) && <p style={{ margin: '3px 0 0', fontFamily: 'var(--font-data)', fontSize: 11, color: 'var(--color-text-primary)' }}>{name || 'Metric'}{version != null ? ` · version ${version}` : ''}</p>}
+      {aggregationLabel && <p style={{ margin: '5px 0 0', fontFamily: 'var(--font-body)', fontSize: 12, lineHeight: 1.45, color: 'var(--color-text-secondary)' }}>{aggregationLabel}{aggregateColumn ? ` · ${aggregateColumn}` : ''}</p>}
+      {(unit || timeBasis || timeZone) && <p style={{ margin: '5px 0 0', fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-secondary)' }}>
+        {unit && `Unit: ${unit}`}{unit && (timeBasis || timeZone) ? ' · ' : ''}{timeBasis && `Time basis: ${timeBasis}`}{timeBasis && timeZone ? ' · ' : ''}{timeZone && `Time zone: ${timeZone}`}
+      </p>}
+      {Number.isInteger(fixedFilterCount) && <p style={{ margin: '5px 0 0', fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)' }}>{fixedFilterCount === 1 ? '1 fixed filter applied' : `${fixedFilterCount} fixed filters applied`}</p>}
+    </section>
+  )
+}
+
+function RelationshipProvenance({ provenance, semantics }) {
+  if (!provenance || typeof provenance !== 'object') return null
+  const version = provenance.version_number ?? null
+  const joinType = String(provenance.join_type ?? '').toLowerCase()
+  if (!['inner', 'left'].includes(joinType) && version == null) return null
+
+  const lookupFiltersInWhere = semantics?.lookup_filters_in_where === true
+  const lookupFiltersInOn = semantics?.lookup_filters_in_on === true
+  const joinLabel = joinType === 'left' ? 'Left join' : joinType === 'inner' ? 'Inner join' : 'Approved join'
+  const behavior = joinType === 'left'
+    ? (lookupFiltersInWhere
+        ? 'A lookup filter was applied after the join, so unmatched base rows were excluded.'
+        : lookupFiltersInOn
+          ? 'Lookup filters were applied in the join condition, preserving unmatched base rows.'
+          : 'Unmatched base rows are retained by the approved join.')
+    : 'Only base rows with a matching lookup row are included.'
+
+  return (
+    <section aria-label="Approved relationship provenance" style={{ margin: 0, padding: '9px 12px', borderBottom: '1px solid #C4B5FD', background: '#F5F3FF' }}>
+      <strong style={{ display: 'block', fontFamily: 'var(--font-heading)', fontSize: 11, color: '#6D28D9' }}>Approved relationship</strong>
+      <p style={{ margin: '3px 0 0', fontFamily: 'var(--font-data)', fontSize: 11, color: 'var(--color-text-primary)' }}>{joinLabel}{version != null ? ` · version ${version}` : ''}</p>
+      <p style={{ margin: '5px 0 0', fontFamily: 'var(--font-body)', fontSize: 12, lineHeight: 1.45, color: 'var(--color-text-secondary)' }}>{behavior}</p>
+    </section>
+  )
+}
+
 function PostgresResultTable({ result }) {
   if (!result) return null
 
@@ -112,6 +174,16 @@ function PostgresResultTable({ result }) {
   const warnings = Array.isArray(result.warnings) ? result.warnings : []
   const partial = succeeded && result.complete === false
   const ordering = Array.isArray(result.ordering) ? result.ordering : []
+  const requestedTopN = succeeded
+    && result.explicit_top_n === true
+    && Number.isInteger(result.requested_limit)
+    && result.requested_limit > 0
+  const metricProvenance = result.metric_provenance ?? null
+  const metricName = metricProvenance?.name ?? null
+  const metricVersion = metricProvenance?.version_number ?? null
+  const relationshipProvenance = result.relationship_provenance ?? null
+  const relationshipJoinType = String(relationshipProvenance?.join_type ?? '').toLowerCase()
+  const relationshipVersion = relationshipProvenance?.version_number ?? null
 
   return (
     <section aria-label="Controlled PostgreSQL result" style={{ marginTop: 10, border: '1px solid var(--color-border)', borderRadius: 8, overflow: 'hidden', background: 'white' }}>
@@ -124,6 +196,8 @@ function PostgresResultTable({ result }) {
           <ResultMeta label="Execution" value={result.execution_id} />
           <ResultMeta label="Source" value={result.source_id} />
           <ResultMeta label="Snapshot" value={result.snapshot_id} />
+          <ResultMeta label="Metric" value={metricName ? `${metricName}${metricVersion != null ? ` · v${metricVersion}` : ''}` : null} />
+          <ResultMeta label="Relationship" value={relationshipJoinType ? `${relationshipJoinType} join${relationshipVersion != null ? ` · v${relationshipVersion}` : ''}` : null} />
         </div>
       </div>
 
@@ -138,11 +212,22 @@ function PostgresResultTable({ result }) {
               This result is partial because a safety row or byte limit was reached. It must not be treated as complete.
             </p>
           )}
+          {requestedTopN && (
+            <p role="status" style={{ margin: 0, padding: '9px 12px', fontFamily: 'var(--font-body)', fontSize: 12, color: '#1D4ED8', background: '#EFF6FF', borderBottom: '1px solid #BFDBFE' }}>
+              This shows the requested top {result.requested_limit} {result.requested_limit === 1 ? 'result' : 'results'}{ordering.length > 0 ? ' using the displayed ordering.' : '.'} This question limit is not a safety truncation.
+            </p>
+          )}
+          <MetricProvenance provenance={metricProvenance} />
+          <RelationshipProvenance provenance={relationshipProvenance} semantics={result.calculation_semantics ?? {}} />
           {warnings.map((warning, index) => (
             <p key={`${warning}-${index}`} role="status" style={{ margin: 0, padding: '8px 12px', fontFamily: 'var(--font-body)', fontSize: 12, color: '#92400E', background: '#FFFBEB', borderBottom: '1px solid #FDE68A' }}>{warning}</p>
           ))}
           {rows.length === 0 ? (
-            <p style={{ margin: 0, padding: '14px 12px', fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-secondary)' }}>No rows matched this query.</p>
+            <p style={{ margin: 0, padding: '14px 12px', fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-secondary)' }}>
+              {partial
+                ? 'No result rows could be safely displayed before a safety limit was reached. This does not mean no rows matched.'
+                : 'No rows matched this query.'}
+            </p>
           ) : (
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -195,11 +280,13 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
   const [input, setInput] = useState(initialPrefill)
   const [streaming, setStreaming] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+  const [resultReceived, setResultReceived] = useState(false)
   const [sessionError, setSessionError] = useState(null)
   const [sourceContext, setSourceContext] = useState({ displayName: null, snapshotId: null })
   const messagesEndRef = useRef(null)
   const streamAbortRef = useRef(null)
   const turnIdRef = useRef(null)
+  const resultReceivedRef = useRef(false)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -211,6 +298,7 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
 
     streamAbortRef.current?.abort()
     turnIdRef.current = null
+    resultReceivedRef.current = false
     const resolveSourceContext = async () => {
       const [source, catalog] = await Promise.all([
         sourceApi.getSource(sourceId, { signal: controller.signal }),
@@ -269,10 +357,13 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
         } catch (error) {
           if (controller.signal.aborted) return
           clearSavedSessionId(sourceId)
-          // A missing, deleted, or no-longer-authorized source must never be
-          // used to create a replacement session automatically.
+          // A 404 here can only refer to a stale browser-saved session: the
+          // current source and catalog were resolved above. Continue through
+          // the source-bound list endpoint, which re-authorizes the source
+          // before deciding whether restoring or creating is permitted.
           const code = sourceErrorCode(error) || error?.code
-          if ([401, 403, 404].includes(error?.status) || SAFE_SOURCE_ERRORS[code]) throw error
+          const staleSavedSession = error?.status === 404
+          if (!staleSavedSession && ([401, 403].includes(error?.status) || SAFE_SOURCE_ERRORS[code])) throw error
         }
       }
 
@@ -314,10 +405,12 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
     streamAbortRef.current?.abort()
     streamAbortRef.current = streamController
     turnIdRef.current = null
+    resultReceivedRef.current = false
+    setResultReceived(false)
     setMessages(current => [
       ...current,
       { id: userId, role: 'user', text: question, streaming: false },
-      { id: assistantId, role: 'assistant', text: '', postgresResult: null, activity: 'Planning an authorized database query…', outcome: null, streaming: true },
+      { id: assistantId, role: 'assistant', text: '', postgresResult: null, terminalText: null, activity: 'Planning an authorized database query…', outcome: null, streaming: true },
     ])
     setInput('')
     setStreaming(true)
@@ -340,39 +433,69 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
         } else if (event === 'executing') {
           updateAssistant(assistantId, { activity: safeEventMessage(data, 'Executing a controlled read-only query…') })
         } else if (event === 'clarification' || event === 'clarification_required') {
+          const terminalText = data?.message ?? data?.question ?? 'Please clarify which table or calculation you mean.'
           updateAssistant(assistantId, {
-            text: data?.message ?? data?.question ?? 'Please clarify which table or calculation you mean.',
+            text: terminalText,
+            terminalText,
             activity: null,
             outcome: 'clarification',
             streaming: false,
           })
         } else if (event === 'unsupported') {
+          const terminalText = data?.message ?? 'That request is not supported for this database conversation.'
           updateAssistant(assistantId, {
-            text: data?.message ?? 'That request is not supported for this database conversation.',
+            text: terminalText,
+            terminalText,
             activity: null,
             outcome: 'unsupported',
             streaming: false,
           })
         } else if (event === 'postgres_result') {
+          const postgresResult = data?.postgres_result ?? data?.result ?? data
+          if (postgresResult) {
+            resultReceivedRef.current = true
+            setResultReceived(true)
+          }
           updateAssistant(assistantId, {
-            postgresResult: data?.postgres_result ?? data?.result ?? data,
+            postgresResult,
             activity: null,
           })
         } else if (event === 'token') {
-          setMessages(current => current.map(message => message.id === assistantId
-            ? { ...message, text: message.text + (data?.text ?? ''), activity: null }
-            : message))
+          const tokenText = data?.text ?? ''
+          setMessages(current => current.map(message => {
+            if (message.id !== assistantId) return message
+            const duplicateTerminalToken = Boolean(message.terminalText) && message.terminalText === tokenText
+            return {
+              ...message,
+              text: duplicateTerminalToken ? message.text : message.text + tokenText,
+              terminalText: null,
+              activity: null,
+            }
+          }))
         } else if (event === 'error') {
-          updateAssistant(assistantId, {
-            text: safeEventMessage(data, 'The database conversation could not be completed.'),
-            postgresResult: null,
-            activity: null,
-            outcome: 'failed',
-            streaming: false,
-          })
+          if (resultReceivedRef.current) {
+            updateAssistant(assistantId, {
+              text: 'The database result above was received, but the response ended before its final summary.',
+              activity: null,
+              outcome: 'interrupted',
+              streaming: false,
+            })
+          } else {
+            updateAssistant(assistantId, {
+              text: safeEventMessage(data, 'The database conversation could not be completed.'),
+              postgresResult: null,
+              activity: null,
+              outcome: 'failed',
+              streaming: false,
+            })
+          }
           break
         } else if (event === 'done') {
           const result = data?.postgres_result ?? data?.result
+          if (result) {
+            resultReceivedRef.current = true
+            setResultReceived(true)
+          }
           setMessages(current => current.map(message => message.id === assistantId
             ? { ...message, postgresResult: result ?? message.postgresResult, activity: null, streaming: false }
             : message))
@@ -380,7 +503,14 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
         }
       }
     } catch (error) {
-      if (error?.name === 'AbortError') {
+      if (resultReceivedRef.current) {
+        updateAssistant(assistantId, {
+          text: 'The database result above was received before the response ended.',
+          activity: null,
+          outcome: 'interrupted',
+          streaming: false,
+        })
+      } else if (error?.name === 'AbortError') {
         updateAssistant(assistantId, { text: 'The database query was cancelled.', postgresResult: null, activity: null, outcome: 'cancelled', streaming: false })
       } else {
         updateAssistant(assistantId, { text: safeErrorMessage(error, 'The database conversation could not be completed.'), postgresResult: null, activity: null, outcome: 'failed', streaming: false })
@@ -397,7 +527,7 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
 
   const cancelExecution = useCallback(() => {
     const streamController = streamAbortRef.current
-    if (!streamController || cancelling) return
+    if (!streamController || cancelling || resultReceivedRef.current) return
     setCancelling(true)
     const turnId = turnIdRef.current
     if (turnId && sessionId) {
@@ -442,7 +572,7 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
                 ) : sessionError ? (
                   <><h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>Database chat is unavailable</h3><Link to="/upload" className="btn btn-primary btn-sm" style={{ marginTop: 8 }}>Go to sources</Link></>
                 ) : (
-                  <><h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>Ask about {displayName}</h3><p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-secondary)', maxWidth: 410, lineHeight: 1.6 }}>This initial feature supports controlled, read-only questions over one authorized table. Joins, profiling, findings, and chart generation are not available here.</p></>
+                  <><h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>Ask about {displayName}</h3><p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-secondary)', maxWidth: 410, lineHeight: 1.6 }}>This feature supports controlled, read-only questions over one authorized table, plus a confirmed metric with one approved direct lookup relationship. Profiling, findings, chart generation, and arbitrary joins are not available.</p></>
                 )}
               </div>
             ) : messages.map(message => (
@@ -467,11 +597,11 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
           </div>
 
           <div className="chat-composer" style={{ marginTop: 12, background: 'white', border: '1px solid var(--color-border)', borderRadius: 12, padding: '12px 14px', boxShadow: 'var(--shadow-card)' }}>
-            <textarea value={input} onChange={event => setInput(event.target.value)} onKeyDown={handleKeyDown} placeholder={sessionReady ? 'Ask a question about this database source…' : 'Preparing database conversation…'} rows={2} disabled={!sessionReady || streaming} style={{ width: '100%', border: 'none', outline: 'none', resize: 'none', fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-primary)', lineHeight: 1.5, background: 'transparent', opacity: sessionReady ? 1 : 0.5 }} />
+            <textarea aria-label="Database question" value={input} onChange={event => setInput(event.target.value)} onKeyDown={handleKeyDown} placeholder={sessionReady ? 'Ask a question about this database source…' : 'Preparing database conversation…'} rows={2} disabled={!sessionReady || streaming} style={{ width: '100%', border: 'none', outline: 'none', resize: 'none', fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-primary)', lineHeight: 1.5, background: 'transparent', opacity: sessionReady ? 1 : 0.5 }} />
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--color-border-light)' }}>
-              <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--color-text-muted)' }}>{streaming ? (cancelling ? 'Cancelling controlled query…' : 'Planning or executing…') : 'Read-only single-table database chat'}</span>
+              <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--color-text-muted)' }}>{streaming ? (cancelling ? 'Cancelling controlled query…' : 'Planning or executing…') : 'Read-only database chat · confirmed lookup joins only'}</span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                {streaming && <button type="button" className="btn btn-ghost-neutral btn-sm" onClick={cancelExecution} disabled={cancelling}>{cancelling ? 'Cancelling…' : 'Cancel'}</button>}
+                {streaming && !resultReceived && <button type="button" className="btn btn-ghost-neutral btn-sm" onClick={cancelExecution} disabled={cancelling}>{cancelling ? 'Cancelling…' : 'Cancel'}</button>}
                 <button type="button" aria-label="Send database question" onClick={() => { void handleSend() }} disabled={!input.trim() || !sessionReady || streaming} style={{ width: 32, height: 32, borderRadius: 8, background: (input.trim() && sessionReady && !streaming) ? 'var(--color-primary-indigo)' : 'var(--color-border)', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: (input.trim() && sessionReady && !streaming) ? 'pointer' : 'not-allowed' }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg></button>
               </div>
             </div>
@@ -490,7 +620,7 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
           </div>
           <div style={{ marginBottom: 20 }}>
             <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Capability</p>
-            <div style={{ background: 'white', border: '1px solid var(--color-border)', borderRadius: 8, padding: '10px 12px', fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-secondary)', lineHeight: 1.55 }}>Controlled read-only queries over one authorized table. No joins, profiling, findings, or database charts.</div>
+            <div style={{ background: 'white', border: '1px solid var(--color-border)', borderRadius: 8, padding: '10px 12px', fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-secondary)', lineHeight: 1.55 }}>Controlled read-only queries over one authorized table, or a confirmed metric with one owner-approved direct lookup relationship. No arbitrary joins, profiling, findings, or database charts.</div>
           </div>
           <div style={{ marginTop: 20, padding: '12px', background: 'var(--color-base)', borderRadius: 8 }}>
             <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Session stats</p>

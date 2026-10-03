@@ -1,8 +1,9 @@
 import os
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from functools import lru_cache
 from typing import Literal
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
 
@@ -113,6 +114,10 @@ class Settings(BaseSettings):
     rate_limit_connector_test: str = "10/hour"
     rate_limit_connector_create: str = "10/hour"
     rate_limit_catalog_sync_request: str = "20/hour"
+    # Profile work is an explicit, potentially expensive owner action. The
+    # route limiter complements durable worker concurrency; neither starts a
+    # profile automatically.
+    rate_limit_source_profile_request: str = "10/hour"
     rate_limit_global: str = "200/hour"
     max_concurrent_pipelines: int = Field(default=1, gt=0)
 
@@ -191,6 +196,39 @@ class Settings(BaseSettings):
     )
     postgres_execution_cursor_prefetch: int = Field(default=50, ge=1, le=1_000)
 
+    # --- optional bounded PostgreSQL profiling (Stage 6A; disabled per source) ---
+    # These are intentionally separate from analytical query budgets. A
+    # profile uses fixed internal aggregate operations over a bounded
+    # TABLESAMPLE population; it never accepts user/LLM SQL or falls back to a
+    # full-table scan.
+    postgres_profile_connect_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    postgres_profile_statement_timeout_seconds: float = Field(default=8.0, gt=0, le=30)
+    postgres_profile_lock_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
+    postgres_profile_idle_transaction_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    postgres_profile_operation_timeout_seconds: float = Field(default=15.0, gt=0, le=60)
+    # SYSTEM sampling chooses blocks, not independent rows. The bounded LIMIT
+    # caps returned sample population but does not claim to cap scan cost;
+    # deadlines, fixed statement shape, and selection caps do that as well.
+    # The transport has an independent hard cap below 100%. A deployment
+    # setting must never turn the safe sampling path into a full-table read.
+    postgres_profile_sample_percent: float = Field(default=1.0, gt=0, le=10)
+    postgres_profile_sample_limit: int = Field(default=5_000, ge=1, le=10_000)
+    postgres_profile_max_tables_per_run: int = Field(default=10, ge=1, le=100)
+    postgres_profile_max_columns_per_table: int = Field(default=25, ge=0, le=50)
+    postgres_profile_max_columns_per_run: int = Field(default=100, ge=0, le=500)
+    # Logical aggregate operations are charged before dispatch. This keeps a
+    # wide request bounded even when the adapter combines measures in one
+    # fixed statement per table.
+    postgres_profile_max_operations_per_run: int = Field(default=250, ge=1, le=1_000)
+    postgres_profile_max_concurrent_operations: int = Field(default=1, ge=1, le=5)
+    source_profile_worker_max_concurrent_jobs: int = Field(default=1, ge=1, le=5)
+    source_profile_worker_poll_interval_seconds: float = Field(default=2.0, gt=0, le=30)
+    source_profile_worker_lease_seconds: float = Field(default=45.0, ge=5, le=300)
+    source_profile_worker_lease_renewal_seconds: float = Field(default=5.0, ge=1, le=60)
+    source_profile_worker_max_attempts: int = Field(default=2, ge=1, le=5)
+    source_profile_worker_retry_base_seconds: float = Field(default=5.0, gt=0, le=60)
+    source_profile_worker_retry_max_seconds: float = Field(default=30.0, gt=0, le=300)
+
     # --- frontend ---
     frontend_url: str = "http://localhost:5173"
     # Comma-separated browser origins permitted to receive OAuth callbacks.
@@ -208,6 +246,25 @@ class Settings(BaseSettings):
     # SMTP_TLS enables encrypted SMTP. Port 465 uses implicit TLS; other
     # standard submission ports (including Gmail's 587) use STARTTLS.
     smtp_tls: bool = True
+
+    @field_validator("postgres_profile_sample_percent")
+    @classmethod
+    def validate_profile_sample_precision(cls, value: float) -> float:
+        """Keep stored sampling provenance identical to remote parameters.
+
+        Profile runs persist this setting in ``NUMERIC(7, 4)`` and pass it to
+        the fixed PostgreSQL TABLESAMPLE statement. Reject extra precision
+        instead of letting a database round the persisted configuration to a
+        different percentage than the owner requested/configured.
+        """
+
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError("profile sample percent is invalid") from exc
+        if decimal_value.as_tuple().exponent < -4:
+            raise ValueError("profile sample percent supports at most four decimal places")
+        return float(decimal_value)
 
     # --- Google OAuth ---
     google_client_id: str = ""

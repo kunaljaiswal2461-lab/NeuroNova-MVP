@@ -223,6 +223,106 @@ Record only revision names, synthetic fixture identifiers, counts, safe error
 codes, and redacted execution IDs. This Stage 4B procedure remains pending
 until it is actually run against disposable PostgreSQL with TLS.
 
+## Stage 4C source-bound chat: opt-in actual-model and live PostgreSQL evaluation
+
+Run this procedure only after the isolated topology and the Stage 4B checks
+above succeed. It is deliberately separate from the ordinary test suite: it
+uses only a disposable application database, a disposable TLS-protected client
+database, a restricted reader role, synthetic rows, and operator-held test
+credentials. The checked-in Compose service is not sufficient evidence for
+this procedure. Never point it at a customer source, production application
+database, or production encryption key.
+
+Before starting, an operator must set the local, ignored acknowledgement
+`STAGE4C_EVALUATION_ACK=disposable-synthetic-only`. This is a human safety
+gate, not the authorization boundary; the disposable topology, restricted
+role, and normal JWT/source authorization remain mandatory. Keep API tokens,
+database credentials, host names, and raw rows out of terminal transcripts and
+recorded evidence. Pin `OPENAI_MINI_MODEL` to the model identifier being
+evaluated and record only that non-secret identifier.
+
+From `backend/`, migrate the disposable application database to `head`, start
+the application and catalog worker with the fixture-only connector settings,
+then bootstrap two disposable JWT users through the normal application flow.
+Create and synchronize a source whose display name and selected schema clearly
+identify the synthetic fixture. After its catalog has a current published
+snapshot, create a source-bound session through the JWT API and send questions
+to `POST /api/v1/chat/sessions/{session_id}/message`. An operator-owned
+no-buffer SSE client may be used, but it must read its base URL, token, and
+session ID from the ignored evaluation environment rather than a checked-in
+command or script.
+
+For each case, use a clean source-bound session unless testing an explicitly
+listed follow-up. Record the fixture case ID, model ID when applicable,
+expected outcome, observed event sequence/status, query-run count, result
+completeness/precision assertion, and safe failure code. Do not retain raw
+prompts, raw SSE frames, rows, tokens, connection strings, or credentials.
+
+| Case | Expected observation |
+| --- | --- |
+| Actual-model count, filtered lookup, grouped sum, explicit ordered Top-N, explicit-UTC time bucket, and null handling | `planning` then `executing`, one bounded typed result, grounded terminal text, and a known synthetic answer. Requested Top-N must remain distinct from a safety-truncated result. |
+| Ambiguous table, undefined business metric, unapproved/cross-source/multi-hop join, write request, and instruction-like question/comment text | Clarification, unsupported, or safe failure before remote execution; no result rows and no query run. |
+| Cross-user source/session identifiers | Non-enumerating authorization failure before a model call or remote query. |
+| Snapshot change after planning | Safe stale/current-head failure with no silent retargeting or second query. |
+| Statement timeout, explicit cancellation, and client disconnect | At most one query run; connection/slot cleanup; no retained or disclosed rows when cancellation wins before the final result write. |
+| Empty result, row/byte truncation, and large integer/decimal values | Empty result succeeds; incomplete results are visibly partial; integer/decimal strings match the synthetic values exactly. |
+| Follow-up on the same source and source/session deletion during a turn | Follow-up stays source-bound and revalidated; deletion prevents historical/result disclosure. |
+| Existing file-chat flow after database chat | Upload, dataset selection, file chat, RAG, and Polars paths remain usable and do not acquire a source binding. |
+
+Classify evidence explicitly as **mock contract**, **actual model**, or **real
+PostgreSQL**. A passing mock suite does not establish model quality, PostgreSQL
+TLS/ACL/cancellation behavior, or rendered browser behavior. Do not report
+these live/model checks as complete until this opt-in procedure has actually
+been run against the disposable fixture.
+
+## Stage 5B controlled same-source join checks
+
+Run this opt-in procedure only after the Stage 4B gateway checks and Stage 4C
+source-bound authorization checks succeed.  Reuse the isolated TLS-protected
+client fixture and the restricted reader role; use synthetic `orders` as the
+designated base table and `customers` as its lookup table.  The application
+catalog must contain one current snapshot, an in-scope declared ordered FK
+from `orders.customer_id` to the exact `customers` primary/unique key, and an
+explicit owner-confirmed relationship version.  Do not create a relationship
+by supplying SQL or a manual column mapping.
+
+Seed customers with different keys sharing a display name, and orders with
+multiple rows per customer, a nullable foreign key, an unmatched permitted
+key, an excluded fixed-status row, and at least one composite-key fixture.
+Record only fixture case IDs, expected/observed aggregate values, safe error
+codes, redacted run IDs, and relationship version numbers.
+
+1. Confirm `sum(paid order amount) by customer region` equals the known base
+   order total per region, rather than a customer-row or display-name total.
+   Confirm the metric's fixed `paid` filter remains in the compiled behavior.
+2. Compare the approved `INNER` relationship with its separately confirmed
+   `LEFT` version: account for unmatched base rows explicitly.  For lookup
+   filters, prove `join_on` retains unmatched base rows and `where` excludes
+   them; test `WHERE lookup_column IS NULL` separately because it preserves
+   unmatched rows by SQL null semantics.
+3. Compare `count(*)` with `count(nullable_lookup_column)`, grouped lookup
+   attributes, nullable FK values, and a composite FK/unique-key relationship.
+   Validate known numeric answers, not only emitted SQL.
+4. Before a joined run, change/drop the exact lookup target key, make it
+   deferrable, remove a scoped table, alter the FK mapping, retire the
+   relationship, or publish a stale/replacement snapshot.  Each case must
+   fail closed before row disclosure; no catalog refresh may silently remap a
+   confirmed version.
+5. Coordinate a cancellation and a conflicting DDL attempt over both tables.
+   Verify canonical two-relation lock behavior, connection/slot cleanup, and
+   that cancellation or a post-remote metric/relationship pin change withholds
+   result rows.  Repeat with a cross-user source/relationship identifier.
+6. Capture the same TLS, restricted-role, read-only transaction, RLS, and
+   table/column privilege evidence required by Stage 4B for *both* relations.
+   Then render the owner relationship controls and database result provenance
+   in a browser, checking that only safe join semantics/version information is
+   shown and no raw SQL, key values, credentials, or result rows enter logs.
+
+This Stage 5B procedure is pending until it is executed against disposable
+PostgreSQL.  Unit, SQLite, and fake-adapter assertions establish controlled
+contracts only; they do not establish live PostgreSQL cardinality, locking,
+TLS/ACL/RLS, actual-model, or rendered-browser behavior.
+
 ## Adapter and HTTP integration checks
 
 Start the backend against one of the disposable application databases with

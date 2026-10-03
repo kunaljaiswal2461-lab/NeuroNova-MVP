@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
@@ -18,6 +20,15 @@ from app.db.models.catalog import (
     CatalogKeyKind,
     CatalogSyncRunStatus,
 )
+from app.db.models.source_profile import (
+    SourceProfileFindingSeverity,
+    SourceProfileFindingType,
+    SourceProfileObservationStatus,
+    SourceProfilePopulation,
+    SourceProfileRunStatus,
+    SourceProfileSamplingMethod,
+)
+from app.services.postgres_query_plan import PostgresFilter
 
 
 def _bounded_text(value: str, *, maximum: int, field_name: str) -> str:
@@ -209,6 +220,9 @@ class CatalogAssetListResponse(BaseModel):
 
 
 class CatalogColumnResponse(BaseModel):
+    # Stable only within the pinned snapshot; callers must not treat a column
+    # UUID as an authority outside the source/current-catalog boundary.
+    column_id: uuid.UUID | None = None
     column_name: str
     ordinal_position: int
     is_nullable: bool
@@ -233,6 +247,10 @@ class CatalogForeignKeyColumnMappingResponse(BaseModel):
 
 
 class CatalogForeignKeyResponse(BaseModel):
+    # Available only for an in-scope target. It lets an owner explicitly
+    # confirm one declared relationship without inferring an identifier from
+    # a rendered constraint name.
+    foreign_key_id: uuid.UUID | None = None
     constraint_name: str
     # An old in-scope target that is no longer selected is deliberately
     # rendered as TARGET_OUT_OF_SCOPE, with no target or mapping fields.
@@ -313,3 +331,425 @@ class CatalogStructuralDiffResponse(BaseModel):
     keys_changed: list[CatalogKeyChangeResponse]
     foreign_keys_changed: list[CatalogForeignKeyChangeResponse]
     comments_changed: list[CatalogCommentChangeResponse]
+
+
+# ── confirmed single-table metric definitions ──────────────────────────────
+
+_METRIC_OPERATIONS = Literal["count", "sum", "average", "minimum", "maximum"]
+
+
+def _metric_text(value: str, *, maximum: int, field_name: str) -> str:
+    if "\x00" in value or len(value) > maximum:
+        raise ValueError(f"{field_name} is invalid")
+    result = value.strip()
+    if not result:
+        raise ValueError(f"{field_name} is invalid")
+    return result
+
+
+class MetricAggregationRequest(BaseModel):
+    """One confirmed aggregate; count accepts COUNT(*) or COUNT(column)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation: _METRIC_OPERATIONS
+    column_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_column_shape(self) -> "MetricAggregationRequest":
+        if self.operation != "count" and self.column_id is None:
+            raise ValueError(f"{self.operation} requires a column_id")
+        return self
+
+
+class MetricDefinitionWriteRequest(BaseModel):
+    """Full explicit confirmation input for create or immutable new version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=128)
+    owner_confirmed: Literal[True]
+    description: str | None = Field(default=None, max_length=2_000)
+    snapshot_id: uuid.UUID
+    asset_id: uuid.UUID
+    aggregation: MetricAggregationRequest
+    fixed_filters: list[PostgresFilter] = Field(default_factory=list, max_length=50)
+    unit_label: str | None = Field(default=None, max_length=64)
+    default_date_column_id: uuid.UUID | None = None
+    default_time_zone: str | None = Field(default=None, max_length=128)
+
+    @field_validator("name")
+    @classmethod
+    def validate_metric_name(cls, value: str) -> str:
+        return _metric_text(value, maximum=128, field_name="metric name")
+
+    @field_validator("description")
+    @classmethod
+    def validate_metric_description(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _metric_text(value, maximum=2_000, field_name="metric description")
+
+    @field_validator("unit_label")
+    @classmethod
+    def validate_metric_unit(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _metric_text(value, maximum=64, field_name="metric unit label")
+
+    @field_validator("default_time_zone")
+    @classmethod
+    def validate_metric_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        result = _metric_text(value, maximum=128, field_name="metric timezone")
+        try:
+            ZoneInfo(result)
+        except (ValueError, ZoneInfoNotFoundError) as exc:
+            raise ValueError("metric timezone must be a valid IANA timezone") from exc
+        return result
+
+    @model_validator(mode="after")
+    def validate_metric_time_defaults(self) -> "MetricDefinitionWriteRequest":
+        if self.default_time_zone is not None and self.default_date_column_id is None:
+            raise ValueError("default_time_zone requires default_date_column_id")
+        return self
+
+
+class MetricDefinitionCreateRequest(MetricDefinitionWriteRequest):
+    pass
+
+
+class MetricDefinitionVersionCreateRequest(MetricDefinitionWriteRequest):
+    pass
+
+
+class MetricAggregationResponse(BaseModel):
+    operation: _METRIC_OPERATIONS
+    column_id: uuid.UUID | None
+    column_name: str | None = None
+
+
+class MetricDefinitionVersionResponse(BaseModel):
+    metric_id: uuid.UUID
+    version_number: int
+    name: str
+    description: str | None
+    snapshot_id: uuid.UUID
+    asset_id: uuid.UUID
+    aggregation: MetricAggregationResponse
+    fixed_filters: list[PostgresFilter]
+    unit_label: str | None
+    default_date_column_id: uuid.UUID | None
+    default_date_column_name: str | None = None
+    default_time_zone: str | None
+    confirmed_by_user_id: uuid.UUID
+    confirmed_at: datetime
+
+
+class MetricCurrentCatalogResponse(BaseModel):
+    """Live IDs after compatible catalog rematerialization.
+
+    These are intentionally separate from the immutable version's historical
+    snapshot/asset values.  They let a UI prepare a fresh confirmation against
+    the current selected catalog without treating a stale version UUID as a
+    current catalog reference.
+    """
+
+    snapshot_id: uuid.UUID
+    asset_id: uuid.UUID
+    schema_name: str
+    table_name: str
+    aggregation_column_id: uuid.UUID | None
+    aggregation_column_name: str | None = None
+    fixed_filters: list[PostgresFilter]
+    default_date_column_id: uuid.UUID | None
+    default_date_column_name: str | None = None
+    default_time_zone: str | None = None
+
+
+class MetricDefinitionResponse(MetricDefinitionVersionResponse):
+    """Current definition plus a public lifecycle result."""
+
+    state: Literal["valid", "needs_review", "retired"]
+    needs_review_reason: str | None = None
+    retired_at: datetime | None = None
+    current_catalog: MetricCurrentCatalogResponse | None = None
+
+
+class MetricDefinitionListResponse(BaseModel):
+    items: list[MetricDefinitionResponse]
+    count: int
+
+
+# ── confirmed same-source relationship definitions ────────────────────────
+
+_RELATIONSHIP_JOIN_TYPES = Literal["inner", "left"]
+_RELATIONSHIP_KEY_KINDS = Literal["primary_key", "unique"]
+
+
+class RelationshipDefinitionWriteRequest(BaseModel):
+    """Explicit confirmation of one eligible declared FK direction.
+
+    Table names, key columns, and ON expressions are intentionally absent:
+    the service derives all of them from the current owner-authorized catalog
+    record identified by ``foreign_key_id``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    owner_confirmed: Literal[True]
+    snapshot_id: uuid.UUID
+    foreign_key_id: uuid.UUID
+    join_type: _RELATIONSHIP_JOIN_TYPES
+
+
+class RelationshipDefinitionCreateRequest(RelationshipDefinitionWriteRequest):
+    pass
+
+
+class RelationshipDefinitionVersionCreateRequest(RelationshipDefinitionWriteRequest):
+    pass
+
+
+class RelationshipColumnPairResponse(BaseModel):
+    ordinal_position: int
+    base_column_id: uuid.UUID
+    base_column_name: str
+    lookup_column_id: uuid.UUID
+    lookup_column_name: str
+
+
+class RelationshipTargetKeyResponse(BaseModel):
+    key_id: uuid.UUID
+    constraint_name: str
+    key_kind: _RELATIONSHIP_KEY_KINDS
+    lookup_column_ids: list[uuid.UUID]
+    lookup_column_names: list[str]
+
+
+class RelationshipDefinitionVersionResponse(BaseModel):
+    relationship_id: uuid.UUID
+    version_number: int
+    snapshot_id: uuid.UUID
+    foreign_key_id: uuid.UUID
+    base_asset_id: uuid.UUID
+    base_schema_name: str | None = None
+    base_table_name: str | None = None
+    lookup_asset_id: uuid.UUID
+    lookup_schema_name: str | None = None
+    lookup_table_name: str | None = None
+    join_type: _RELATIONSHIP_JOIN_TYPES
+    column_pairs: list[RelationshipColumnPairResponse]
+    target_key_id: uuid.UUID
+    target_key_constraint_name: str | None = None
+    target_key_kind: _RELATIONSHIP_KEY_KINDS | None = None
+    confirmed_by_user_id: uuid.UUID
+    confirmed_at: datetime
+
+
+class RelationshipCurrentCatalogResponse(BaseModel):
+    """Fresh structural IDs for a compatible current catalog snapshot."""
+
+    snapshot_id: uuid.UUID
+    foreign_key_id: uuid.UUID
+    base_asset_id: uuid.UUID
+    base_schema_name: str
+    base_table_name: str
+    lookup_asset_id: uuid.UUID
+    lookup_schema_name: str
+    lookup_table_name: str
+    join_type: _RELATIONSHIP_JOIN_TYPES
+    column_pairs: list[RelationshipColumnPairResponse]
+    target_key: RelationshipTargetKeyResponse
+
+
+class RelationshipDefinitionResponse(RelationshipDefinitionVersionResponse):
+    state: Literal["valid", "needs_review", "retired"]
+    needs_review_reason: str | None = None
+    retired_at: datetime | None = None
+    current_catalog: RelationshipCurrentCatalogResponse | None = None
+
+
+class RelationshipDefinitionListResponse(BaseModel):
+    items: list[RelationshipDefinitionResponse]
+    count: int
+
+
+class EligibleDeclaredRelationshipResponse(BaseModel):
+    snapshot_id: uuid.UUID
+    foreign_key_id: uuid.UUID
+    constraint_name: str
+    base_asset_id: uuid.UUID
+    base_schema_name: str
+    base_table_name: str
+    lookup_asset_id: uuid.UUID
+    lookup_schema_name: str
+    lookup_table_name: str
+    column_pairs: list[RelationshipColumnPairResponse]
+    target_key: RelationshipTargetKeyResponse
+
+
+class EligibleDeclaredRelationshipListResponse(BaseModel):
+    items: list[EligibleDeclaredRelationshipResponse]
+    count: int
+
+
+# ── optional bounded PostgreSQL profiling (Stage 6A) ──────────────────────
+
+
+class SourceProfilingConfigurationRequest(BaseModel):
+    """Owner-only opt-in. Enabling does not enqueue or schedule a profile."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profiling_enabled: bool
+
+
+class SourceProfilingConfigurationResponse(BaseModel):
+    source_id: uuid.UUID
+    profiling_enabled: bool
+    profiling_generation: int
+    # Completed aggregate-only profiles are retained; every read rechecks the
+    # current source owner and selected-table scope.
+    historical_profiles_retained: Literal[True] = True
+
+
+class SourceProfileTableSelectionRequest(BaseModel):
+    """A narrower selection using only current catalog IDs, never names/SQL."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    asset_id: uuid.UUID
+    # Empty means record the table-level observed-row count only. This is
+    # useful for a safely bounded profile without treating all columns as an
+    # implicit opt-in.
+    column_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
+
+    @field_validator("column_ids")
+    @classmethod
+    def validate_profile_column_ids(cls, value: list[uuid.UUID]) -> list[uuid.UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("profile columns must be unique")
+        return value
+
+
+class SourceProfileRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tables: list[SourceProfileTableSelectionRequest] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_profile_assets(self) -> "SourceProfileRunRequest":
+        asset_ids = [item.asset_id for item in self.tables]
+        if len(asset_ids) != len(set(asset_ids)):
+            raise ValueError("profile tables must be unique")
+        return self
+
+
+class SourceProfileRunResponse(BaseModel):
+    """Safe public run facts; lease identity and credentials stay private."""
+
+    run_id: uuid.UUID
+    snapshot_id: uuid.UUID
+    state: SourceProfileRunStatus
+    requested_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+    attempt_count: int
+    next_attempt_at: datetime | None
+    failure_code: str | None
+    sampling_method: SourceProfileSamplingMethod
+    sample_percent: Decimal
+    sample_limit: int
+    sample_seed: int
+    max_operations: int
+    selected_asset_count: int
+    selected_column_count: int
+    population: SourceProfilePopulation = SourceProfilePopulation.OBSERVED_SAMPLE
+
+
+class SourceProfileRunListResponse(BaseModel):
+    source_id: uuid.UUID
+    page: int
+    page_size: int
+    total: int
+    items: list[SourceProfileRunResponse]
+
+
+class SourceProfileTableObservationResponse(BaseModel):
+    observation_id: uuid.UUID
+    asset_id: uuid.UUID
+    schema_name: str
+    table_name: str
+    collected_at: datetime
+    sampling_method: SourceProfileSamplingMethod
+    sample_percent: Decimal
+    sample_limit: int
+    sample_seed: int
+    population: SourceProfilePopulation
+    observed_row_count: int
+    status: SourceProfileObservationStatus
+    warning_codes: list[str]
+
+
+class SourceProfileColumnObservationResponse(BaseModel):
+    observation_id: uuid.UUID
+    table_observation_id: uuid.UUID
+    asset_id: uuid.UUID
+    column_id: uuid.UUID
+    column_name: str
+    formatted_native_type: str
+    scalar_kind: str
+    collected_at: datetime
+    population: SourceProfilePopulation
+    observed_row_count: int
+    null_count: int
+    non_null_count: int
+    null_rate: Decimal | None
+    distinct_count: int
+    numeric_count: int | None
+    numeric_sum: Decimal | None
+    numeric_minimum: Decimal | None
+    numeric_maximum: Decimal | None
+    numeric_mean: Decimal | None
+    status: SourceProfileObservationStatus
+    warning_codes: list[str]
+
+
+class SourceProfileObservationListResponse(BaseModel):
+    source_id: uuid.UUID
+    run_id: uuid.UUID
+    snapshot_id: uuid.UUID
+    page: int
+    page_size: int
+    total_tables: int
+    table_observations: list[SourceProfileTableObservationResponse]
+    column_observations: list[SourceProfileColumnObservationResponse]
+
+
+class SourceProfileFindingResponse(BaseModel):
+    finding_id: uuid.UUID
+    table_observation_id: uuid.UUID
+    column_observation_id: uuid.UUID
+    asset_id: uuid.UUID
+    schema_name: str
+    table_name: str
+    column_id: uuid.UUID
+    column_name: str
+    finding_type: SourceProfileFindingType
+    severity: SourceProfileFindingSeverity
+    title: str
+    description: str
+    limitations: str
+    evidence: dict
+    generated_at: datetime
+
+
+class SourceProfileFindingListResponse(BaseModel):
+    source_id: uuid.UUID
+    run_id: uuid.UUID
+    page: int
+    page_size: int
+    total: int
+    items: list[SourceProfileFindingResponse]

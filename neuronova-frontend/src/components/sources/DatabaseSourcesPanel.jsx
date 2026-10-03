@@ -695,7 +695,19 @@ export default function DatabaseSourcesPanel({ active }) {
             })}
           </div>
         )}
-        {metadataSource && <CatalogInspector key={metadataSource.source_id} source={metadataSource} onClose={() => setMetadataSourceId(null)} />}
+        {metadataSource && (
+          <CatalogInspector
+            key={metadataSource.source_id}
+            source={metadataSource}
+            onClose={() => setMetadataSourceId(null)}
+            onSourceUpdated={update => {
+              if (!update?.source_id || typeof update.profiling_enabled !== 'boolean') return
+              setSources(current => current.map(item => item.source_id === update.source_id
+                ? { ...item, profiling_enabled: update.profiling_enabled }
+                : item))
+            }}
+          />
+        )}
       </section>
 
       {deleteTarget && (

@@ -95,6 +95,168 @@ export const sourceApi = {
     )
   },
 
+  // Database profiling is intentionally source-scoped and JWT-only. The
+  // browser submits catalog UUIDs only; it never submits a relation name,
+  // SQL, sample size, or profiling operation.
+  configureProfiling(sourceId, body, options) {
+    return api.put(
+      `/sources/${encodeURIComponent(sourceId)}/profiling`,
+      body,
+      jwtSourceOptions(options),
+    )
+  },
+
+  requestProfileRun(sourceId, body, options) {
+    return api.post(
+      `/sources/${encodeURIComponent(sourceId)}/profile-runs`,
+      body,
+      jwtSourceOptions(options),
+    )
+  },
+
+  listProfileRuns(sourceId, { page = 1, pageSize = 20 } = {}, options) {
+    const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
+    return api.get(
+      `/sources/${encodeURIComponent(sourceId)}/profile-runs?${query.toString()}`,
+      jwtSourceOptions(options),
+    )
+  },
+
+  getProfileRun(sourceId, runId, options) {
+    return api.get(
+      `/sources/${encodeURIComponent(sourceId)}/profile-runs/${encodeURIComponent(runId)}`,
+      jwtSourceOptions(options),
+    )
+  },
+
+  cancelProfileRun(sourceId, runId, options) {
+    return api.post(
+      `/sources/${encodeURIComponent(sourceId)}/profile-runs/${encodeURIComponent(runId)}/cancel`,
+      {},
+      jwtSourceOptions(options),
+    )
+  },
+
+  getProfileObservations(sourceId, runId, { page = 1, pageSize = 100 } = {}, options) {
+    const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
+    return api.get(
+      `/sources/${encodeURIComponent(sourceId)}/profile-runs/${encodeURIComponent(runId)}/observations?${query.toString()}`,
+      jwtSourceOptions(options),
+    )
+  },
+
+  getProfileFindings(sourceId, runId, { page = 1, pageSize = 100 } = {}, options) {
+    const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
+    return api.get(
+      `/sources/${encodeURIComponent(sourceId)}/profile-runs/${encodeURIComponent(runId)}/findings?${query.toString()}`,
+      jwtSourceOptions(options),
+    )
+  },
+
+  // Confirmed metric definitions remain source-owned resources. IDs in these
+  // paths are opaque references, never authorization capabilities; every
+  // request still carries the current user's JWT.
+  listMetricDefinitions(sourceId, options) {
+    return api.get(
+      `/sources/${encodeURIComponent(sourceId)}/metrics`,
+      jwtSourceOptions(options),
+    )
+  },
+
+  createMetricDefinition(sourceId, body, options) {
+    return api.post(
+      `/sources/${encodeURIComponent(sourceId)}/metrics`,
+      body,
+      jwtSourceOptions(options),
+    )
+  },
+
+  getMetricDefinition(sourceId, metricId, options) {
+    return api.get(
+      `/sources/${encodeURIComponent(sourceId)}/metrics/${encodeURIComponent(metricId)}`,
+      jwtSourceOptions(options),
+    )
+  },
+
+  createMetricDefinitionVersion(sourceId, metricId, body, options) {
+    return api.post(
+      `/sources/${encodeURIComponent(sourceId)}/metrics/${encodeURIComponent(metricId)}/versions`,
+      body,
+      jwtSourceOptions(options),
+    )
+  },
+
+  listMetricDefinitionVersions(sourceId, metricId, options) {
+    return api.get(
+      `/sources/${encodeURIComponent(sourceId)}/metrics/${encodeURIComponent(metricId)}/versions`,
+      jwtSourceOptions(options),
+    )
+  },
+
+  retireMetricDefinition(sourceId, metricId, options) {
+    return api.post(
+      `/sources/${encodeURIComponent(sourceId)}/metrics/${encodeURIComponent(metricId)}/retire`,
+      {},
+      jwtSourceOptions(options),
+    )
+  },
+
+  // Approved relationships are source-owned catalog contracts, not a way to
+  // submit an arbitrary join. The backend derives the mapping from an
+  // in-scope declared foreign key and still applies the user's JWT on every
+  // request.
+  listRelationshipDefinitions(sourceId, options) {
+    return api.get(
+      `/sources/${encodeURIComponent(sourceId)}/relationships`,
+      jwtSourceOptions(options),
+    )
+  },
+
+  listEligibleDeclaredRelationships(sourceId, options) {
+    return api.get(
+      `/sources/${encodeURIComponent(sourceId)}/relationships/eligible`,
+      jwtSourceOptions(options),
+    )
+  },
+
+  createRelationshipDefinition(sourceId, body, options) {
+    return api.post(
+      `/sources/${encodeURIComponent(sourceId)}/relationships`,
+      body,
+      jwtSourceOptions(options),
+    )
+  },
+
+  getRelationshipDefinition(sourceId, relationshipId, options) {
+    return api.get(
+      `/sources/${encodeURIComponent(sourceId)}/relationships/${encodeURIComponent(relationshipId)}`,
+      jwtSourceOptions(options),
+    )
+  },
+
+  createRelationshipDefinitionVersion(sourceId, relationshipId, body, options) {
+    return api.post(
+      `/sources/${encodeURIComponent(sourceId)}/relationships/${encodeURIComponent(relationshipId)}/versions`,
+      body,
+      jwtSourceOptions(options),
+    )
+  },
+
+  listRelationshipDefinitionVersions(sourceId, relationshipId, options) {
+    return api.get(
+      `/sources/${encodeURIComponent(sourceId)}/relationships/${encodeURIComponent(relationshipId)}/versions`,
+      jwtSourceOptions(options),
+    )
+  },
+
+  retireRelationshipDefinition(sourceId, relationshipId, options) {
+    return api.post(
+      `/sources/${encodeURIComponent(sourceId)}/relationships/${encodeURIComponent(relationshipId)}/retire`,
+      {},
+      jwtSourceOptions(options),
+    )
+  },
+
   // Database conversations are explicitly source-bound and JWT-only. A
   // session id is not itself an authorization capability; generic session
   // reads are still authenticated and resolved by the server.

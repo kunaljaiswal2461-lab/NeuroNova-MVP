@@ -99,7 +99,8 @@ it('creates a JWT-only source session and renders precision-safe PostgreSQL valu
   ))
   expect(api.post.mock.calls.some(([path]) => path.startsWith('/datasets/'))).toBe(false)
 
-  fireEvent.change(screen.getByPlaceholderText('Ask a question about this database source…'), { target: { value: 'What is the total?' } })
+  const composer = screen.getByRole('textbox', { name: 'Database question' })
+  fireEvent.change(composer, { target: { value: 'What is the total?' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send database question' }))
 
   await screen.findByText('12345678901234567890.01')
@@ -158,4 +159,212 @@ it('aborts a source stream on explicit cancellation without replaying the messag
   expect(signalAtCancellation).toBe(false)
   expect(streamOptions.signal.aborted).toBe(true)
   expect(api.streamSSE).toHaveBeenCalledTimes(1)
+})
+
+it('continues source-bound session discovery after a stale saved session returns 404', async () => {
+  window.sessionStorage.setItem('neuronova:source-chat-session:v1:source-1', 'stale-session')
+  api.get.mockImplementation(path => {
+    if (path === `/sources/${sourceId}`) return Promise.resolve({ source_id: sourceId, display_name: 'Production analytics' })
+    if (path === `/sources/${sourceId}/catalog`) return Promise.resolve({ source_id: sourceId, current_snapshot_id: 'snapshot-1' })
+    if (path === '/chat/sessions/stale-session') return Promise.reject(Object.assign(new Error('session not found'), { status: 404 }))
+    if (path === `/sources/${sourceId}/chat/sessions?limit=50`) return Promise.resolve({ sessions: [], count: 0 })
+    throw new Error(`unexpected GET ${path}`)
+  })
+  renderDatabaseChat()
+
+  await screen.findByText('Production analytics')
+  await waitFor(() => expect(api.post).toHaveBeenCalledWith(
+    `/sources/${sourceId}/chat/sessions`,
+    { mode: 'AUTO' },
+    expect.objectContaining({ requireJwt: true, preserveErrorBody: true }),
+  ))
+  expect(window.sessionStorage.getItem('neuronova:source-chat-session:v1:source-1')).toBe(session.session_id)
+})
+
+it('does not duplicate a terminal clarification when its matching token arrives', async () => {
+  const clarification = 'Which date range should I use?'
+  async function* stream() {
+    yield { event: 'clarification', data: { message: clarification } }
+    yield { event: 'token', data: { text: clarification } }
+    yield { event: 'done', data: {} }
+  }
+  api.streamSSE.mockImplementation(() => stream())
+  renderDatabaseChat()
+
+  const composer = await screen.findByRole('textbox', { name: 'Database question' })
+  fireEvent.change(composer, { target: { value: 'Show revenue' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send database question' }))
+
+  const clarificationNode = await screen.findByText((content, node) => node?.tagName === 'P' && content === clarification)
+  expect(clarificationNode.textContent).toBe(clarification)
+  expect(screen.getByText('Clarification required')).toBeTruthy()
+})
+
+it('retains a delivered PostgreSQL result when the stream ends with an error event', async () => {
+  async function* stream() {
+    yield { event: 'postgres_result', data: { postgres_result: result } }
+    yield { event: 'error', data: { code: 'execution_cancelled', message: 'The query was cancelled.' } }
+  }
+  api.streamSSE.mockImplementation(() => stream())
+  renderDatabaseChat()
+
+  const composer = await screen.findByRole('textbox', { name: 'Database question' })
+  fireEvent.change(composer, { target: { value: 'What is the total?' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send database question' }))
+
+  await screen.findByText('12345678901234567890.01')
+  expect(await screen.findByText('The database result above was received, but the response ended before its final summary.')).toBeTruthy()
+  expect(screen.queryByText('The database query was cancelled.')).toBeNull()
+})
+
+it('retains a delivered PostgreSQL result when the stream aborts after delivery', async () => {
+  async function* stream() {
+    yield { event: 'postgres_result', data: { postgres_result: result } }
+    throw new DOMException('Request interrupted.', 'AbortError')
+  }
+  api.streamSSE.mockImplementation(() => stream())
+  renderDatabaseChat()
+
+  const composer = await screen.findByRole('textbox', { name: 'Database question' })
+  fireEvent.change(composer, { target: { value: 'What is the total?' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send database question' }))
+
+  await screen.findByText('12345678901234567890.01')
+  expect(await screen.findByText('The database result above was received before the response ended.')).toBeTruthy()
+  expect(screen.queryByText('The database query was cancelled.')).toBeNull()
+})
+
+it('does not offer cancellation after a PostgreSQL result has been delivered', async () => {
+  let releaseStream
+  const waitForDone = new Promise(resolve => { releaseStream = resolve })
+  async function* stream() {
+    yield { event: 'postgres_result', data: { postgres_result: result } }
+    await waitForDone
+    yield { event: 'done', data: {} }
+  }
+  api.streamSSE.mockImplementation(() => stream())
+  renderDatabaseChat()
+
+  const composer = await screen.findByRole('textbox', { name: 'Database question' })
+  fireEvent.change(composer, { target: { value: 'What is the total?' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send database question' }))
+
+  await screen.findByText('12345678901234567890.01')
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull())
+  releaseStream()
+})
+
+it('labels requested Top-N separately from safety truncation', async () => {
+  const topNResult = {
+    ...result,
+    complete: true,
+    safety_row_truncated: false,
+    explicit_top_n: true,
+    requested_limit: 5,
+  }
+  async function* stream() {
+    yield { event: 'postgres_result', data: { postgres_result: topNResult } }
+    yield { event: 'done', data: {} }
+  }
+  api.streamSSE.mockImplementation(() => stream())
+  renderDatabaseChat()
+
+  const composer = await screen.findByRole('textbox', { name: 'Database question' })
+  fireEvent.change(composer, { target: { value: 'Show the top five customers' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send database question' }))
+
+  expect(await screen.findByText(/This shows the requested top 5 results/)).toBeTruthy()
+  expect(screen.getByText(/This question limit is not a safety truncation/)).toBeTruthy()
+  expect(screen.queryByText(/This result is partial/)).toBeNull()
+})
+
+it('does not describe a zero-row safety-truncated result as no matches', async () => {
+  const byteTruncatedResult = {
+    ...result,
+    rows: [],
+    returned_row_count: 0,
+    complete: false,
+    safety_row_truncated: false,
+    safety_byte_truncated: true,
+  }
+  async function* stream() {
+    yield { event: 'postgres_result', data: { postgres_result: byteTruncatedResult } }
+    yield { event: 'done', data: {} }
+  }
+  api.streamSSE.mockImplementation(() => stream())
+  renderDatabaseChat()
+
+  const composer = await screen.findByRole('textbox', { name: 'Database question' })
+  fireEvent.change(composer, { target: { value: 'List results' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send database question' }))
+
+  expect(await screen.findByText(/No result rows could be safely displayed before a safety limit was reached/)).toBeTruthy()
+  expect(screen.queryByText('No rows matched this query.')).toBeNull()
+})
+
+it('renders safe confirmed metric provenance when the controlled result supplies it', async () => {
+  const metricResult = {
+    ...result,
+    metric_provenance: {
+      metric_id: 'metric-1',
+      version_number: 2,
+      name: 'Confirmed revenue',
+      aggregation: 'sum',
+      aggregation_column_name: 'amount',
+      unit_label: 'USD',
+      default_date_column_name: 'created_at',
+      default_time_zone: 'UTC',
+      fixed_filter_count: 2,
+    },
+  }
+  async function* stream() {
+    yield { event: 'postgres_result', data: { postgres_result: metricResult } }
+    yield { event: 'done', data: {} }
+  }
+  api.streamSSE.mockImplementation(() => stream())
+  renderDatabaseChat()
+
+  const composer = await screen.findByRole('textbox', { name: 'Database question' })
+  fireEvent.change(composer, { target: { value: 'What is confirmed revenue?' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send database question' }))
+
+  expect(await screen.findByLabelText('Confirmed metric provenance')).toBeTruthy()
+  expect(screen.getByText('Confirmed revenue · version 2')).toBeTruthy()
+  expect(screen.getByText('Sum · amount')).toBeTruthy()
+  expect(screen.getByText('Unit: USD · Time basis: created_at · Time zone: UTC')).toBeTruthy()
+  expect(screen.getByText('2 fixed filters applied')).toBeTruthy()
+})
+
+it('renders approved relationship semantics without exposing join conditions or values', async () => {
+  const joinedResult = {
+    ...result,
+    relationship_provenance: {
+      relationship_id: 'relationship-1',
+      relationship_version_id: 'relationship-version-3',
+      version_number: 3,
+      join_type: 'left',
+    },
+    calculation_semantics: {
+      join_type: 'left',
+      left_join_preserves_unmatched_base_rows: true,
+      lookup_filters_in_on: true,
+      lookup_filters_in_where: false,
+    },
+  }
+  async function* stream() {
+    yield { event: 'postgres_result', data: { postgres_result: joinedResult } }
+    yield { event: 'done', data: {} }
+  }
+  api.streamSSE.mockImplementation(() => stream())
+  renderDatabaseChat()
+
+  const composer = await screen.findByRole('textbox', { name: 'Database question' })
+  fireEvent.change(composer, { target: { value: 'Show revenue by customer region' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send database question' }))
+
+  expect(await screen.findByLabelText('Approved relationship provenance')).toBeTruthy()
+  expect(screen.getByText('Left join · version 3')).toBeTruthy()
+  expect(screen.getByText(/Lookup filters were applied in the join condition/)).toBeTruthy()
+  expect(screen.queryByText('relationship-1')).toBeNull()
+  expect(screen.queryByText('relationship-version-3')).toBeNull()
 })

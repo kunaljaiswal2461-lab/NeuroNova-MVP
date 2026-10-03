@@ -236,6 +236,15 @@ export function createApi({
     }, res => options.expectEmptyResponse ? null : res.json(), options)
   }
 
+  // Source-owned configuration is intentionally a replacement operation, not
+  // an implicitly retryable create. Keep it on the same authenticated JSON
+  // transport as POST while preserving the no-replay rule for writes.
+  function put(path, body = {}, options = {}) {
+    return request(path, {
+      method: 'PUT', headers: authHeaders(options), body: JSON.stringify(body),
+    }, res => options.expectEmptyResponse ? null : res.json(), options)
+  }
+
   function postForm(path, formData, options = {}) {
     const headers = authHeaders(options)
     delete headers['Content-Type']
@@ -299,5 +308,5 @@ export function createApi({
     }
   }
 
-  return { get, getBlob, post, postForm, delete: del, streamSSE }
+  return { get, getBlob, post, put, postForm, delete: del, streamSSE }
 }

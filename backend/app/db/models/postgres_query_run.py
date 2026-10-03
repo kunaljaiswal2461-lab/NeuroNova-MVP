@@ -53,6 +53,38 @@ class PostgresQueryRun(Base, TimestampMixin):
             name="fk_postgres_query_runs_source_snapshot_asset",
             ondelete="CASCADE",
         ),
+        # Retain a run if an exceptional version cleanup occurs: only the
+        # optional metric reference is nulled, never the non-null source ID.
+        ForeignKeyConstraint(
+            ["metric_definition_version_id"],
+            ["metric_definition_versions.id"],
+            name="fk_postgres_query_runs_metric_definition_version",
+            ondelete="SET NULL",
+        ),
+        # A metric version is source-local. The companion composite reference
+        # prevents a caller from attaching a valid UUID belonging to another
+        # owner's source; MATCH SIMPLE permits ordinary generic-query NULL.
+        # Leave this NO ACTION rather than SET NULL because source_id is
+        # deliberately non-null; the simple FK above clears the nullable leg.
+        ForeignKeyConstraint(
+            ["source_id", "metric_definition_version_id"],
+            ["metric_definition_versions.source_id", "metric_definition_versions.id"],
+            name="fk_postgres_query_runs_metric_definition_version_source",
+        ),
+        # Stage 5B applies the same source-local provenance rule to a
+        # relationship version.  A valid UUID from another source is never a
+        # valid execution reference for this run.
+        ForeignKeyConstraint(
+            ["relationship_definition_version_id"],
+            ["relationship_definition_versions.id"],
+            name="fk_postgres_query_runs_relationship_definition_version",
+            ondelete="SET NULL",
+        ),
+        ForeignKeyConstraint(
+            ["source_id", "relationship_definition_version_id"],
+            ["relationship_definition_versions.source_id", "relationship_definition_versions.id"],
+            name="fk_postgres_query_runs_relationship_definition_version_source",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -78,3 +110,18 @@ class PostgresQueryRun(Base, TimestampMixin):
     result_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     result_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     returned_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Optional Stage 5A semantic provenance. A plain structural query has no
+    # metric version; retiring a metric never deletes its historical version.
+    metric_definition_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=True,
+        index=True,
+    )
+    # Optional Stage 5B join provenance.  A generic/single-table plan leaves
+    # this unset; the database constraints above bind a populated value to
+    # this run's immutable source identity.
+    relationship_definition_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=True,
+        index=True,
+    )

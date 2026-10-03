@@ -9,3 +9,8 @@ PostgreSQL-source operators should also read
 and [docs/stage3b-catalog-discovery.md](docs/stage3b-catalog-discovery.md).
 The controlled natural-language database-chat boundary is documented in
 [docs/stage4c-postgres-natural-language-chat.md](docs/stage4c-postgres-natural-language-chat.md).
+The bounded approved-relationship extension is documented in
+[docs/stage5b-controlled-same-source-joins.md](docs/stage5b-controlled-same-source-joins.md).
+Optional, manually requested PostgreSQL profiling and its aggregate-only
+findings boundary are documented in
+[docs/stage6a-optional-database-profiling.md](docs/stage6a-optional-database-profiling.md).

@@ -49,6 +49,7 @@ class DataSource(Base, TimestampMixin):
     __tablename__ = "data_sources"
     __table_args__ = (
         CheckConstraint("catalog_sync_sequence >= 0", name="catalog_sync_sequence_nonnegative"),
+        CheckConstraint("profiling_generation >= 0", name="profiling_generation_nonnegative"),
         # The catalog run composite FK uses this exact key to prove that the
         # recorded requester was the source owner when the run was created.
         Index("uq_data_sources_id_owner_user_id", "id", "owner_user_id", unique=True),
@@ -96,6 +97,13 @@ class DataSource(Base, TimestampMixin):
     # Stored now for the later profiling stage; it cannot be enabled in 2B.
     profiling_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    # Changes to the owner-controlled profiling switch advance this fence.
+    # Queued or leased profile jobs may publish only if this generation still
+    # matches; disabling profiling therefore cannot leave a stale worker able
+    # to persist fresh observations.
+    profiling_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
     )
     # Monotonic source-local generation allocated under a database row lock by
     # the catalog service. It is separate from connection-test status.

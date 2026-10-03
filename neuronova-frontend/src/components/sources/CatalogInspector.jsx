@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { sourceApi, sourceErrorCode } from '../../api/sources'
+import MetricDefinitionsPanel from './MetricDefinitionsPanel'
+import RelationshipDefinitionsPanel from './RelationshipDefinitionsPanel'
+import SourceProfilingPanel from './SourceProfilingPanel'
 
 const PAGE_SIZE = 50
 const INITIAL_POLL_DELAY_MS = 1_500
@@ -271,7 +274,7 @@ function AssetDetails({ detail }) {
   )
 }
 
-export default function CatalogInspector({ source, onClose }) {
+export default function CatalogInspector({ source, onClose, onSourceUpdated }) {
   const sourceId = source.source_id
   const [catalog, setCatalog] = useState(null)
   const [syncRun, setSyncRun] = useState(null)
@@ -752,6 +755,32 @@ export default function CatalogInspector({ source, onClose }) {
             </section>
           )}
         </div>
+      )}
+      {!summaryLoading && catalog && (
+        <>
+          <MetricDefinitionsPanel
+            key={`metrics:${sourceId}:${snapshotId ?? 'none'}`}
+            sourceId={sourceId}
+            snapshotId={snapshotId}
+            selectedAssetDetail={assetDetail}
+          />
+          <RelationshipDefinitionsPanel
+            key={`relationships:${sourceId}:${snapshotId ?? 'none'}`}
+            sourceId={sourceId}
+            snapshotId={snapshotId}
+            selectedAssetDetail={assetDetail}
+          />
+          <SourceProfilingPanel
+            key={`profiling:${sourceId}:${snapshotId ?? 'none'}`}
+            source={source}
+            sourceId={sourceId}
+            snapshotId={snapshotId}
+            assets={assetResult?.items || []}
+            selectedAssetDetail={assetDetail}
+            scopeMatchesCurrentSelection={assetResult?.scope_matches_current_selection !== false}
+            onProfilingChanged={onSourceUpdated}
+          />
+        </>
       )}
     </section>
   )

@@ -12,7 +12,7 @@ import asyncio
 import json
 import math
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -30,7 +30,10 @@ from sqlalchemy.orm import selectinload
 from app.connectors.postgres_query_executor import (
     ActualPostgresOutputColumn,
     LiveColumnExpectation,
+    LiveForeignKeyExpectation,
+    LiveRelationExpectation,
     LiveQueryExpectation,
+    LiveUniqueKeyExpectation,
     PostgresExecutionAdapterError,
     PostgresExecutionCancellation,
     PostgresExecutionCancelledError,
@@ -43,17 +46,21 @@ from app.core.connector_credentials import (
     InvalidCredentialBundleError,
 )
 from app.db.models.catalog import CatalogColumn
+from app.db.models.metric_definition import MetricDefinitionVersion
 from app.db.models.postgres_query_run import PostgresQueryRun, PostgresQueryRunStatus
+from app.db.models.relationship_definition import RelationshipDefinitionVersion
 from app.db.models.source import DataSource, SourceStatus, SourceType
 from app.exceptions.custom_exceptions import NotFoundError
 from app.services.catalog_service import CatalogQueryContextError, resolve_postgres_query_catalog_context_for_owner
 from app.services.postgres_query_compiler import (
     CompiledPostgresQuery,
+    CompiledPostgresJoin,
     ExpectedPostgresOutputColumn,
     PostgresQueryPlanValidationError,
     validate_and_compile_postgres_query,
 )
 from app.services.postgres_query_plan import PostgresQueryPlan
+from app.services.relationship_service import RelationshipServiceError
 from app.services.source_service import (
     ConnectorActivationError,
     ConnectorDisabledError,
@@ -75,6 +82,8 @@ _SAFE_FAILURE_CODES = frozenset(
         "execution_recording_failed",
         "execution_timeout",
         "invalid_query_plan",
+        "metric_definition_changed",
+        "relationship_definition_changed",
         "query_not_authorized",
         "restricted_role_required",
         "result_shape_mismatch",
@@ -132,6 +141,38 @@ class PostgresQueryOrdering(BaseModel):
     direction: Literal["asc", "desc"]
 
 
+class PostgresMetricProvenance(BaseModel):
+    """Safe semantic facts attached to a result from a confirmed metric.
+
+    Fixed-filter values and the definition description intentionally stay out
+    of this transport/audit payload. The owner-only definition API is the
+    place to inspect the complete confirmed contract.
+    """
+
+    model_config = _MODEL_CONFIG
+
+    metric_id: UUID
+    version_number: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=128)
+    aggregation: Literal["count_all", "count_column", "sum", "average", "minimum", "maximum"]
+    aggregation_column_name: str | None = None
+    unit_label: str | None = Field(default=None, max_length=64)
+    default_date_column_name: str | None = None
+    default_time_zone: str | None = Field(default=None, max_length=128)
+    fixed_filter_count: int = Field(ge=0)
+
+
+class PostgresRelationshipProvenance(BaseModel):
+    """Safe facts for one compiler-authorized same-source join."""
+
+    model_config = _MODEL_CONFIG
+
+    relationship_id: UUID
+    relationship_version_id: UUID
+    version_number: int = Field(ge=1)
+    join_type: Literal["inner", "left"]
+
+
 class PostgresQueryExecutionResult(BaseModel):
     """A typed, bounded result for a successful or failed Stage 4B run."""
 
@@ -156,6 +197,8 @@ class PostgresQueryExecutionResult(BaseModel):
     explicit_top_n: bool = False
     ordering: tuple[PostgresQueryOrdering, ...] = ()
     calculation_semantics: dict[str, Any] = Field(default_factory=dict)
+    metric_provenance: PostgresMetricProvenance | None = None
+    relationship_provenance: PostgresRelationshipProvenance | None = None
     session_time_zone: str = "UTC"
     warnings: tuple[str, ...] = ()
     failure_code: str | None = None
@@ -181,11 +224,49 @@ class PostgresQueryExecutionResult(BaseModel):
             "safety_row_truncated": self.safety_row_truncated,
             "safety_byte_truncated": self.safety_byte_truncated,
             "failure_code": self.failure_code,
+            "metric_id": (
+                str(self.metric_provenance.metric_id)
+                if self.metric_provenance is not None
+                else None
+            ),
+            "metric_version_number": (
+                self.metric_provenance.version_number
+                if self.metric_provenance is not None
+                else None
+            ),
+            "metric_name": self.metric_provenance.name if self.metric_provenance is not None else None,
+            "relationship_id": (
+                str(self.relationship_provenance.relationship_id)
+                if self.relationship_provenance is not None
+                else None
+            ),
+            "relationship_version_number": (
+                self.relationship_provenance.version_number
+                if self.relationship_provenance is not None
+                else None
+            ),
+            "relationship_version_id": (
+                str(self.relationship_provenance.relationship_version_id)
+                if self.relationship_provenance is not None
+                else None
+            ),
+            "join_type": (
+                self.relationship_provenance.join_type
+                if self.relationship_provenance is not None
+                else None
+            ),
         }
 
 
 class _SessionFactory(Protocol):
     def __call__(self) -> Any: ...
+
+
+# A metric pin belongs to the Stage 5A ownership/catalog service. Keep the
+# gateway decoupled from that service to avoid a service import cycle: the
+# conversational caller supplies a narrowly scoped fresh-session closure.
+MetricExecutionPinVerifier = Callable[[], Awaitable[bool]]
+RelationshipExecutionPinVerifier = Callable[[], Awaitable[bool]]
 
 
 class _ExecutionBoundaryError(Exception):
@@ -315,13 +396,57 @@ def _build_adapter(settings: Settings) -> PostgresQueryExecutionAdapter:
     return PostgresQueryExecutionAdapter(settings=settings)
 
 
-def _referenced_column_ids(plan: PostgresQueryPlan) -> tuple[UUID, ...]:
-    references: list[UUID] = []
-    references.extend(item.column_id for item in plan.projections)
-    references.extend(item.column_id for item in plan.filters)
-    references.extend(item.column_id for item in plan.group_by)
-    references.extend(item.column_id for item in plan.aggregations if item.column_id is not None)
-    return tuple(dict.fromkeys(references))
+def _referenced_column_ids_by_asset(
+    plan: PostgresQueryPlan,
+    *,
+    compiled_join: CompiledPostgresJoin | None,
+) -> dict[UUID, tuple[UUID, ...]]:
+    """Re-resolve every selected and equality-key column before remote I/O."""
+
+    references: dict[UUID, list[UUID]] = {plan.asset_id: []}
+    if compiled_join is not None:
+        references[compiled_join.lookup_asset_id] = []
+
+    def add(asset_id: UUID, column_id: UUID) -> None:
+        if asset_id not in references:
+            raise _ExecutionBoundaryError("catalog_unavailable")
+        references[asset_id].append(column_id)
+
+    def reference_asset_id(item: Any) -> UUID:
+        asset_id = getattr(item, "asset_id", None)
+        return plan.asset_id if asset_id is None else asset_id
+
+    for item in plan.projections:
+        add(reference_asset_id(item), item.column_id)
+    for item in plan.filters:
+        add(reference_asset_id(item), item.column_id)
+    for item in plan.group_by:
+        add(reference_asset_id(item), item.column_id)
+    for item in plan.aggregations:
+        if item.column_id is not None:
+            add(reference_asset_id(item), item.column_id)
+    if compiled_join is not None:
+        for base_column_id, lookup_column_id in compiled_join.column_pairs:
+            add(plan.asset_id, base_column_id)
+            add(compiled_join.lookup_asset_id, lookup_column_id)
+    return {
+        asset_id: tuple(dict.fromkeys(column_ids))
+        for asset_id, column_ids in references.items()
+    }
+
+
+def _live_columns(columns: dict[UUID, CatalogColumn]) -> tuple[LiveColumnExpectation, ...]:
+    return tuple(
+        LiveColumnExpectation(
+            name=column.column_name,
+            native_type_schema=column.native_type_schema,
+            native_type_name=column.native_type_name,
+            native_type_oid=column.native_type_oid,
+            native_type_modifier=column.native_type_modifier,
+            is_nullable=column.is_nullable,
+        )
+        for column in sorted(columns.values(), key=lambda value: (value.ordinal_position, value.id))
+    )
 
 
 def _runtime_expectation(
@@ -329,24 +454,64 @@ def _runtime_expectation(
     compiled: CompiledPostgresQuery,
     asset: Any,
     columns: dict[UUID, CatalogColumn],
+    lookup_asset: Any | None = None,
+    lookup_columns: dict[UUID, CatalogColumn] | None = None,
 ) -> LiveQueryExpectation:
     if asset.id != compiled.asset_id:
+        raise _ExecutionBoundaryError("catalog_unavailable")
+    lookup_relation: LiveRelationExpectation | None = None
+    foreign_key: LiveForeignKeyExpectation | None = None
+    if compiled.join is not None:
+        if (
+            lookup_asset is None
+            or lookup_columns is None
+            or lookup_asset.id != compiled.join.lookup_asset_id
+            or lookup_asset.schema_name != compiled.join.lookup_schema_name
+            or lookup_asset.table_name != compiled.join.lookup_table_name
+        ):
+            raise _ExecutionBoundaryError("catalog_unavailable")
+        try:
+            base_column_names = tuple(
+                columns[base_column_id].column_name
+                for base_column_id, _lookup_column_id in compiled.join.column_pairs
+            )
+            lookup_column_names = tuple(
+                lookup_columns[lookup_column_id].column_name
+                for _base_column_id, lookup_column_id in compiled.join.column_pairs
+            )
+        except KeyError as exc:
+            raise _ExecutionBoundaryError("catalog_unavailable") from exc
+        if (
+            not base_column_names
+            or base_column_names != compiled.join.foreign_key_base_column_names
+            or lookup_column_names != compiled.join.foreign_key_lookup_column_names
+            or not compiled.join.foreign_key_constraint_name
+        ):
+            raise _ExecutionBoundaryError("catalog_unavailable")
+        lookup_relation = LiveRelationExpectation(
+            schema_name=lookup_asset.schema_name,
+            table_name=lookup_asset.table_name,
+            columns=_live_columns(lookup_columns),
+            unique_key=LiveUniqueKeyExpectation(
+                constraint_name=compiled.join.target_key_constraint_name,
+                key_kind=compiled.join.target_key_kind,
+                column_names=compiled.join.target_key_column_names,
+            ),
+        )
+        foreign_key = LiveForeignKeyExpectation(
+            constraint_name=compiled.join.foreign_key_constraint_name,
+            base_column_names=base_column_names,
+            lookup_column_names=lookup_column_names,
+        )
+    elif lookup_asset is not None or lookup_columns is not None:
         raise _ExecutionBoundaryError("catalog_unavailable")
     return LiveQueryExpectation(
         schema_name=asset.schema_name,
         table_name=asset.table_name,
-        columns=tuple(
-            LiveColumnExpectation(
-                name=column.column_name,
-                native_type_schema=column.native_type_schema,
-                native_type_name=column.native_type_name,
-                native_type_oid=column.native_type_oid,
-                native_type_modifier=column.native_type_modifier,
-                is_nullable=column.is_nullable,
-            )
-            for column in sorted(columns.values(), key=lambda value: (value.ordinal_position, value.id))
-        ),
+        columns=_live_columns(columns),
         expected_output_columns=compiled.expected_output_columns,
+        lookup_relation=lookup_relation,
+        foreign_key=foreign_key,
     )
 
 
@@ -371,18 +536,41 @@ async def _authorize_and_resolve(
                 plan=plan,
                 settings=settings,
             )
+            references_by_asset = _referenced_column_ids_by_asset(
+                plan,
+                compiled_join=compiled.join,
+            )
             context = await resolve_postgres_query_catalog_context_for_owner(
                 session,
                 owner_user_id=owner_user_id,
                 source_id=source_id,
                 snapshot_id=snapshot_id,
                 asset_id=plan.asset_id,
-                column_ids=_referenced_column_ids(plan),
+                column_ids=references_by_asset[plan.asset_id],
             )
+            lookup_context = None
+            if compiled.join is not None:
+                lookup_context = await resolve_postgres_query_catalog_context_for_owner(
+                    session,
+                    owner_user_id=owner_user_id,
+                    source_id=source_id,
+                    snapshot_id=snapshot_id,
+                    asset_id=compiled.join.lookup_asset_id,
+                    column_ids=references_by_asset[compiled.join.lookup_asset_id],
+                )
+                if (
+                    lookup_context.source.id != context.source.id
+                    or lookup_context.snapshot.id != context.snapshot.id
+                    or lookup_context.current_scope_fingerprint
+                    != context.current_scope_fingerprint
+                ):
+                    raise _ExecutionBoundaryError("catalog_unavailable")
             expectation = _runtime_expectation(
                 compiled=compiled,
                 asset=context.asset,
                 columns=dict(context.columns),
+                lookup_asset=lookup_context.asset if lookup_context is not None else None,
+                lookup_columns=(dict(lookup_context.columns) if lookup_context is not None else None),
             )
         finally:
             # SQLAlchemy's async session begins a transaction for the read
@@ -416,13 +604,19 @@ async def _load_execution_source(
                     .options(selectinload(DataSource.credential), selectinload(DataSource.table_scopes))
                 )
             ).scalar_one_or_none()
+            required_relations = {
+                (relation.schema_name, relation.table_name)
+                for relation in expectation.relation_expectations()
+            }
+            permitted_relations = {
+                (scope.schema_name, scope.table_name) for scope in source.table_scopes
+            } if source is not None else set()
             if (
                 source is None
                 or source.source_type is not SourceType.POSTGRESQL
                 or source.status is not SourceStatus.TESTED
                 or source.credential is None
-                or (expectation.schema_name, expectation.table_name)
-                not in {(scope.schema_name, scope.table_name) for scope in source.table_scopes}
+                or not required_relations.issubset(permitted_relations)
             ):
                 raise _ExecutionBoundaryError("source_unavailable")
             try:
@@ -480,13 +674,19 @@ async def _verify_delivery_source_access(
                     .options(selectinload(DataSource.credential), selectinload(DataSource.table_scopes))
                 )
             ).scalar_one_or_none()
+            required_relations = {
+                (relation.schema_name, relation.table_name)
+                for relation in expectation.relation_expectations()
+            }
+            permitted_relations = {
+                (scope.schema_name, scope.table_name) for scope in source.table_scopes
+            } if source is not None else set()
             if (
                 source is None
                 or source.source_type is not SourceType.POSTGRESQL
                 or source.status is not SourceStatus.TESTED
                 or source.credential is None
-                or (expectation.schema_name, expectation.table_name)
-                not in {(scope.schema_name, scope.table_name) for scope in source.table_scopes}
+                or not required_relations.issubset(permitted_relations)
             ):
                 raise _ExecutionBoundaryError("access_revoked")
         except _ExecutionBoundaryError:
@@ -504,6 +704,8 @@ async def _create_run(
     owner_user_id: UUID,
     compiled: CompiledPostgresQuery,
     started_at: datetime,
+    metric_definition_version_id: UUID | None = None,
+    relationship_definition_version_id: UUID | None = None,
 ) -> None:
     async with session_factory() as session:
         try:
@@ -521,6 +723,8 @@ async def _create_run(
                     result_truncated=False,
                     result_complete=False,
                     returned_row_count=0,
+                    metric_definition_version_id=metric_definition_version_id,
+                    relationship_definition_version_id=relationship_definition_version_id,
                 )
             )
             await session.commit()
@@ -571,6 +775,112 @@ async def _rollback_quietly(session: AsyncSession) -> None:
         pass
 
 
+async def _verify_metric_execution_pin(verifier: MetricExecutionPinVerifier) -> None:
+    """Require a fresh trusted Stage 5A pin without importing metric service.
+
+    The callback is deliberately evaluated at the two gateway boundaries that
+    matter: before a run can persist a semantic version UUID, and immediately
+    before any remote PostgreSQL work.  A failed, malformed, or unavailable
+    verifier is always equivalent to a changed metric.
+    """
+
+    try:
+        if not await verifier():
+            raise _ExecutionBoundaryError("metric_definition_changed")
+    except _ExecutionBoundaryError:
+        raise
+    except Exception:
+        raise _ExecutionBoundaryError("metric_definition_changed") from None
+
+
+async def _verify_relationship_execution_pin(verifier: RelationshipExecutionPinVerifier) -> None:
+    """Require a fresh relationship lifecycle/catalog pin at the gateway.
+
+    The callback is intentionally independent from the compiler's resolver:
+    both must still agree immediately before remote work. A timeout, service
+    error, malformed callback, retirement, or catalog incompatibility fails
+    closed and never becomes a permissive fallback.
+    """
+
+    try:
+        if not await verifier():
+            raise _ExecutionBoundaryError("relationship_definition_changed")
+    except _ExecutionBoundaryError:
+        raise
+    except Exception:
+        raise _ExecutionBoundaryError("relationship_definition_changed") from None
+
+
+async def _verify_metric_version_source(
+    session_factory: _SessionFactory,
+    *,
+    source_id: UUID,
+    metric_definition_version_id: UUID,
+) -> None:
+    """Check the optional provenance UUID belongs to this source before write.
+
+    The caller-supplied verifier establishes lifecycle/current-version intent;
+    this independent lookup prevents a buggy internal caller from persisting a
+    real metric version UUID from a different source even if its callback is
+    incorrectly permissive.  The database composite FK remains the durable
+    race-safe backstop.
+    """
+
+    async with session_factory() as session:
+        try:
+            exists = (
+                await session.execute(
+                    select(MetricDefinitionVersion.id).where(
+                        MetricDefinitionVersion.id == metric_definition_version_id,
+                        MetricDefinitionVersion.source_id == source_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if exists is None:
+                raise _ExecutionBoundaryError("metric_definition_changed")
+        except _ExecutionBoundaryError:
+            raise
+        except SQLAlchemyError:
+            raise _ExecutionBoundaryError("metric_definition_changed") from None
+        finally:
+            await _rollback_quietly(session)
+
+
+async def _verify_relationship_version_source(
+    session_factory: _SessionFactory,
+    *,
+    source_id: UUID,
+    relationship_definition_version_id: UUID,
+) -> None:
+    """Require the persisted relationship version to belong to this source.
+
+    The trusted callback proves that the relationship remains current and
+    usable. This independent, source-scoped query prevents an accidentally
+    permissive internal callback from attaching a real version UUID from
+    another source to execution provenance. The database composite foreign
+    key is the durable race-safe backstop once the run is inserted.
+    """
+
+    async with session_factory() as session:
+        try:
+            exists = (
+                await session.execute(
+                    select(RelationshipDefinitionVersion.id).where(
+                        RelationshipDefinitionVersion.id == relationship_definition_version_id,
+                        RelationshipDefinitionVersion.source_id == source_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if exists is None:
+                raise _ExecutionBoundaryError("relationship_definition_changed")
+        except _ExecutionBoundaryError:
+            raise
+        except SQLAlchemyError:
+            raise _ExecutionBoundaryError("relationship_definition_changed") from None
+        finally:
+            await _rollback_quietly(session)
+
+
 def _semantics(compiled: CompiledPostgresQuery) -> dict[str, Any]:
     return {
         "filters_apply_before_aggregation": compiled.semantics.filters_apply_before_aggregation,
@@ -579,7 +889,26 @@ def _semantics(compiled: CompiledPostgresQuery) -> dict[str, Any]:
         "count_column_excludes_nulls": compiled.semantics.count_column_excludes_nulls,
         "result_order": compiled.semantics.result_order,
         "timestamp_bucket_notes": list(compiled.semantics.timestamp_bucket_notes),
+        "join_type": compiled.semantics.join_type,
+        "left_join_preserves_unmatched_base_rows": (
+            compiled.semantics.left_join_preserves_unmatched_base_rows
+        ),
+        "lookup_filters_in_on": compiled.semantics.lookup_filters_in_on,
+        "lookup_filters_in_where": compiled.semantics.lookup_filters_in_where,
     }
+
+
+def _relationship_provenance(
+    compiled: CompiledPostgresQuery,
+) -> PostgresRelationshipProvenance | None:
+    if compiled.join is None:
+        return None
+    return PostgresRelationshipProvenance(
+        relationship_id=compiled.join.relationship_id,
+        relationship_version_id=compiled.join.relationship_version_id,
+        version_number=compiled.join.version_number,
+        join_type=compiled.join.join_type,
+    )
 
 
 def _result_columns(
@@ -712,6 +1041,13 @@ def _failure_code(exc: BaseException, *, delivery_phase: bool = False) -> str:
         return "result_shape_mismatch"
     if isinstance(exc, (PostgresQueryPlanValidationError, TypeError, ValueError)):
         return "query_not_authorized" if delivery_phase else "invalid_query_plan"
+    if isinstance(exc, RelationshipServiceError):
+        # A confirmed relationship may be retired, become incompatible with
+        # the current catalog, or otherwise cease to be usable between
+        # planning and either gateway boundary. Do not misreport that as a
+        # generic transport failure; at delivery it is still an access change
+        # and rows remain undisclosable.
+        return "access_revoked" if delivery_phase else "relationship_definition_changed"
     if isinstance(exc, (CatalogQueryContextError, NotFoundError)):
         return "access_revoked" if delivery_phase else "query_not_authorized"
     return "execution_failed"
@@ -745,6 +1081,9 @@ def _failure_result(
         explicit_top_n=compiled.is_explicit_top_n if compiled is not None else False,
         ordering=_ordering(compiled) if compiled is not None else (),
         calculation_semantics=_semantics(compiled) if compiled is not None else {},
+        relationship_provenance=(
+            _relationship_provenance(compiled) if compiled is not None else None
+        ),
         warnings=warnings,
         failure_code=safe_code,
         started_at=started_at,
@@ -791,6 +1130,7 @@ def _success_result(
         explicit_top_n=compiled.is_explicit_top_n,
         ordering=_ordering(compiled),
         calculation_semantics=_semantics(compiled),
+        relationship_provenance=_relationship_provenance(compiled),
         warnings=tuple(warnings),
         started_at=started_at,
         completed_at=datetime.now(timezone.utc),
@@ -835,6 +1175,10 @@ async def execute_postgres_query(
     adapter_factory: AdapterFactory | None = None,
     cancellation: PostgresExecutionCancellation | None = None,
     limiter: PostgresExecutionLimiter | None = None,
+    metric_definition_version_id: UUID | None = None,
+    metric_pin_verifier: MetricExecutionPinVerifier | None = None,
+    relationship_definition_version_id: UUID | None = None,
+    relationship_pin_verifier: RelationshipExecutionPinVerifier | None = None,
 ) -> PostgresQueryExecutionResult:
     """Authorize, execute, and return one bounded typed PostgreSQL result.
 
@@ -850,6 +1194,30 @@ async def execute_postgres_query(
     compiled: CompiledPostgresQuery | None = None
     run_created = False
 
+    # A semantic version UUID is only trustworthy when a caller carries a
+    # fresh owner/catalog pin for that exact definition.  Reject either half
+    # of the pair before creating a durable run, so generic callers retain
+    # their existing behavior while no unverified UUID can become provenance.
+    if (metric_definition_version_id is None) != (metric_pin_verifier is None):
+        return _failure_result(
+            execution_id=execution_id,
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            compiled=None,
+            started_at=started_at,
+            started_monotonic=started_monotonic,
+            code="metric_definition_changed",
+        )
+    if metric_definition_version_id is not None and not isinstance(metric_definition_version_id, UUID):
+        return _failure_result(
+            execution_id=execution_id,
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            compiled=None,
+            started_at=started_at,
+            started_monotonic=started_monotonic,
+            code="metric_definition_changed",
+        )
     if not isinstance(plan, PostgresQueryPlan):
         return _failure_result(
             execution_id=execution_id,
@@ -859,6 +1227,42 @@ async def execute_postgres_query(
             started_at=started_at,
             started_monotonic=started_monotonic,
             code="invalid_query_plan",
+        )
+    # A two-table statement must carry the exact immutable relationship
+    # version it claims to use. Keep generic single-table callers unchanged,
+    # but reject half-pairs, non-UUIDs, or a semantic pin without an approved
+    # typed join before any app-db provenance can be created.
+    if (relationship_definition_version_id is None) != (relationship_pin_verifier is None):
+        return _failure_result(
+            execution_id=execution_id,
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            compiled=None,
+            started_at=started_at,
+            started_monotonic=started_monotonic,
+            code="relationship_definition_changed",
+        )
+    if relationship_definition_version_id is not None and not isinstance(
+        relationship_definition_version_id, UUID
+    ):
+        return _failure_result(
+            execution_id=execution_id,
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            compiled=None,
+            started_at=started_at,
+            started_monotonic=started_monotonic,
+            code="relationship_definition_changed",
+        )
+    if (plan.join is not None) != (relationship_definition_version_id is not None):
+        return _failure_result(
+            execution_id=execution_id,
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            compiled=None,
+            started_at=started_at,
+            started_monotonic=started_monotonic,
+            code="relationship_definition_changed",
         )
 
     try:
@@ -873,12 +1277,37 @@ async def execute_postgres_query(
             plan=plan,
             settings=settings,
         )
+        if relationship_pin_verifier is not None:
+            assert relationship_definition_version_id is not None
+            if (
+                compiled.join is None
+                or compiled.join.relationship_version_id != relationship_definition_version_id
+            ):
+                raise _ExecutionBoundaryError("relationship_definition_changed")
+            await _verify_relationship_execution_pin(relationship_pin_verifier)
+            await _verify_relationship_version_source(
+                session_factory,
+                source_id=source_id,
+                relationship_definition_version_id=relationship_definition_version_id,
+            )
+        if metric_pin_verifier is not None:
+            # Verify before `_create_run`: a caller cannot attach an arbitrary
+            # or foreign version UUID to durable query provenance.
+            await _verify_metric_execution_pin(metric_pin_verifier)
+            assert metric_definition_version_id is not None
+            await _verify_metric_version_source(
+                session_factory,
+                source_id=source_id,
+                metric_definition_version_id=metric_definition_version_id,
+            )
         await _create_run(
             session_factory,
             execution_id=execution_id,
             owner_user_id=owner_user_id,
             compiled=compiled,
             started_at=started_at,
+            metric_definition_version_id=metric_definition_version_id,
+            relationship_definition_version_id=relationship_definition_version_id,
         )
         run_created = True
         effective_limiter = limiter or _limiter_for(settings)
@@ -900,6 +1329,21 @@ async def execute_postgres_query(
                 expectation=expectation,
                 settings=settings,
             )
+            if metric_pin_verifier is not None:
+                # This is intentionally the last authorization action before
+                # the client gateway receives a remote execution request.
+                await _verify_metric_execution_pin(metric_pin_verifier)
+            if relationship_pin_verifier is not None:
+                # Compile/authorize above also resolves the exact current
+                # version and both scoped assets. This last callback closes
+                # the lifecycle race immediately before gateway I/O.
+                if (
+                    compiled.join is None
+                    or compiled.join.relationship_version_id
+                    != relationship_definition_version_id
+                ):
+                    raise _ExecutionBoundaryError("relationship_definition_changed")
+                await _verify_relationship_execution_pin(relationship_pin_verifier)
             # The compiled statement already retains the caller's requested
             # LIMIT.  Keep the independent execution safety cap separate in
             # both enforcement and result metadata, so a requested top-N is
@@ -943,6 +1387,36 @@ async def execute_postgres_query(
                 expectation=delivery_expectation,
                 settings=settings,
             )
+            if metric_pin_verifier is not None:
+                # Keep a completed remote operation from becoming a semantic
+                # result after its confirmed metric has changed. The chat
+                # layer performs the same guard before persistence/SSE; this
+                # gateway check protects all internal callers.
+                await _verify_metric_execution_pin(metric_pin_verifier)
+                assert metric_definition_version_id is not None
+                await _verify_metric_version_source(
+                    session_factory,
+                    source_id=source_id,
+                    metric_definition_version_id=metric_definition_version_id,
+                )
+            if relationship_pin_verifier is not None:
+                # A successful remote read is never itself permission to
+                # disclose rows. Resolve the exact immutable relationship
+                # again through the caller's fresh-session pin callback and
+                # independently retain its source-local provenance boundary.
+                if (
+                    delivered_compiled.join is None
+                    or delivered_compiled.join.relationship_version_id
+                    != relationship_definition_version_id
+                ):
+                    raise _ExecutionBoundaryError("relationship_definition_changed")
+                await _verify_relationship_execution_pin(relationship_pin_verifier)
+                assert relationship_definition_version_id is not None
+                await _verify_relationship_version_source(
+                    session_factory,
+                    source_id=source_id,
+                    relationship_definition_version_id=relationship_definition_version_id,
+                )
             if cancellation is not None and cancellation.cancelled:
                 raise PostgresExecutionCancelledError()
             if delivered_compiled.fingerprint != compiled.fingerprint:
@@ -1010,6 +1484,10 @@ async def execute_postgres_query(
 __all__ = [
     "PostgresExecutionCancellation",
     "PostgresExecutionLimiter",
+    "MetricExecutionPinVerifier",
+    "RelationshipExecutionPinVerifier",
+    "PostgresMetricProvenance",
+    "PostgresRelationshipProvenance",
     "PostgresQueryExecutionResult",
     "PostgresQueryOrdering",
     "PostgresQueryResultColumn",

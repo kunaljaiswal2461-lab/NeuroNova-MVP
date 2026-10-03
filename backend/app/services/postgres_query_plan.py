@@ -255,12 +255,36 @@ AggregationOperation = Literal[
 TimeBucket = Literal["hour", "day", "week", "month", "quarter", "year"]
 SortDirection = Literal["asc", "desc"]
 SortOutputKind = Literal["projection", "grouping", "aggregation"]
+JoinType = Literal["inner", "left"]
+JoinFilterPlacement = Literal["where", "join_on"]
+
+
+class PostgresApprovedJoin(BaseModel):
+    """One owner-confirmed, directed base-to-lookup relationship.
+
+    This is deliberately an ID-only reference.  The compiler resolves both
+    IDs through the owner/current-catalog relationship service before it can
+    use a table or column name.  ``lookup_asset_id`` is redundant with the
+    pinned definition version on purpose: it makes every non-base column
+    reference structurally qualified while the resolver detects a forged or
+    stale pairing.
+    """
+
+    model_config = _MODEL_CONFIG
+
+    relationship_id: UUID
+    relationship_version_id: UUID
+    lookup_asset_id: UUID
+    join_type: JoinType
 
 
 class PostgresProjection(BaseModel):
     model_config = _MODEL_CONFIG
 
     column_id: UUID
+    # Single-table plans retain the Stage 4A shape.  A join plan must provide
+    # this explicit asset qualifier for every user-facing column reference.
+    asset_id: UUID | None = None
 
 
 class PostgresFilter(BaseModel):
@@ -269,7 +293,12 @@ class PostgresFilter(BaseModel):
     model_config = _MODEL_CONFIG
 
     column_id: UUID
+    asset_id: UUID | None = None
     operator: FilterOperator
+    # A lookup-side predicate on a LEFT JOIN must explicitly state whether it
+    # belongs in ON (preserve unmatched base rows) or WHERE (discard them).
+    # It is unavailable for ordinary one-table plans.
+    placement: JoinFilterPlacement | None = None
     value: TypedPostgresValue | None = None
     values: tuple[TypedPostgresValue, ...] | None = Field(default=None, max_length=1000)
 
@@ -293,11 +322,12 @@ class PostgresAggregation(BaseModel):
 
     operation: AggregationOperation
     column_id: UUID | None = None
+    asset_id: UUID | None = None
 
     @model_validator(mode="after")
     def _validate_column_shape(self) -> "PostgresAggregation":
         if self.operation == "count_all":
-            if self.column_id is not None:
+            if self.column_id is not None or self.asset_id is not None:
                 raise ValueError("count_all must not specify a column")
         elif self.column_id is None:
             raise ValueError(f"{self.operation} requires a column")
@@ -308,6 +338,7 @@ class PostgresGroupDimension(BaseModel):
     model_config = _MODEL_CONFIG
 
     column_id: UUID
+    asset_id: UUID | None = None
     bucket: TimeBucket | None = None
     time_zone: StrictStr | None = Field(default=None, min_length=1, max_length=128)
 
@@ -344,6 +375,7 @@ class PostgresQueryPlan(BaseModel):
 
     schema_version: Literal[1] = 1
     asset_id: UUID
+    join: PostgresApprovedJoin | None = None
     projections: tuple[PostgresProjection, ...] = Field(default_factory=tuple, max_length=100)
     filters: tuple[PostgresFilter, ...] = Field(default_factory=tuple, max_length=50)
     aggregations: tuple[PostgresAggregation, ...] = Field(default_factory=tuple, max_length=25)
@@ -374,6 +406,40 @@ class PostgresQueryPlan(BaseModel):
             raise ValueError("projections cannot be combined with aggregations")
         if self.group_by and not self.aggregations:
             raise ValueError("group_by requires at least one aggregation")
+
+        references = [
+            *(projection.asset_id for projection in self.projections),
+            *(filter_item.asset_id for filter_item in self.filters),
+            *(dimension.asset_id for dimension in self.group_by),
+            *(
+                aggregation.asset_id
+                for aggregation in self.aggregations
+                if aggregation.column_id is not None
+            ),
+        ]
+        if self.join is None:
+            if any(asset_id is not None and asset_id != self.asset_id for asset_id in references):
+                raise ValueError("single-table references must use the plan asset")
+            if any(filter_item.placement is not None for filter_item in self.filters):
+                raise ValueError("filter placement requires an approved join")
+            return self
+
+        if self.join.lookup_asset_id == self.asset_id:
+            raise ValueError("an approved join requires distinct base and lookup assets")
+        allowed_asset_ids = {self.asset_id, self.join.lookup_asset_id}
+        if any(asset_id is None for asset_id in references):
+            raise ValueError("join plans require an asset_id for every column reference")
+        if any(asset_id not in allowed_asset_ids for asset_id in references):
+            raise ValueError("join references must use the declared base or lookup asset")
+        for filter_item in self.filters:
+            if filter_item.asset_id == self.asset_id and filter_item.placement == "join_on":
+                raise ValueError("base-table filters cannot use join_on placement")
+            if (
+                self.join.join_type == "left"
+                and filter_item.asset_id == self.join.lookup_asset_id
+                and filter_item.placement is None
+            ):
+                raise ValueError("LEFT JOIN lookup filters require explicit placement")
         return self
 
 
@@ -384,8 +450,11 @@ __all__ = [
     "DecimalValue",
     "FilterOperator",
     "IntegerValue",
+    "JoinFilterPlacement",
+    "JoinType",
     "NumberValue",
     "PostgresAggregation",
+    "PostgresApprovedJoin",
     "PostgresFilter",
     "PostgresGroupDimension",
     "PostgresProjection",

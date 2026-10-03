@@ -29,6 +29,32 @@ from app.db.models.source import (
     TLSMode,
 )
 from app.db.models.postgres_query_run import PostgresQueryRun, PostgresQueryRunStatus
+from app.db.models.metric_definition import (
+    MetricAggregateOperation,
+    MetricDefinition,
+    MetricDefinitionVersion,
+    MetricLifecycleState,
+)
+from app.db.models.relationship_definition import (
+    RelationshipDefinition,
+    RelationshipDefinitionVersion,
+    RelationshipJoinType,
+    RelationshipLifecycleState,
+)
+from app.db.models.source_profile import (
+    SourceProfileColumnObservation,
+    SourceProfileFinding,
+    SourceProfileFindingSeverity,
+    SourceProfileFindingType,
+    SourceProfileObservationStatus,
+    SourceProfilePopulation,
+    SourceProfileRun,
+    SourceProfileRunAsset,
+    SourceProfileRunColumn,
+    SourceProfileRunStatus,
+    SourceProfileSamplingMethod,
+    SourceProfileTableObservation,
+)
 from app.db.models.user import RefreshToken, User, UserRole
 
 __all__ = [
@@ -59,8 +85,28 @@ __all__ = [
     "SourceTableScope",
     "SourceType",
     "TLSMode",
+    "SourceProfileColumnObservation",
+    "SourceProfileFinding",
+    "SourceProfileFindingSeverity",
+    "SourceProfileFindingType",
+    "SourceProfileObservationStatus",
+    "SourceProfilePopulation",
+    "SourceProfileRun",
+    "SourceProfileRunAsset",
+    "SourceProfileRunColumn",
+    "SourceProfileRunStatus",
+    "SourceProfileSamplingMethod",
+    "SourceProfileTableObservation",
     "PostgresQueryRun",
     "PostgresQueryRunStatus",
+    "MetricAggregateOperation",
+    "MetricDefinition",
+    "MetricDefinitionVersion",
+    "MetricLifecycleState",
+    "RelationshipDefinition",
+    "RelationshipDefinitionVersion",
+    "RelationshipJoinType",
+    "RelationshipLifecycleState",
     "User",
     "UserRole",
     "RefreshToken",

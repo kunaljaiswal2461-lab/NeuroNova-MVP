@@ -12,7 +12,7 @@ import inspect
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import asyncpg
 
@@ -76,6 +76,40 @@ class LiveColumnExpectation:
 
 
 @dataclass(frozen=True)
+class LiveUniqueKeyExpectation:
+    """A declared target key that must remain live and non-deferrable."""
+
+    constraint_name: str
+    key_kind: Literal["primary_key", "unique"]
+    column_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LiveForeignKeyExpectation:
+    """A declared base-to-lookup FK that must remain exact while locked.
+
+    Target-key uniqueness prevents fan-out, but it does not prove the
+    approved source-side mapping still exists.  Keep both ordered sides here
+    so a same-named/replaced constraint or a reordered composite key fails
+    before the compiled statement is prepared.
+    """
+
+    constraint_name: str
+    base_column_names: tuple[str, ...]
+    lookup_column_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LiveRelationExpectation:
+    """One compiler-authorized ordinary table involved in a remote read."""
+
+    schema_name: str
+    table_name: str
+    columns: tuple[LiveColumnExpectation, ...]
+    unique_key: LiveUniqueKeyExpectation | None = None
+
+
+@dataclass(frozen=True)
 class LiveQueryExpectation:
     """Trusted structural facts to recheck in the remote transaction."""
 
@@ -83,6 +117,26 @@ class LiveQueryExpectation:
     table_name: str
     columns: tuple[LiveColumnExpectation, ...]
     expected_output_columns: tuple[ExpectedPostgresOutputColumn, ...]
+    # The base relation retains the original Stage 4B fields.  An optional
+    # lookup is the only Stage 5B extension: exactly two current same-source
+    # ordinary tables, locked in deterministic identity order.
+    lookup_relation: LiveRelationExpectation | None = None
+    foreign_key: LiveForeignKeyExpectation | None = None
+
+    def relation_expectations(self) -> tuple[LiveRelationExpectation, ...]:
+        base = LiveRelationExpectation(
+            schema_name=self.schema_name,
+            table_name=self.table_name,
+            columns=self.columns,
+        )
+        if self.lookup_relation is None:
+            return (base,)
+        if (
+            self.lookup_relation.schema_name == base.schema_name
+            and self.lookup_relation.table_name == base.table_name
+        ):
+            raise PostgresExecutionSchemaChangedError()
+        return (base, self.lookup_relation)
 
 
 @dataclass(frozen=True)
@@ -153,6 +207,63 @@ WHERE attributes.attrelid = $1::oid
   AND NOT attributes.attisdropped
   AND attributes.attname = ANY($2::text[])
 ORDER BY attributes.attnum
+"""
+
+# Catalog discovery records only primary/unique constraints, never arbitrary
+# indexes. Recheck that exact constraint identity and its ordered key columns
+# under the same relation lock. Deferrable, unvalidated, invalid, partial, or
+# not-ready evidence is deliberately insufficient for a fan-out-safe join.
+_LIVE_UNIQUE_KEY_SQL = """
+SELECT constraints.conname AS constraint_name,
+       constraints.contype AS constraint_type,
+       constraints.condeferrable AS is_deferrable,
+       constraints.condeferred AS is_initially_deferred,
+       constraints.convalidated AS is_validated,
+       indexes.indisunique AS is_unique,
+       indexes.indisvalid AS is_valid,
+       indexes.indisready AS is_ready,
+       indexes.indpred IS NOT NULL AS is_partial,
+       key_columns.ordinality AS ordinal_position,
+       attributes.attname AS column_name
+FROM pg_catalog.pg_constraint AS constraints
+JOIN pg_catalog.pg_index AS indexes ON indexes.indexrelid = constraints.conindid
+JOIN LATERAL unnest(constraints.conkey) WITH ORDINALITY
+  AS key_columns(attnum, ordinality) ON TRUE
+JOIN pg_catalog.pg_attribute AS attributes
+  ON attributes.attrelid = constraints.conrelid
+ AND attributes.attnum = key_columns.attnum
+WHERE constraints.conrelid = $1::oid
+  AND constraints.conname = $2::text
+  AND constraints.contype IN ('p', 'u')
+ORDER BY key_columns.ordinality
+"""
+
+# Recheck the approved source FK as a declared, ordered mapping after both
+# involved relations have been identity-checked and locked.  The base and
+# lookup OIDs are bound parameters; no remote names enter this query text.
+_LIVE_FOREIGN_KEY_SQL = """
+SELECT constraints.conname AS constraint_name,
+       constraints.contype AS constraint_type,
+       constraints.condeferrable AS is_deferrable,
+       constraints.condeferred AS is_initially_deferred,
+       constraints.convalidated AS is_validated,
+       key_columns.ordinality AS ordinal_position,
+       base_attributes.attname AS base_column_name,
+       lookup_attributes.attname AS lookup_column_name
+FROM pg_catalog.pg_constraint AS constraints
+JOIN LATERAL unnest(constraints.conkey, constraints.confkey) WITH ORDINALITY
+  AS key_columns(base_attnum, lookup_attnum, ordinality) ON TRUE
+JOIN pg_catalog.pg_attribute AS base_attributes
+  ON base_attributes.attrelid = constraints.conrelid
+ AND base_attributes.attnum = key_columns.base_attnum
+JOIN pg_catalog.pg_attribute AS lookup_attributes
+  ON lookup_attributes.attrelid = constraints.confrelid
+ AND lookup_attributes.attnum = key_columns.lookup_attnum
+WHERE constraints.conrelid = $1::oid
+  AND constraints.confrelid = $2::oid
+  AND constraints.conname = $3::text
+  AND constraints.contype = 'f'
+ORDER BY key_columns.ordinality
 """
 
 _SESSION_SEARCH_PATH_SQL = "SET LOCAL search_path TO pg_catalog"
@@ -303,7 +414,7 @@ def _session_timeout_sql(setting: str, milliseconds: int) -> str:
     return f"SET LOCAL {setting} TO '{milliseconds}ms'"
 
 
-def _validate_restricted_relation(row: Any, expectation: LiveQueryExpectation) -> int:
+def _validate_restricted_relation(row: Any, expectation: LiveRelationExpectation) -> int:
     oid = _relation_oid(row)
     if (
         _row_value(row, "schema_name") != expectation.schema_name
@@ -333,7 +444,7 @@ def _validate_restricted_relation(row: Any, expectation: LiveQueryExpectation) -
     return oid
 
 
-def _validate_live_columns(rows: Any, expectation: LiveQueryExpectation) -> None:
+def _validate_live_columns(rows: Any, expectation: LiveRelationExpectation) -> None:
     expected = {column.name: column for column in expectation.columns}
     # A pure COUNT(*) plan legitimately references no source columns.  Its
     # relation, role, ACL, prepared-output, and transaction checks still run.
@@ -363,6 +474,77 @@ def _validate_live_columns(rows: Any, expectation: LiveQueryExpectation) -> None
         ):
             raise PostgresExecutionSchemaChangedError()
     if seen != set(expected):
+        raise PostgresExecutionSchemaChangedError()
+
+
+def _validate_live_unique_key(
+    rows: Any,
+    expectation: LiveUniqueKeyExpectation,
+) -> None:
+    """Require the exact locked target key used to prevent join fan-out."""
+
+    if not rows:
+        raise PostgresExecutionSchemaChangedError()
+    expected_constraint_type = "p" if expectation.key_kind == "primary_key" else "u"
+    actual_names: list[str] = []
+    for expected_position, row in enumerate(rows, start=1):
+        if (
+            _row_value(row, "constraint_name") != expectation.constraint_name
+            or _row_value(row, "constraint_type") != expected_constraint_type
+            or _as_bool(row, "is_deferrable")
+            or _as_bool(row, "is_initially_deferred")
+            or not _as_bool(row, "is_validated")
+            or not _as_bool(row, "is_unique")
+            or not _as_bool(row, "is_valid")
+            or not _as_bool(row, "is_ready")
+            or _as_bool(row, "is_partial")
+            or _row_value(row, "ordinal_position") != expected_position
+        ):
+            raise PostgresExecutionSchemaChangedError()
+        column_name = _row_value(row, "column_name")
+        if not isinstance(column_name, str):
+            raise PostgresExecutionSchemaChangedError()
+        actual_names.append(column_name)
+    if tuple(actual_names) != expectation.column_names:
+        raise PostgresExecutionSchemaChangedError()
+
+
+def _validate_live_foreign_key(
+    rows: Any,
+    expectation: LiveForeignKeyExpectation,
+) -> None:
+    """Require the exact, non-deferrable ordered FK approved by the owner."""
+
+    if (
+        not expectation.constraint_name
+        or not expectation.base_column_names
+        or not expectation.lookup_column_names
+        or len(expectation.base_column_names) != len(expectation.lookup_column_names)
+        or len(rows) != len(expectation.base_column_names)
+    ):
+        raise PostgresExecutionSchemaChangedError()
+    actual_base_names: list[str] = []
+    actual_lookup_names: list[str] = []
+    for expected_position, row in enumerate(rows, start=1):
+        if (
+            _row_value(row, "constraint_name") != expectation.constraint_name
+            or _row_value(row, "constraint_type") != "f"
+            or _as_bool(row, "is_deferrable")
+            or _as_bool(row, "is_initially_deferred")
+            or not _as_bool(row, "is_validated")
+            or _row_value(row, "ordinal_position") != expected_position
+        ):
+            raise PostgresExecutionSchemaChangedError()
+        base_column_name = _row_value(row, "base_column_name")
+        lookup_column_name = _row_value(row, "lookup_column_name")
+        if not isinstance(base_column_name, str) or not isinstance(lookup_column_name, str):
+            raise PostgresExecutionSchemaChangedError()
+        actual_base_names.append(base_column_name)
+        actual_lookup_names.append(lookup_column_name)
+    if (
+        tuple(actual_base_names) != expectation.base_column_names
+        or tuple(actual_lookup_names) != expectation.lookup_column_names
+    ):
         raise PostgresExecutionSchemaChangedError()
 
 
@@ -403,6 +585,41 @@ def _record_values(record: Any, aliases: tuple[str, ...]) -> tuple[Any, ...]:
         return tuple(record[alias] for alias in aliases)
     except (KeyError, TypeError, IndexError):
         raise PostgresExecutionSchemaChangedError() from None
+
+
+def _relation_expectations_for_compiled(
+    compiled: CompiledPostgresQuery,
+    expectation: LiveQueryExpectation,
+) -> tuple[LiveRelationExpectation, ...]:
+    """Ensure the gateway cannot pair a statement with unrelated live facts."""
+
+    relations = expectation.relation_expectations()
+    lookup = expectation.lookup_relation
+    if compiled.join is None:
+        if lookup is not None or expectation.foreign_key is not None or len(relations) != 1:
+            raise PostgresExecutionConfigurationError()
+        return relations
+    foreign_key = expectation.foreign_key
+    if lookup is None or foreign_key is None or len(relations) != 2:
+        raise PostgresExecutionSchemaChangedError()
+    if (
+        lookup.schema_name != compiled.join.lookup_schema_name
+        or lookup.table_name != compiled.join.lookup_table_name
+        or lookup.unique_key is None
+        or lookup.unique_key.constraint_name != compiled.join.target_key_constraint_name
+        or lookup.unique_key.key_kind != compiled.join.target_key_kind
+        or lookup.unique_key.column_names != compiled.join.target_key_column_names
+        or foreign_key.constraint_name != compiled.join.foreign_key_constraint_name
+        or foreign_key.base_column_names != compiled.join.foreign_key_base_column_names
+        or foreign_key.lookup_column_names != compiled.join.foreign_key_lookup_column_names
+        or not foreign_key.base_column_names
+        or len(foreign_key.base_column_names) != len(foreign_key.lookup_column_names)
+    ):
+        raise PostgresExecutionSchemaChangedError()
+    lookup_column_names = {column.name for column in lookup.columns}
+    if not set(compiled.join.target_key_column_names).issubset(lookup_column_names):
+        raise PostgresExecutionSchemaChangedError()
+    return relations
 
 
 class PostgresQueryExecutionAdapter:
@@ -450,6 +667,14 @@ class PostgresQueryExecutionAdapter:
         abort_connection = False
         try:
             async with asyncio.timeout(self._settings.postgres_execution_operation_timeout_seconds):
+                relations = tuple(
+                    sorted(
+                        _relation_expectations_for_compiled(compiled, expectation),
+                        key=lambda relation: (relation.schema_name, relation.table_name),
+                    )
+                )
+                if not 1 <= len(relations) <= 2:
+                    raise PostgresExecutionSchemaChangedError()
                 normalized_host = await self._policy.validate(host=host, port=port)
                 ssl_context = self._policy.build_ssl_context(custom_ca_pem)
                 connection = await self._connect(
@@ -508,34 +733,74 @@ class PostgresQueryExecutionAdapter:
                     _validate_session_assumptions(
                         await connection.fetchrow(_SESSION_ASSERTIONS_SQL)
                     )
-                    before = await connection.fetchrow(
-                        _LIVE_RELATION_SQL, expectation.schema_name, expectation.table_name
-                    )
-                    if before is None:
-                        raise PostgresExecutionSchemaChangedError()
-                    before_oid = _validate_restricted_relation(before, expectation)
-
-                    lock_sql = (
-                        "LOCK TABLE "
-                        f"{_quote_identifier(expectation.schema_name)}."
-                        f"{_quote_identifier(expectation.table_name)} IN ACCESS SHARE MODE"
-                    )
-                    await connection.execute(lock_sql)
-                    after = await connection.fetchrow(
-                        _LIVE_RELATION_SQL, expectation.schema_name, expectation.table_name
-                    )
-                    if after is None or _validate_restricted_relation(after, expectation) != before_oid:
-                        raise PostgresExecutionSchemaChangedError()
-                    live_columns = (
-                        await connection.fetch(
-                            _LIVE_COLUMNS_SQL,
-                            before_oid,
-                            [column.name for column in expectation.columns],
+                    before_oids: dict[tuple[str, str], int] = {}
+                    for relation in relations:
+                        before = await connection.fetchrow(
+                            _LIVE_RELATION_SQL,
+                            relation.schema_name,
+                            relation.table_name,
                         )
-                        if expectation.columns
-                        else ()
-                    )
-                    _validate_live_columns(live_columns, expectation)
+                        if before is None:
+                            raise PostgresExecutionSchemaChangedError()
+                        before_oids[(relation.schema_name, relation.table_name)] = (
+                            _validate_restricted_relation(before, relation)
+                        )
+
+                    # Lock in a single canonical order. This prevents two
+                    # allowed joins requested in opposite directions from
+                    # creating an application-induced DDL lock cycle.
+                    for relation in relations:
+                        lock_sql = (
+                            "LOCK TABLE "
+                            f"{_quote_identifier(relation.schema_name)}."
+                            f"{_quote_identifier(relation.table_name)} IN ACCESS SHARE MODE"
+                        )
+                        await connection.execute(lock_sql)
+
+                    for relation in relations:
+                        relation_key = (relation.schema_name, relation.table_name)
+                        after = await connection.fetchrow(
+                            _LIVE_RELATION_SQL,
+                            relation.schema_name,
+                            relation.table_name,
+                        )
+                        if (
+                            after is None
+                            or _validate_restricted_relation(after, relation)
+                            != before_oids[relation_key]
+                        ):
+                            raise PostgresExecutionSchemaChangedError()
+                        live_columns = (
+                            await connection.fetch(
+                                _LIVE_COLUMNS_SQL,
+                                before_oids[relation_key],
+                                [column.name for column in relation.columns],
+                            )
+                            if relation.columns
+                            else ()
+                        )
+                        _validate_live_columns(live_columns, relation)
+                        if relation.unique_key is not None:
+                            live_key = await connection.fetch(
+                                _LIVE_UNIQUE_KEY_SQL,
+                                before_oids[relation_key],
+                                relation.unique_key.constraint_name,
+                            )
+                            _validate_live_unique_key(live_key, relation.unique_key)
+
+                    if expectation.foreign_key is not None:
+                        lookup_relation = expectation.lookup_relation
+                        if lookup_relation is None:
+                            raise PostgresExecutionSchemaChangedError()
+                        live_foreign_key = await connection.fetch(
+                            _LIVE_FOREIGN_KEY_SQL,
+                            before_oids[(expectation.schema_name, expectation.table_name)],
+                            before_oids[
+                                (lookup_relation.schema_name, lookup_relation.table_name)
+                            ],
+                            expectation.foreign_key.constraint_name,
+                        )
+                        _validate_live_foreign_key(live_foreign_key, expectation.foreign_key)
 
                     statement = await _maybe_await(connection.prepare(compiled.sql))
                     actual_columns = _prepared_attributes(
@@ -624,7 +889,10 @@ class PostgresQueryExecutionAdapter:
 __all__ = [
     "ActualPostgresOutputColumn",
     "LiveColumnExpectation",
+    "LiveForeignKeyExpectation",
+    "LiveRelationExpectation",
     "LiveQueryExpectation",
+    "LiveUniqueKeyExpectation",
     "PostgresExecutionAccessChangedError",
     "PostgresExecutionAdapterError",
     "PostgresExecutionCancellation",

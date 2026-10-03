@@ -263,6 +263,10 @@ class CatalogColumnMetadata:
     native_type_oid: int | None
     native_type_modifier: int | None
     column_comment: str | None
+    # This identifier is snapshot-scoped structural metadata, not an
+    # execution capability. It lets owner-confirmation forms refer to an
+    # exact current column without parsing a rendered name.
+    column_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -287,6 +291,10 @@ class CatalogForeignKeyMetadata:
     target_status: CatalogForeignKeyTargetStatus
     referenced_asset: CatalogAssetReference | None
     column_mappings: tuple[CatalogForeignKeyColumnMapping, ...]
+    # Snapshot-scoped structural identifier for an explicit owner
+    # confirmation flow. It is not an execution capability and is withheld
+    # when the target is no longer in current selected scope.
+    foreign_key_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -1324,6 +1332,7 @@ def _asset_reference(asset: CatalogAsset) -> CatalogAssetReference:
 
 def _column_metadata(column: CatalogColumn) -> CatalogColumnMetadata:
     return CatalogColumnMetadata(
+        column_id=column.id,
         column_name=column.column_name,
         ordinal_position=column.ordinal_position,
         is_nullable=column.is_nullable,
@@ -1933,6 +1942,7 @@ async def _load_catalog_asset_detail(
         if target_is_permitted:
             foreign_keys.append(
                 CatalogForeignKeyMetadata(
+                    foreign_key_id=foreign_key.id,
                     constraint_name=foreign_key.constraint_name,
                     target_status=CatalogForeignKeyTargetStatus.IN_SCOPE,
                     referenced_asset=_asset_reference(target),
@@ -1946,6 +1956,7 @@ async def _load_catalog_asset_detail(
             # never the old target identity or mapping.
             foreign_keys.append(
                 CatalogForeignKeyMetadata(
+                    foreign_key_id=None,
                     constraint_name=foreign_key.constraint_name,
                     target_status=CatalogForeignKeyTargetStatus.TARGET_OUT_OF_SCOPE,
                     referenced_asset=None,
@@ -2225,6 +2236,7 @@ async def _load_snapshot_asset_states(
         )
         if target_is_permitted:
             metadata = CatalogForeignKeyMetadata(
+                foreign_key_id=foreign_key.id,
                 constraint_name=foreign_key.constraint_name,
                 target_status=CatalogForeignKeyTargetStatus.IN_SCOPE,
                 referenced_asset=_asset_reference(target),
@@ -2232,6 +2244,7 @@ async def _load_snapshot_asset_states(
             )
         else:
             metadata = CatalogForeignKeyMetadata(
+                foreign_key_id=None,
                 constraint_name=foreign_key.constraint_name,
                 target_status=CatalogForeignKeyTargetStatus.TARGET_OUT_OF_SCOPE,
                 referenced_asset=None,

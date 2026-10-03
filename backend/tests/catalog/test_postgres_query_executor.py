@@ -45,6 +45,16 @@ from app.db.models.catalog import (
 )
 from app.db.models.conversation import ConversationSessionRow
 from app.db.models.dataset import DatasetRecord
+from app.db.models.metric_definition import (
+    MetricAggregateOperation,
+    MetricDefinition,
+    MetricDefinitionVersion,
+    MetricLifecycleState,
+)
+from app.db.models.relationship_definition import (
+    RelationshipDefinition,
+    RelationshipDefinitionVersion,
+)
 from app.db.models.postgres_query_run import PostgresQueryRun, PostgresQueryRunStatus
 from app.db.models.source import (
     DataSource,
@@ -89,6 +99,10 @@ _TABLES = [
     CatalogDeclaredKeyColumn.__table__,
     CatalogForeignKey.__table__,
     CatalogForeignKeyColumn.__table__,
+    MetricDefinition.__table__,
+    MetricDefinitionVersion.__table__,
+    RelationshipDefinition.__table__,
+    RelationshipDefinitionVersion.__table__,
     PostgresQueryRun.__table__,
 ]
 
@@ -273,6 +287,47 @@ def _plan(catalog: _ExecutionCatalog, *column_names: str, limit: int = 5, **over
     }
     values.update(overrides)
     return PostgresQueryPlan.model_validate(values)
+
+
+async def _metric_version_for_catalog(catalog: _ExecutionCatalog) -> uuid.UUID:
+    """Persist a source-local semantic version for executor provenance tests."""
+
+    definition_id = uuid.uuid4()
+    version_id = uuid.uuid4()
+    async with catalog.factory() as session:
+        session.add(
+            MetricDefinition(
+                id=definition_id,
+                source_id=catalog.source_id,
+                owner_user_id=catalog.owner_id,
+                display_name="Executor test metric",
+                normalized_name=f"executor test metric {definition_id}",
+                lifecycle_state=MetricLifecycleState.ACTIVE,
+                current_version_number=1,
+            )
+        )
+        session.add(
+            MetricDefinitionVersion(
+                id=version_id,
+                source_id=catalog.source_id,
+                metric_definition_id=definition_id,
+                version_number=1,
+                display_name="Executor test metric",
+                description=None,
+                confirmed_snapshot_id=catalog.snapshot_id,
+                asset_id=catalog.asset_id,
+                aggregate_operation=MetricAggregateOperation.COUNT,
+                aggregate_column_id=None,
+                unit_label=None,
+                default_date_column_id=None,
+                default_time_zone=None,
+                definition_json={"schema_version": 1},
+                confirmed_by_user_id=catalog.owner_id,
+                confirmed_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+    return version_id
 
 
 def _live_column(column: CatalogColumn) -> dict[str, Any]:
@@ -1145,6 +1200,34 @@ async def test_late_cancellation_discards_rows_before_delivery(execution_catalog
     assert result.rows == ()
 
 
+async def test_delivery_guard_orders_completed_result_write_before_late_cancellation():
+    cancellation = PostgresExecutionCancellation()
+    guard_entered = asyncio.Event()
+    release_guard = asyncio.Event()
+
+    async def hold_completed_result_write() -> None:
+        async with cancellation.delivery_guard() as delivery_allowed:
+            assert delivery_allowed is True
+            guard_entered.set()
+            await release_guard.wait()
+
+    holder = asyncio.create_task(hold_completed_result_write())
+    await asyncio.wait_for(guard_entered.wait(), timeout=1)
+
+    canceller = asyncio.create_task(cancellation.cancel())
+    await asyncio.sleep(0)
+    assert cancellation.cancelled is False
+    assert canceller.done() is False
+
+    release_guard.set()
+    await asyncio.wait_for(holder, timeout=1)
+    await asyncio.wait_for(canceller, timeout=1)
+    assert cancellation.cancelled is True
+
+    async with cancellation.delivery_guard() as delivery_allowed:
+        assert delivery_allowed is False
+
+
 async def test_live_schema_access_and_output_shape_changes_fail_closed(execution_catalog):
     catalog = execution_catalog
 
@@ -1451,3 +1534,100 @@ async def test_process_local_limiter_releases_slots_after_completion_and_cancell
         await blocked_task
     async with limiter.slot(owner_user_id=owner, source_id=source):
         pass
+
+
+async def test_metric_version_requires_a_fresh_pin_before_run_or_remote_execution(execution_catalog):
+    """An arbitrary internal UUID cannot become query-run provenance."""
+
+    catalog = execution_catalog
+    adapter_built = False
+
+    def adapter_factory(_settings):
+        nonlocal adapter_built
+        adapter_built = True
+        raise AssertionError("the remote adapter must not be built")
+
+    result = await execute_postgres_query(
+        catalog.factory,
+        owner_user_id=catalog.owner_id,
+        source_id=catalog.source_id,
+        snapshot_id=catalog.snapshot_id,
+        plan=_plan(catalog, "id"),
+        settings=catalog.settings,
+        adapter_factory=adapter_factory,
+        metric_definition_version_id=uuid.uuid4(),
+    )
+
+    assert result.status == "failed"
+    assert result.failure_code == "metric_definition_changed"
+    assert adapter_built is False
+    async with catalog.factory() as session:
+        assert await session.get(PostgresQueryRun, result.execution_id) is None
+
+
+def test_metric_run_provenance_foreign_key_is_scoped_to_its_source():
+    nullable_reference = next(
+        item
+        for item in PostgresQueryRun.__table__.foreign_key_constraints
+        if item.name == "fk_postgres_query_runs_metric_definition_version"
+    )
+    assert [column.name for column in nullable_reference.columns] == ["metric_definition_version_id"]
+    assert [element.target_fullname for element in nullable_reference.elements] == [
+        "metric_definition_versions.id"
+    ]
+    assert nullable_reference.elements[0].ondelete == "SET NULL"
+    constraint = next(
+        item
+        for item in PostgresQueryRun.__table__.foreign_key_constraints
+        if item.name == "fk_postgres_query_runs_metric_definition_version_source"
+    )
+    assert [column.name for column in constraint.columns] == [
+        "source_id",
+        "metric_definition_version_id",
+    ]
+    assert [element.target_fullname for element in constraint.elements] == [
+        "metric_definition_versions.source_id",
+        "metric_definition_versions.id",
+    ]
+    assert constraint.elements[0].ondelete is None
+
+
+async def test_metric_pin_is_rechecked_immediately_before_remote_gateway(execution_catalog):
+    """A post-planning edit/retirement wins before a remote query is sent."""
+
+    catalog = execution_catalog
+    pin_checks = 0
+    adapter_built = False
+
+    async def pin_verifier() -> bool:
+        nonlocal pin_checks
+        pin_checks += 1
+        return pin_checks == 1
+
+    def adapter_factory(_settings):
+        nonlocal adapter_built
+        adapter_built = True
+        raise AssertionError("the remote adapter must not be built")
+
+    metric_version_id = await _metric_version_for_catalog(catalog)
+    result = await execute_postgres_query(
+        catalog.factory,
+        owner_user_id=catalog.owner_id,
+        source_id=catalog.source_id,
+        snapshot_id=catalog.snapshot_id,
+        plan=_plan(catalog, "id"),
+        settings=catalog.settings,
+        adapter_factory=adapter_factory,
+        metric_definition_version_id=metric_version_id,
+        metric_pin_verifier=pin_verifier,
+    )
+
+    assert pin_checks == 2
+    assert adapter_built is False
+    assert result.status == "failed"
+    assert result.failure_code == "metric_definition_changed"
+    async with catalog.factory() as session:
+        run = await session.get(PostgresQueryRun, result.execution_id)
+    assert run is not None
+    assert run.status is PostgresQueryRunStatus.FAILED
+    assert run.metric_definition_version_id == metric_version_id
