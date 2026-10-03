@@ -174,6 +174,55 @@ isolated PostgreSQL/TLS fixture. SQLite and mocked-adapter tests only cover
 the application and adapter contracts, not PostgreSQL lock, migration, or
 privilege semantics.
 
+## Stage 4B controlled-execution checks
+
+Run these only against the isolated topology above, after the Stage 3B
+procedure succeeds. Invoke the internal `execute_postgres_query(...)` gateway
+from a fixture-owned application process; Stage 4B intentionally has no HTTP
+or arbitrary-SQL endpoint. Use synthetic rows and discard the disposable
+project after the run.
+
+1. Upgrade one fresh application database from empty to `0010` and a second
+   disposable copy from `0009_catalog_discovery_worker` to `0010`. Confirm
+   `postgres_query_runs` has only the redacted provenance columns and its
+   owner/source/snapshot/asset composite foreign keys. Do not treat offline
+   SQL output as this check.
+2. Publish a current catalog snapshot for one allowed ordinary base table.
+   Execute compiler-produced plans covering typed filters (including nulls),
+   `count(*)`/`count(column)`, sum/average/min/max, grouping/date buckets,
+   ordering, and requested limits. Compare bounded typed values with known
+   synthetic answers, including Decimal, large integers, UUIDs, dates, and
+   timestamps. Confirm an empty result is successful.
+3. Capture server-side session state during each fixture query. Confirm a
+   dedicated verified-TLS connection uses the restricted reader, a
+   read-only `READ COMMITTED` transaction, `search_path = pg_catalog`, UTC,
+   application name, and configured statement/lock/idle/operation limits.
+   Attempt an insert/DDL from that role and prove it fails. Do not weaken TLS,
+   DNS, role grants, or destination policy to make this pass.
+4. Exercise the relation gate with a view, materialized view, foreign table,
+   partition root/leaf, inheritance parent/child, RLS-enabled table,
+   table-owner role, superuser, and `BYPASSRLS` role. Each unsupported case
+   must return only a safe failure code and no rows. Verify schema/table and
+   column privilege revocation separately.
+5. Coordinate a concurrent incompatible DDL attempt after the gateway takes
+   its `ACCESS SHARE` lock. Prove it blocks until completion, then repeat with
+   a pre-lock same-name replacement and record the documented catalog-lineage
+   limitation. Verify incompatible output/column type changes fail safely.
+6. Use a deliberately slow fixture statement and a cancellation proxy. Verify
+   statement/operation timeout and both internal/caller cancellation terminate
+   the dedicated client connection, release concurrency slots, write no retry
+   attempt, and expose no partial rows. Repeat with row and serialized-byte
+   caps, including an oversized individual cell.
+7. Revoke table scope, deactivate the source, and remove owner access after
+   remote execution begins but before result delivery. The gateway must
+   withhold all fetched rows and finalize only redacted provenance. Inject a
+   terminal provenance-write failure and verify it does not trigger a second
+   client query or expose the prior rows.
+
+Record only revision names, synthetic fixture identifiers, counts, safe error
+codes, and redacted execution IDs. This Stage 4B procedure remains pending
+until it is actually run against disposable PostgreSQL with TLS.
+
 ## Adapter and HTTP integration checks
 
 Start the backend against one of the disposable application databases with

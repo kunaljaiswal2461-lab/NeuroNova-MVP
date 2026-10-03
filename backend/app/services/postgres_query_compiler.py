@@ -86,6 +86,7 @@ _BUCKETS_BY_CATEGORY: dict[str, frozenset[str]] = {
     "timestamptz": frozenset({"hour", "day", "week", "month", "quarter", "year"}),
 }
 _VALIDATED_PLAN_SEAL = object()
+_COMPILED_QUERY_SEAL = object()
 
 
 class PostgresQueryPlanValidationError(ValueError):
@@ -189,7 +190,7 @@ class PostgresCalculationSemantics:
 
 @dataclass(frozen=True)
 class CompiledPostgresQuery:
-    """One asyncpg-compatible statement, still intentionally non-executable."""
+    """Compiler output, not a public execution input or authorization token."""
 
     sql: str = field(repr=False)
     parameters: tuple[Any, ...] = field(repr=False)
@@ -201,6 +202,10 @@ class CompiledPostgresQuery:
     ordering: tuple[CompiledPostgresOrdering, ...]
     semantics: PostgresCalculationSemantics
     fingerprint: str
+    # The transport accepts only a compiler-minted artifact.  This is an
+    # internal fail-closed marker, not an authorization cache: Stage 4B still
+    # recompiles against current owner/scope/head immediately before I/O.
+    _seal: object | None = field(default=None, repr=False, compare=False, init=False)
 
     @property
     def is_explicit_top_n(self) -> bool:
@@ -957,7 +962,7 @@ def _compile_validated_postgres_query(
         result_order="explicit_top_n" if ordering else "unordered_bounded",
         timestamp_bucket_notes=tuple(bucket_notes),
     )
-    return CompiledPostgresQuery(
+    compiled = CompiledPostgresQuery(
         sql="\n".join(sql_parts),
         parameters=tuple(binder.values),
         source_id=validated.source_id,
@@ -969,6 +974,14 @@ def _compile_validated_postgres_query(
         semantics=semantics,
         fingerprint=_compile_fingerprint(validated),
     )
+    object.__setattr__(compiled, "_seal", _COMPILED_QUERY_SEAL)
+    return compiled
+
+
+def _is_compiler_minted_postgres_query(value: object) -> bool:
+    """Reject accidental hand-built compiled artifacts at the transport boundary."""
+
+    return isinstance(value, CompiledPostgresQuery) and value._seal is _COMPILED_QUERY_SEAL
 
 
 async def validate_and_compile_postgres_query(

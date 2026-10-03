@@ -156,7 +156,7 @@ class Settings(BaseSettings):
     catalog_discovery_max_relationships: int = Field(default=20_000, ge=1, le=50_000)
     catalog_discovery_max_metadata_bytes: int = Field(default=4 * 1024 * 1024, ge=1024, le=32 * 1024 * 1024)
 
-    # --- PostgreSQL structured-query planning (Stage 4A; no executor yet) ---
+    # --- PostgreSQL structured-query planning (Stage 4A) ---
     # These caps constrain the small, deterministic SQL language before any
     # future connector can see a plan. They deliberately remain independent
     # from upload/Polars query limits.
@@ -169,6 +169,27 @@ class Settings(BaseSettings):
     # A conservative pre-asyncpg estimate for all bound plan values. Result
     # bytes remain a separate Stage 4B execution limit.
     postgres_query_max_parameter_bytes: int = Field(default=64 * 1024, ge=1024, le=1024 * 1024)
+
+    # --- PostgreSQL controlled execution (Stage 4B; internal only) ---
+    # These are deliberately independent from onboarding/discovery budgets.
+    # A query has its own short-lived client connection and never borrows the
+    # application database pool connection for remote work.
+    postgres_execution_connect_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    postgres_execution_statement_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    postgres_execution_lock_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
+    postgres_execution_idle_transaction_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    postgres_execution_operation_timeout_seconds: float = Field(default=12.0, gt=0, le=60)
+    postgres_execution_max_concurrent_operations: int = Field(default=2, ge=1, le=20)
+    postgres_execution_max_concurrent_per_user: int = Field(default=1, ge=1, le=5)
+    postgres_execution_max_concurrent_per_source: int = Field(default=1, ge=1, le=5)
+    # The compiler's requested LIMIT remains part of answer semantics. These
+    # independent caps bound only materialization/presentation of that already
+    # bounded result and are never injected below an aggregate.
+    postgres_execution_max_result_rows: int = Field(default=500, ge=1, le=10_000)
+    postgres_execution_max_result_bytes: int = Field(
+        default=1 * 1024 * 1024, ge=1024, le=16 * 1024 * 1024
+    )
+    postgres_execution_cursor_prefetch: int = Field(default=50, ge=1, le=1_000)
 
     # --- frontend ---
     frontend_url: str = "http://localhost:5173"

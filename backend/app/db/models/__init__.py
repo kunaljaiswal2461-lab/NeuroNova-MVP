@@ -28,6 +28,7 @@ from app.db.models.source import (
     SourceType,
     TLSMode,
 )
+from app.db.models.postgres_query_run import PostgresQueryRun, PostgresQueryRunStatus
 from app.db.models.user import RefreshToken, User, UserRole
 
 __all__ = [
@@ -58,6 +59,8 @@ __all__ = [
     "SourceTableScope",
     "SourceType",
     "TLSMode",
+    "PostgresQueryRun",
+    "PostgresQueryRunStatus",
     "User",
     "UserRole",
     "RefreshToken",
