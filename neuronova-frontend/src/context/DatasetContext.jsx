@@ -64,6 +64,8 @@ export function DatasetProvider({ children }) {
   )
 }
 
+// This module intentionally exports the provider and its custom hook together.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useDataset({ optional = false } = {}) {
   const ctx = useContext(DatasetContext)
   if (!ctx && !optional) throw new Error('useDataset must be used within DatasetProvider')

@@ -99,7 +99,7 @@ export default function Upload() {
   }, [])
 
   useEffect(() => {
-    fetchDatasets()
+    queueMicrotask(() => { void fetchDatasets() })
     return () => listRef.current?.abort()
   }, [fetchDatasets, activeDatasetId, terminal])
 

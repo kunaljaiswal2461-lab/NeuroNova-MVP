@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useNavigate, Link, useLocation, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { authApi } from '../api/auth';
@@ -12,10 +12,8 @@ export default function Login() {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  useEffect(() => {
-    const oauthError = searchParams.get('error');
-    if (oauthError) setError(decodeURIComponent(oauthError));
-  }, [searchParams]);
+  const oauthError = searchParams.get('error');
+  const displayedError = error || (oauthError ? decodeURIComponent(oauthError) : '');
 
   const from = location.state?.from?.pathname || '/upload';
 
@@ -107,9 +105,9 @@ export default function Login() {
           {/* Form */}
           <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             
-            {error && (
+            {displayedError && (
               <div style={{ padding: '12px', backgroundColor: '#FEF2F2', border: '1px solid #FECACA', color: '#DC2626', fontSize: '13px', borderRadius: '8px', textAlign: 'center' }}>
-                {error}
+                {displayedError}
               </div>
             )}
 

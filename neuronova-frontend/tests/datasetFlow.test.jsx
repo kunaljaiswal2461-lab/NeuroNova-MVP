@@ -13,8 +13,12 @@ vi.mock('../src/api/client', () => ({ api: { get: vi.fn(), post: vi.fn(), delete
 let context
 let navigate
 function Probe() {
-  context = useDataset()
-  navigate = useNavigate()
+  const datasetContext = useDataset()
+  const routerNavigate = useNavigate()
+  useEffect(() => {
+    context = datasetContext
+    navigate = routerNavigate
+  }, [datasetContext, routerNavigate])
   return null
 }
 function setup(children, path = '/upload') {
