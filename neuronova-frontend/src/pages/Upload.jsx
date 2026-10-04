@@ -99,8 +99,12 @@ export default function Upload() {
   }, [])
 
   useEffect(() => {
-    queueMicrotask(() => { void fetchDatasets() })
-    return () => listRef.current?.abort()
+    let active = true
+    queueMicrotask(() => { if (active) void fetchDatasets() })
+    return () => {
+      active = false
+      listRef.current?.abort()
+    }
   }, [fetchDatasets, activeDatasetId, terminal])
 
   useEffect(() => () => {

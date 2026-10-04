@@ -32,6 +32,9 @@ from agentic_engine.conversational.postgres_planner import PostgresPlanningResul
 
 
 class _Session:
+    async def commit(self):
+        return None
+
     async def rollback(self):
         return None
 
@@ -381,6 +384,65 @@ async def test_late_cancellation_is_ordered_after_result_delivery(monkeypatch, s
     assert cancellation.cancelled is True
     assert ChatStreamEventType.POSTGRES_RESULT in [event.event for event in events]
     assert saved[-1].postgres_result is not None
+
+
+@pytest.mark.asyncio
+async def test_result_transcript_is_committed_before_result_event(monkeypatch, settings_with_key):
+    """A stream close after the result frame cannot roll back its transcript rows."""
+
+    owner_id, source_id, snapshot_id, asset_id, column_id = [uuid.uuid4() for _ in range(5)]
+    session = ConversationSession(session_id=uuid.uuid4(), source_id=source_id)
+    source = SimpleNamespace(id=source_id, owner_user_id=owner_id)
+    await _install_manager(monkeypatch, session=session, source=source)
+    plan = PostgresQueryPlan(asset_id=asset_id, projections=({"column_id": column_id},), limit=5)
+
+    class CommitTrackingSession(_Session):
+        def __init__(self):
+            self.committed = False
+
+        async def commit(self):
+            self.committed = True
+
+    delivery_session = CommitTrackingSession()
+
+    @asynccontextmanager
+    async def commit_tracking_delivery_guard(*_args, **_kwargs):
+        yield delivery_session
+
+    async def fake_plan(**_kwargs):
+        return PostgresPlanningResult(
+            kind="plan", message="ready", snapshot_id=snapshot_id, plan=plan
+        )
+
+    async def fake_executor(*_args, **_kwargs):
+        return _execution(source_id=source_id, snapshot_id=snapshot_id)
+
+    @asynccontextmanager
+    async def factory():
+        yield _Session()
+
+    monkeypatch.setattr(postgres_chat_agent, "plan_postgres_question", fake_plan)
+    monkeypatch.setattr(
+        postgres_chat_agent, "postgres_query_delivery_guard", commit_tracking_delivery_guard
+    )
+    stream = postgres_chat_agent.stream_postgres_chat_turn(
+        session_id=session.session_id,
+        user_message="show amount",
+        session_db=_Session(),
+        owner_user_id=owner_id,
+        settings=settings_with_key,
+        authorized_session=session,
+        authorized_source=source,
+        executor=fake_executor,
+        session_factory=factory,
+    )
+    try:
+        async for event in stream:
+            if event.event is ChatStreamEventType.POSTGRES_RESULT:
+                assert delivery_session.committed is True
+                break
+    finally:
+        await stream.aclose()
 
 
 @pytest.mark.asyncio

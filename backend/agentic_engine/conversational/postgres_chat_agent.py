@@ -899,6 +899,11 @@ async def stream_postgres_chat_turn(
                                     token_usage=planning.token_usage,
                                     commit=False,
                                 )
+                                # The result frame must never get ahead of
+                                # durable transcript history. Commit while the
+                                # final cancellation and source-delivery
+                                # guards still authorize this result.
+                                await delivery_session.commit()
                             except Exception as exc:
                                 raise _PostgresResultPersistenceError() from exc
                             terminal_persisted = True
