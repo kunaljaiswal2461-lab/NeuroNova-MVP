@@ -250,6 +250,9 @@ it('renders aggregate-only sample observations and deterministic findings withou
   expect(screen.getByText(/This applies only to the observed sample/i)).toBeTruthy()
   expect(screen.queryByText('this-must-never-render')).toBeNull()
   expect(screen.getByText(/do not establish full-table uniqueness/i)).toBeTruthy()
+  expect(screen.getByRole('heading', { name: 'Observed null-rate charts' })).toBeTruthy()
+  expect(screen.getByText(/Observed sample only.*40 observed rows/i)).toBeTruthy()
+  expect(screen.getByText(/not presented as a uniformly random or representative whole-table population/i)).toBeTruthy()
 })
 
 it('uses the source-scoped cancellation endpoint for an active profile', async () => {

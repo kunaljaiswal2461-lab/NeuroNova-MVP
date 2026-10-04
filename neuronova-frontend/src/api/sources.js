@@ -38,6 +38,22 @@ export const sourceApi = {
     return api.delete(`/sources/${encodeURIComponent(sourceId)}`, undefined, jwtSourceOptions(options))
   },
 
+  retestSavedSource(sourceId, options) {
+    return api.post(`/sources/${encodeURIComponent(sourceId)}/retest`, {}, jwtSourceOptions(options))
+  },
+
+  replaceSavedSourceCredentials(sourceId, body, options) {
+    return api.put(`/sources/${encodeURIComponent(sourceId)}/credentials`, body, jwtSourceOptions(options))
+  },
+
+  updateSavedSourceScope(sourceId, body, options) {
+    return api.put(`/sources/${encodeURIComponent(sourceId)}/scope`, body, jwtSourceOptions(options))
+  },
+
+  configureCatalogRefresh(sourceId, body, options) {
+    return api.put(`/sources/${encodeURIComponent(sourceId)}/catalog-refresh`, body, jwtSourceOptions(options))
+  },
+
   // Catalog routes deliberately use the same JWT-only transport as source
   // onboarding. A catalog snapshot, asset, or sync-run id is never itself an
   // authorization capability.

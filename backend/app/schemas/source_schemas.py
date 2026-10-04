@@ -136,6 +136,50 @@ class CreateSourceRequest(PostgresConnectionRequest):
         return self
 
 
+class SavedSourceCredentialReplacementRequest(BaseModel):
+    """Credentials may rotate, but a saved source endpoint is immutable.
+
+    The endpoint/database identity is intentionally absent.  Moving a source
+    is a new onboarding decision, rather than a way to silently redirect an
+    approved connector to a different network destination.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    credentials: PostgresCredentialsRequest
+    tls: PostgresTLSRequest = Field(default_factory=PostgresTLSRequest)
+
+
+class SourceScopeUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    selected_tables: list[TableScopeRequest] = Field(min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def reject_duplicate_scopes(self) -> "SourceScopeUpdateRequest":
+        pairs = {(scope.schema_name, scope.table_name) for scope in self.selected_tables}
+        if len(pairs) != len(self.selected_tables):
+            raise ValueError("selected tables must be unique")
+        return self
+
+
+class SourceCatalogRefreshPolicyRequest(BaseModel):
+    """A bounded, opt-in schedule for structural metadata only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    interval_minutes: int | None = Field(default=None, ge=15, le=10_080)
+
+    @model_validator(mode="after")
+    def validate_schedule_shape(self) -> "SourceCatalogRefreshPolicyRequest":
+        if self.enabled and self.interval_minutes is None:
+            raise ValueError("an interval is required when scheduled refresh is enabled")
+        if not self.enabled and self.interval_minutes is not None:
+            raise ValueError("an interval is only valid when scheduled refresh is enabled")
+        return self
+
+
 class InventoryTableResponse(BaseModel):
     schema_name: str
     table_name: str
@@ -158,14 +202,31 @@ class SourceSummaryResponse(BaseModel):
     tls_mode: TLSMode
     has_custom_ca: bool
     profiling_enabled: bool
+    configuration_generation: int = 0
     scope_count: int
     last_tested_at: datetime | None
+    catalog_refresh_enabled: bool = False
+    catalog_refresh_interval_minutes: int | None = None
+    catalog_refresh_next_due_at: datetime | None = None
+    catalog_last_success_at: datetime | None = None
+    catalog_last_failure_code: str | None = None
     created_at: datetime
     updated_at: datetime
 
 
 class SourceDetailResponse(SourceSummaryResponse):
     selected_tables: list[InventoryTableResponse]
+
+
+class SavedSourceTestResponse(PostgresTestResponse):
+    source: SourceDetailResponse
+
+
+class SourceCatalogRefreshPolicyResponse(BaseModel):
+    source_id: uuid.UUID
+    enabled: bool
+    interval_minutes: int | None
+    next_due_at: datetime | None
 
 
 class SourceListResponse(BaseModel):

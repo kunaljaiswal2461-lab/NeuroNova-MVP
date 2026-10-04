@@ -40,6 +40,8 @@ from app.schemas.source_schemas import (
     EligibleDeclaredRelationshipResponse,
     PostgresTestRequest,
     PostgresTestResponse,
+    SavedSourceCredentialReplacementRequest,
+    SavedSourceTestResponse,
     RelationshipColumnPairResponse,
     RelationshipCurrentCatalogResponse,
     RelationshipDefinitionCreateRequest,
@@ -49,6 +51,8 @@ from app.schemas.source_schemas import (
     RelationshipDefinitionVersionResponse,
     RelationshipTargetKeyResponse,
     SourceDetailResponse,
+    SourceCatalogRefreshPolicyRequest,
+    SourceCatalogRefreshPolicyResponse,
     SourceListResponse,
     SourceProfileColumnObservationResponse,
     SourceProfileFindingListResponse,
@@ -60,6 +64,7 @@ from app.schemas.source_schemas import (
     SourceProfileTableObservationResponse,
     SourceProfilingConfigurationRequest,
     SourceProfilingConfigurationResponse,
+    SourceScopeUpdateRequest,
 )
 from app.services import (
     catalog_service,
@@ -442,6 +447,86 @@ async def create_source(
         owner_user_id=current_user.id,
         request=body,
         settings=settings,
+    )
+
+
+@router.post("/{source_id}/retest", response_model=SavedSourceTestResponse)
+@limiter.limit(get_settings().rate_limit_connector_test)
+async def retest_saved_source(
+    source_id: uuid.UUID,
+    request: Request,
+    session: DBSession,
+    settings: SettingsDep,
+    current_user: User = Depends(get_current_user),
+) -> SavedSourceTestResponse:
+    """Retest a saved immutable endpoint using its protected credential."""
+
+    return await source_service.retest_saved_postgresql_source_for_owner(
+        session,
+        source_id=source_id,
+        owner_user_id=current_user.id,
+        settings=settings,
+    )
+
+
+@router.put("/{source_id}/credentials", response_model=SourceDetailResponse)
+@limiter.limit(get_settings().rate_limit_connector_create)
+async def replace_saved_source_credentials(
+    source_id: uuid.UUID,
+    body: SavedSourceCredentialReplacementRequest,
+    request: Request,
+    session: DBSession,
+    settings: SettingsDep,
+    current_user: User = Depends(get_current_user),
+) -> SourceDetailResponse:
+    """Validate and replace credentials without changing source identity."""
+
+    return await source_service.replace_saved_postgresql_credentials_for_owner(
+        session,
+        source_id=source_id,
+        owner_user_id=current_user.id,
+        request=body,
+        settings=settings,
+    )
+
+
+@router.put("/{source_id}/scope", response_model=SourceDetailResponse)
+@limiter.limit(get_settings().rate_limit_connector_create)
+async def update_saved_source_scope(
+    source_id: uuid.UUID,
+    body: SourceScopeUpdateRequest,
+    request: Request,
+    session: DBSession,
+    settings: SettingsDep,
+    current_user: User = Depends(get_current_user),
+) -> SourceDetailResponse:
+    """Persist a revalidated explicit selected-table scope."""
+
+    return await source_service.update_saved_postgresql_scope_for_owner(
+        session,
+        source_id=source_id,
+        owner_user_id=current_user.id,
+        request=body,
+        settings=settings,
+    )
+
+
+@router.put("/{source_id}/catalog-refresh", response_model=SourceCatalogRefreshPolicyResponse)
+@limiter.limit(get_settings().rate_limit_catalog_sync_request)
+async def configure_saved_source_catalog_refresh(
+    source_id: uuid.UUID,
+    body: SourceCatalogRefreshPolicyRequest,
+    request: Request,
+    session: DBSession,
+    current_user: User = Depends(get_current_user),
+) -> SourceCatalogRefreshPolicyResponse:
+    """Configure optional durable metadata maintenance; no inline discovery."""
+
+    return await source_service.configure_saved_source_catalog_refresh_for_owner(
+        session,
+        source_id=source_id,
+        owner_user_id=current_user.id,
+        request=body,
     )
 
 

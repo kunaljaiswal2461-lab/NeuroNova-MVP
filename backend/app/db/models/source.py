@@ -50,6 +50,7 @@ class DataSource(Base, TimestampMixin):
     __table_args__ = (
         CheckConstraint("catalog_sync_sequence >= 0", name="catalog_sync_sequence_nonnegative"),
         CheckConstraint("profiling_generation >= 0", name="profiling_generation_nonnegative"),
+        CheckConstraint("configuration_generation >= 0", name="configuration_generation_nonnegative"),
         # The catalog run composite FK uses this exact key to prove that the
         # recorded requester was the source owner when the run was created.
         Index("uq_data_sources_id_owner_user_id", "id", "owner_user_id", unique=True),
@@ -105,6 +106,27 @@ class DataSource(Base, TimestampMixin):
     profiling_generation: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
+    # Changes to credentials or the selected relation scope advance this
+    # fence.  Long-running executor and worker paths capture it before remote
+    # I/O and must refuse to publish or disclose work from an older source
+    # configuration.
+    configuration_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    # Optional, source-owner configured catalog maintenance.  A dedicated
+    # worker materializes due refreshes; web requests never contact a source.
+    catalog_refresh_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    catalog_refresh_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    catalog_refresh_next_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    catalog_last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # A bounded service/worker classification only, never an exception body.
+    catalog_last_failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Monotonic source-local generation allocated under a database row lock by
     # the catalog service. It is separate from connection-test status.
     catalog_sync_sequence: Mapped[int] = mapped_column(

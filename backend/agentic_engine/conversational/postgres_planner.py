@@ -189,6 +189,24 @@ class PostgresPlanningResult:
         return self.kind == "plan" and self.plan is not None and self.snapshot_id is not None
 
 
+@dataclass
+class PostgresPlanRepairBudget:
+    """One pre-execution structured-output correction allowance per turn.
+
+    It is deliberately request-local: a repair cannot resume, repeat, or
+    reinterpret a remote database operation because planning happens before
+    compilation and gateway execution.
+    """
+
+    attempts: int = 0
+
+    def claim(self) -> bool:
+        if self.attempts >= 1:
+            return False
+        self.attempts += 1
+        return True
+
+
 @dataclass(frozen=True)
 class _ChosenAsset:
     asset: CatalogAsset
@@ -201,6 +219,41 @@ class _MetricRelationshipOption:
 
     relationship: Any
     lookup: _ChosenAsset
+
+
+_STRUCTURED_REPAIR_INSTRUCTION = (
+    "\n\nThe previous response could not be parsed as the required structured "
+    "envelope. This is the one permitted pre-execution correction. Return a "
+    "complete replacement that obeys the unchanged authorized context. Do not "
+    "introduce tables, identifiers, filters, joins, or capabilities outside it."
+)
+
+
+async def _repair_structured_response_once(
+    *,
+    budget: PostgresPlanRepairBudget,
+    llm: LLMClient,
+    settings: Settings,
+    system: str,
+    user: str,
+    usage: TokenUsage,
+) -> Any | None:
+    """Request at most one sanitized plan-envelope correction."""
+
+    if not budget.claim():
+        return None
+    try:
+        repaired = await llm.chat_json(
+            model=settings.openai_mini_model,
+            system=system,
+            user=user + _STRUCTURED_REPAIR_INSTRUCTION,
+            max_tokens=900,
+            temperature=0.0,
+        )
+    except Exception:
+        return None
+    usage.add(repaired.input_tokens, repaired.output_tokens)
+    return repaired.content_json
 
 
 def _tokens(value: str) -> set[str]:
@@ -1441,6 +1494,7 @@ async def plan_postgres_question(
     llm: LLMClient | None,
     now: datetime | None = None,
     prior_asset_id: uuid.UUID | None = None,
+    repair_budget: PostgresPlanRepairBudget | None = None,
 ) -> PostgresPlanningResult:
     """Return a safe plan/clarification/unsupported outcome for one source."""
 
@@ -1601,19 +1655,21 @@ async def plan_postgres_question(
         )
 
     reference = now or datetime.now(timezone.utc)
+    repair_budget = repair_budget or PostgresPlanRepairBudget()
     usage = TokenUsage()
+    planning_user = prompt.build_user(
+        question=question,
+        asset=_asset_payload(selected),
+        history=history,
+        reference_clock=reference.astimezone(timezone.utc).isoformat(),
+        reference_time_zone="UTC",
+        max_limit=settings.postgres_query_max_result_limit,
+    )
     try:
         llm_result = await llm.chat_json(
             model=settings.openai_mini_model,
             system=prompt.SYSTEM,
-            user=prompt.build_user(
-                question=question,
-                asset=_asset_payload(selected),
-                history=history,
-                reference_clock=reference.astimezone(timezone.utc).isoformat(),
-                reference_time_zone="UTC",
-                max_limit=settings.postgres_query_max_result_limit,
-            ),
+            user=planning_user,
             max_tokens=900,
             temperature=0.0,
         )
@@ -1680,8 +1736,68 @@ async def plan_postgres_question(
                 token_usage=usage,
                 asset_id=selected.asset.id,
             )
+        raise ValueError("unrecognized structured envelope")
     except (ValidationError, AttributeError, TypeError, ValueError):
-        pass
+        # A malformed envelope is the only repairable condition. Semantic
+        # validation failures remain terminal: retrying rejected tables,
+        # filters, or joins could expand the execution surface.
+        payload = await _repair_structured_response_once(
+            budget=repair_budget,
+            llm=llm,
+            settings=settings,
+            system=prompt.SYSTEM,
+            user=planning_user,
+            usage=usage,
+        )
+        if payload is not None:
+            try:
+                if not isinstance(payload, dict):
+                    raise TypeError("structured envelope is not an object")
+                kind = payload.get("kind")
+                if kind == "plan":
+                    envelope = _PlanEnvelope.model_validate(payload)
+                    validation_error = _validate_plan_for_asset(
+                        envelope.plan,
+                        selected,
+                        settings,
+                        required_business_metric_column=business_metric,
+                    )
+                    if validation_error:
+                        return PostgresPlanningResult(
+                            kind="failure",
+                            message=f"{validation_error} No calculation was run.",
+                            snapshot_id=context.snapshot.id,
+                            token_usage=usage,
+                            asset_id=selected.asset.id,
+                        )
+                    return PostgresPlanningResult(
+                        kind="plan",
+                        message="The authorized plan is ready to execute.",
+                        snapshot_id=context.snapshot.id,
+                        plan=envelope.plan,
+                        token_usage=usage,
+                        asset_id=selected.asset.id,
+                    )
+                if kind == "clarification":
+                    envelope = _ClarificationEnvelope.model_validate(payload)
+                    return PostgresPlanningResult(
+                        kind="clarification",
+                        message=envelope.question.strip(),
+                        snapshot_id=context.snapshot.id,
+                        token_usage=usage,
+                        asset_id=selected.asset.id,
+                    )
+                if kind == "unsupported":
+                    envelope = _UnsupportedEnvelope.model_validate(payload)
+                    return PostgresPlanningResult(
+                        kind="unsupported",
+                        message=envelope.reason.strip(),
+                        snapshot_id=context.snapshot.id,
+                        token_usage=usage,
+                        asset_id=selected.asset.id,
+                    )
+            except (ValidationError, AttributeError, TypeError, ValueError):
+                pass
     return PostgresPlanningResult(
         kind="failure",
         message="The database plan was invalid, so no calculation was run.",
@@ -1693,6 +1809,7 @@ async def plan_postgres_question(
 
 __all__ = [
     "MetricQueryIntent",
+    "PostgresPlanRepairBudget",
     "PostgresPlanningResult",
     "plan_postgres_question",
     "prior_postgres_asset_id",

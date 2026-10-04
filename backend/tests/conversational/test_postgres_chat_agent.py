@@ -11,9 +11,11 @@ import pytest
 
 from app.connectors.postgres_query_executor import PostgresExecutionCancellation
 from app.services.postgres_query_executor import (
+    PostgresQueryDeliveryBinding,
     PostgresMetricProvenance,
     PostgresQueryExecutionResult,
     PostgresRelationshipProvenance,
+    PostgresResultValue,
 )
 from app.services.postgres_query_plan import PostgresQueryPlan
 from agentic_engine.conversational import conversation_manager as manager
@@ -92,10 +94,47 @@ async def _install_manager(monkeypatch, *, session, source):
     async def authorized(*_args, **_kwargs):
         return manager.AuthorizedConversation(session=session, source=source)
 
+    def mock_delivery_binding(result, *, owner_user_id, source_id):
+        # Test executors intentionally construct only public typed results.
+        # Supply the internal fence separately so these orchestration tests do
+        # not accidentally weaken production's fail-closed binding requirement.
+        return PostgresQueryDeliveryBinding(
+            owner_user_id=owner_user_id,
+            source_id=source_id,
+            snapshot_id=result.snapshot_id,
+            configuration_generation=1,
+            required_relations=(("public", "orders"),),
+        )
+
+    @asynccontextmanager
+    async def mock_delivery_guard(*_args, **_kwargs):
+        yield _Session()
+
     monkeypatch.setattr(postgres_chat_agent.manager, "append_message", append_message)
     monkeypatch.setattr(postgres_chat_agent.manager, "get_recent_messages", recent_messages)
     monkeypatch.setattr(postgres_chat_agent.manager, "get_session_for_access", authorized)
+    monkeypatch.setattr(postgres_chat_agent, "_delivery_binding_for_result", mock_delivery_binding)
+    monkeypatch.setattr(postgres_chat_agent, "postgres_query_delivery_guard", mock_delivery_guard)
     return saved
+
+
+def test_delivery_binding_is_not_serialized_with_typed_result():
+    """The source fence remains internal to the executor/chat handoff."""
+
+    source_id, snapshot_id, owner_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    result = _execution(source_id=source_id, snapshot_id=snapshot_id).model_copy(
+        update={
+            "delivery_binding": PostgresQueryDeliveryBinding(
+                owner_user_id=owner_id,
+                source_id=source_id,
+                snapshot_id=snapshot_id,
+                configuration_generation=7,
+                required_relations=(("reporting", "daily_sales"),),
+            )
+        }
+    )
+
+    assert "delivery_binding" not in result.model_dump(mode="json")
 
 
 @pytest.mark.asyncio
@@ -508,6 +547,191 @@ async def test_access_change_after_execution_is_not_relabelled_as_cancellation(
     ]
     assert cancellation.cancelled is False
     assert [message.role for message in saved] == [ChatRole.USER]
+
+
+@pytest.mark.asyncio
+async def test_scope_change_after_executor_return_withholds_typed_result(
+    monkeypatch, settings_with_key
+):
+    """A changed saved-source fence must win before transcript/SSE delivery."""
+
+    owner_id, source_id, snapshot_id, asset_id, column_id = [uuid.uuid4() for _ in range(5)]
+    session = ConversationSession(session_id=uuid.uuid4(), source_id=source_id)
+    source = SimpleNamespace(id=source_id, owner_user_id=owner_id)
+    saved = await _install_manager(monkeypatch, session=session, source=source)
+    plan = PostgresQueryPlan(asset_id=asset_id, projections=({"column_id": column_id},), limit=5)
+    executor_returned = asyncio.Event()
+    delivery_guard_reached = asyncio.Event()
+    release_delivery_guard = asyncio.Event()
+    source_state = {
+        "configuration_generation": 1,
+        "tables": {("public", "orders")},
+    }
+
+    async def fake_plan(**_kwargs):
+        return PostgresPlanningResult(
+            kind="plan", message="ready", snapshot_id=snapshot_id, plan=plan
+        )
+
+    async def fake_executor(*_args, **_kwargs):
+        executor_returned.set()
+        return _execution(
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            returned_row_count=1,
+        ).model_copy(
+            update={
+                "rows": ((PostgresResultValue(kind="text", value="scope-revoked-value"),),)
+            }
+        )
+
+    def captured_binding(result, *, owner_user_id, source_id):
+        return PostgresQueryDeliveryBinding(
+            owner_user_id=owner_user_id,
+            source_id=source_id,
+            snapshot_id=result.snapshot_id,
+            configuration_generation=1,
+            required_relations=(("public", "orders"),),
+        )
+
+    @asynccontextmanager
+    async def scope_aware_delivery_guard(*_args, binding, **_kwargs):
+        delivery_guard_reached.set()
+        await release_delivery_guard.wait()
+        if (
+            source_state["configuration_generation"] != binding.configuration_generation
+            or not set(binding.required_relations).issubset(source_state["tables"])
+        ):
+            raise RuntimeError("source delivery binding changed")
+        yield _Session()
+
+    @asynccontextmanager
+    async def factory():
+        yield _Session()
+
+    monkeypatch.setattr(postgres_chat_agent, "plan_postgres_question", fake_plan)
+    monkeypatch.setattr(postgres_chat_agent, "_delivery_binding_for_result", captured_binding)
+    monkeypatch.setattr(
+        postgres_chat_agent, "postgres_query_delivery_guard", scope_aware_delivery_guard
+    )
+
+    async def collect_stream():
+        return [
+            event
+            async for event in postgres_chat_agent.stream_postgres_chat_turn(
+                session_id=session.session_id,
+                user_message="show amount",
+                session_db=_Session(),
+                owner_user_id=owner_id,
+                settings=settings_with_key,
+                authorized_session=session,
+                authorized_source=source,
+                executor=fake_executor,
+                session_factory=factory,
+            )
+        ]
+
+    consumer = asyncio.create_task(collect_stream())
+    await asyncio.wait_for(delivery_guard_reached.wait(), timeout=1)
+    assert executor_returned.is_set()
+
+    # Model the committed Stage 7 scope operation: it increments generation
+    # and removes the queried relation after executor completion but before
+    # the one row-bearing delivery critical section.
+    source_state["configuration_generation"] += 1
+    source_state["tables"] = {("public", "customers")}
+    release_delivery_guard.set()
+    events = await asyncio.wait_for(consumer, timeout=1)
+
+    assert ChatStreamEventType.POSTGRES_RESULT not in [event.event for event in events]
+    assert all(message.postgres_result is None for message in saved)
+    assert "scope-revoked-value" not in repr(events)
+    assert any(event.event is ChatStreamEventType.ERROR for event in events)
+
+
+@pytest.mark.asyncio
+async def test_catalog_head_change_after_executor_return_withholds_typed_result(
+    monkeypatch, settings_with_key
+):
+    """A same-scope publication cannot make an old pinned result deliverable."""
+
+    owner_id, source_id, snapshot_id, asset_id, column_id = [uuid.uuid4() for _ in range(5)]
+    session = ConversationSession(session_id=uuid.uuid4(), source_id=source_id)
+    source = SimpleNamespace(id=source_id, owner_user_id=owner_id)
+    saved = await _install_manager(monkeypatch, session=session, source=source)
+    plan = PostgresQueryPlan(asset_id=asset_id, projections=({"column_id": column_id},), limit=5)
+    delivery_guard_reached = asyncio.Event()
+    release_delivery_guard = asyncio.Event()
+    head_snapshot_id = snapshot_id
+
+    async def fake_plan(**_kwargs):
+        return PostgresPlanningResult(
+            kind="plan", message="ready", snapshot_id=snapshot_id, plan=plan
+        )
+
+    async def fake_executor(*_args, **_kwargs):
+        return _execution(
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            returned_row_count=1,
+        )
+
+    def captured_binding(result, *, owner_user_id, source_id):
+        return PostgresQueryDeliveryBinding(
+            owner_user_id=owner_user_id,
+            source_id=source_id,
+            snapshot_id=result.snapshot_id,
+            configuration_generation=1,
+            required_relations=(("public", "orders"),),
+        )
+
+    @asynccontextmanager
+    async def head_aware_delivery_guard(*_args, binding, **_kwargs):
+        nonlocal head_snapshot_id
+        delivery_guard_reached.set()
+        await release_delivery_guard.wait()
+        if head_snapshot_id != binding.snapshot_id:
+            raise RuntimeError("catalog head changed")
+        yield _Session()
+
+    @asynccontextmanager
+    async def factory():
+        yield _Session()
+
+    monkeypatch.setattr(postgres_chat_agent, "plan_postgres_question", fake_plan)
+    monkeypatch.setattr(postgres_chat_agent, "_delivery_binding_for_result", captured_binding)
+    monkeypatch.setattr(
+        postgres_chat_agent, "postgres_query_delivery_guard", head_aware_delivery_guard
+    )
+
+    async def collect_stream():
+        return [
+            event
+            async for event in postgres_chat_agent.stream_postgres_chat_turn(
+                session_id=session.session_id,
+                user_message="show amount",
+                session_db=_Session(),
+                owner_user_id=owner_id,
+                settings=settings_with_key,
+                authorized_session=session,
+                authorized_source=source,
+                executor=fake_executor,
+                session_factory=factory,
+            )
+        ]
+
+    consumer = asyncio.create_task(collect_stream())
+    await asyncio.wait_for(delivery_guard_reached.wait(), timeout=1)
+
+    # Same scope/configuration, but a later catalog publication replaces the
+    # current head after the executor returns and before final delivery.
+    head_snapshot_id = uuid.uuid4()
+    release_delivery_guard.set()
+    events = await asyncio.wait_for(consumer, timeout=1)
+
+    assert ChatStreamEventType.POSTGRES_RESULT not in [event.event for event in events]
+    assert all(message.postgres_result is None for message in saved)
+    assert any(event.event is ChatStreamEventType.ERROR for event in events)
 
 
 @pytest.mark.asyncio

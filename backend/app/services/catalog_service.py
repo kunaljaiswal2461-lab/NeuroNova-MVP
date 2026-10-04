@@ -40,7 +40,7 @@ from app.db.models.catalog import (
     CatalogSyncRunStatus,
     SourceCatalogHead,
 )
-from app.db.models.source import DataSource, SourceTableScope, SourceType
+from app.db.models.source import DataSource, SourceStatus, SourceTableScope, SourceType
 from app.exceptions.custom_exceptions import AppError, NotFoundError
 
 
@@ -793,6 +793,8 @@ async def request_catalog_sync_for_owner(
             request_sequence=source.catalog_sync_sequence,
             scope_fingerprint=scope_fingerprint,
             scope_count=len(scope),
+            source_configuration_generation=source.configuration_generation,
+            scheduled=False,
             status=CatalogSyncRunStatus.QUEUED,
             requested_at=_now(),
         )
@@ -853,6 +855,8 @@ async def claim_next_catalog_sync_run(
                 .where(
                     eligible,
                     CatalogSyncRun.request_sequence == DataSource.catalog_sync_sequence,
+                    CatalogSyncRun.source_configuration_generation
+                    == DataSource.configuration_generation,
                 )
                 .order_by(CatalogSyncRun.requested_at, CatalogSyncRun.id)
                 .with_for_update(of=DataSource, skip_locked=True)
@@ -880,6 +884,7 @@ async def claim_next_catalog_sync_run(
             run.status = CatalogSyncRunStatus.FAILED
             run.completed_at = now
             run.failure_code = "retry_exhausted"
+            source.catalog_last_failure_code = "retry_exhausted"
             _clear_lease(run)
             await _commit_or_raise(session)
             return None
@@ -900,6 +905,85 @@ async def claim_next_catalog_sync_run(
             lease_token=token,
             attempt_count=run.attempt_count,
         )
+    except SQLAlchemyError:
+        await _rollback_quietly(session)
+        raise CatalogPersistenceError() from None
+
+
+async def enqueue_due_catalog_refreshes(
+    session: AsyncSession,
+    *,
+    limit: int = 50,
+    now: datetime | None = None,
+) -> int:
+    """Materialize owner-opted-in refreshes into the existing durable queue.
+
+    A due source gets at most one active refresh.  Advancing the next due time
+    while its source row is locked avoids a queue burst after a worker outage;
+    this is intentionally periodic best effort, not a missed-run replay
+    system.  The function performs no credential work or client I/O.
+    """
+
+    if limit < 1 or limit > 500:
+        raise CatalogInputError("catalog schedule limit is invalid")
+    now = now or _now()
+    created = 0
+    try:
+        sources = (
+            await session.execute(
+                select(DataSource)
+                .where(
+                    DataSource.catalog_refresh_enabled.is_(True),
+                    DataSource.catalog_refresh_next_due_at.is_not(None),
+                    DataSource.catalog_refresh_next_due_at <= now,
+                )
+                .order_by(DataSource.catalog_refresh_next_due_at, DataSource.id)
+                .with_for_update(skip_locked=True)
+                .limit(limit)
+            )
+        ).scalars().all()
+        for source in sources:
+            interval = source.catalog_refresh_interval_minutes
+            # A malformed legacy row fails closed: no client contact and no
+            # busy-loop.  The owner can explicitly reset the policy.
+            if interval is None or interval < 15:
+                source.catalog_refresh_enabled = False
+                source.catalog_refresh_next_due_at = None
+                source.catalog_last_failure_code = "schedule_invalid"
+                continue
+            source.catalog_refresh_next_due_at = now + timedelta(minutes=interval)
+            if source.status is not SourceStatus.TESTED:
+                source.catalog_last_failure_code = "source_unavailable"
+                continue
+            scope = await _current_scope(session, source.id, lock=True)
+            if not scope:
+                source.catalog_last_failure_code = "scope_changed"
+                continue
+            active = (
+                await session.execute(_active_run_query(source.id).with_for_update())
+            ).scalars().first()
+            if active is not None:
+                # Existing manual or scheduled work will establish the next
+                # known catalog state; never create competing remote reads.
+                continue
+            source.catalog_sync_sequence += 1
+            session.add(
+                CatalogSyncRun(
+                    id=uuid.uuid4(),
+                    source_id=source.id,
+                    requesting_user_id=source.owner_user_id,
+                    request_sequence=source.catalog_sync_sequence,
+                    scope_fingerprint=canonical_scope_fingerprint(scope),
+                    scope_count=len(scope),
+                    source_configuration_generation=source.configuration_generation,
+                    scheduled=True,
+                    status=CatalogSyncRunStatus.QUEUED,
+                    requested_at=now,
+                )
+            )
+            created += 1
+        await _commit_or_raise(session)
+        return created
     except SQLAlchemyError:
         await _rollback_quietly(session)
         raise CatalogPersistenceError() from None
@@ -929,6 +1013,7 @@ async def renew_catalog_sync_lease(
             or run.lease_expires_at is None
             or _lease_expired(run.lease_expires_at, now)
             or run.cancel_requested_at is not None
+            or run.source_configuration_generation != source.configuration_generation
         ):
             await _rollback_quietly(session)
             return False
@@ -980,6 +1065,8 @@ async def finalize_catalog_sync_worker_failure(
             run.status = CatalogSyncRunStatus.FAILED
             run.completed_at = now
             run.next_attempt_at = None
+            if run.source_configuration_generation == source.configuration_generation:
+                source.catalog_last_failure_code = safe_failure_code
         await _commit_or_raise(session)
         return True
     except SQLAlchemyError:
@@ -1008,6 +1095,15 @@ async def mark_catalog_sync_running(
             run.status = CatalogSyncRunStatus.CANCELLED
             run.completed_at = _now()
             run.failure_code = "superseded"
+            run.next_attempt_at = None
+            _clear_lease(run)
+            await _commit_or_raise(session)
+            raise CatalogRunSupersededError()
+
+        if run.source_configuration_generation != source.configuration_generation:
+            run.status = CatalogSyncRunStatus.CANCELLED
+            run.completed_at = _now()
+            run.failure_code = "configuration_changed"
             run.next_attempt_at = None
             _clear_lease(run)
             await _commit_or_raise(session)
@@ -1143,6 +1239,15 @@ async def publish_catalog_snapshot(
             await _commit_or_raise(session)
             raise CatalogRunSupersededError()
 
+        if run.source_configuration_generation != source.configuration_generation:
+            run.status = CatalogSyncRunStatus.CANCELLED
+            run.completed_at = _now()
+            run.failure_code = "configuration_changed"
+            run.next_attempt_at = None
+            _clear_lease(run)
+            await _commit_or_raise(session)
+            raise CatalogRunSupersededError()
+
         current_scope = await _current_scope(session, source.id, lock=True)
         if (
             len(current_scope) != run.scope_count
@@ -1193,6 +1298,8 @@ async def publish_catalog_snapshot(
         run.failure_code = None
         run.next_attempt_at = None
         _clear_lease(run)
+        source.catalog_last_success_at = _now()
+        source.catalog_last_failure_code = None
         await _commit_or_raise(session)
         return snapshot
     except SQLAlchemyError:
@@ -2729,6 +2836,7 @@ __all__ = [
     "cancel_catalog_sync_run_for_owner",
     "canonical_scope_fingerprint",
     "claim_next_catalog_sync_run",
+    "enqueue_due_catalog_refreshes",
     "fail_catalog_sync_run",
     "finalize_catalog_sync_worker_failure",
     "get_catalog_availability_for_owner",

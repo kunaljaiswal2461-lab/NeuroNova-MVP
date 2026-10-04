@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { sourceApi, sourceErrorCode } from '../../api/sources'
+import { DatabaseChartRenderer } from '../charts/DatabaseChartRenderer'
+import { buildProfileNullRateChartSpecs } from '../charts/databaseChartSpec'
 
 const RUN_PAGE_SIZE = 20
 const RESULT_PAGE_SIZE = 100
@@ -488,6 +490,32 @@ function ProfileFindings({ findings }) {
   )
 }
 
+function ProfileCharts({ run, observations }) {
+  const chartSpecs = buildProfileNullRateChartSpecs({ run, observations })
+  const eligibleSpecs = chartSpecs.filter(spec => spec.eligible)
+  const unavailableMessages = [...new Set(chartSpecs.filter(spec => !spec.eligible).map(spec => spec.message))]
+  if (!eligibleSpecs.length) {
+    return (
+      <section className="source-profile-result-section" aria-labelledby="source-profile-charts-heading">
+        <h5 id="source-profile-charts-heading">Observed null-rate charts</h5>
+        <p className="source-profile-guidance">{unavailableMessages[0] || 'No compatible observed null-rate chart is available for this profile.'}</p>
+      </section>
+    )
+  }
+  return (
+    <section className="source-profile-result-section" aria-labelledby="source-profile-charts-heading">
+      <h5 id="source-profile-charts-heading">Observed null-rate charts</h5>
+      <p className="source-profile-guidance">Each chart uses only one retained observed table sample. Exact observed rates and supporting counts remain in the aggregate observations above.</p>
+      <div style={{ display: 'grid', gap: 12 }}>
+        {eligibleSpecs.map(spec => (
+          <DatabaseChartRenderer key={spec.provenance.table_observation_id} spec={spec} />
+        ))}
+      </div>
+      {unavailableMessages.map(message => <p key={message} className="source-profile-guidance">{message}</p>)}
+    </section>
+  )
+}
+
 export default function SourceProfilingPanel({
   source,
   sourceId,
@@ -967,7 +995,7 @@ export default function SourceProfilingPanel({
       <div className="source-profiling-heading">
         <div>
           <h4 id="source-profiling-heading">Optional database profiling</h4>
-          <p>Manual, bounded PostgreSQL reads that retain aggregate observations only. This does not create business definitions or database charts.</p>
+          <p>Manual, bounded PostgreSQL reads that retain aggregate observations only. It does not create business definitions; eligible retained null-rate observations can be viewed as deterministic charts.</p>
         </div>
         <button className="btn btn-ghost-neutral btn-sm" type="button" onClick={() => setOpen(current => !current)}>
           {open ? 'Close profiling' : 'Open profiling'}
@@ -1079,6 +1107,7 @@ export default function SourceProfilingPanel({
               {resultsError && <p className="source-alert" role="alert">{resultsError}</p>}
               {resultsLoading && !observations && <p className="source-profile-guidance" role="status">Loading aggregate profile results…</p>}
               {!resultsLoading && !resultsError && observations && <ProfileObservations observations={observations} currentAssetsById={currentAssets} />}
+              {!resultsLoading && !resultsError && observations && <ProfileCharts run={selectedRun} observations={observations} />}
               {!resultsLoading && !resultsError && findings && (
                 <section className="source-profile-findings" aria-labelledby="source-profile-findings-heading">
                   <h5 id="source-profile-findings-heading">Sample-qualified findings</h5>

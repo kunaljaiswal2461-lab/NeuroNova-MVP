@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import Layout from '../components/Layout'
 import { sourceApi, sourceErrorCode } from '../api/sources'
+import { DatabaseChartRenderer } from '../components/charts/DatabaseChartRenderer'
+import { buildDatabaseResultChartSpec } from '../components/charts/databaseChartSpec'
 
 const SOURCE_SESSION_STORAGE_PREFIX = 'neuronova:source-chat-session:v1:'
 
@@ -166,6 +168,9 @@ function RelationshipProvenance({ provenance, semantics }) {
 }
 
 function PostgresResultTable({ result }) {
+  const [presentation, setPresentation] = useState('table')
+  const [chartFailed, setChartFailed] = useState(false)
+
   if (!result) return null
 
   const succeeded = result.status === 'succeeded'
@@ -184,6 +189,20 @@ function PostgresResultTable({ result }) {
   const relationshipProvenance = result.relationship_provenance ?? null
   const relationshipJoinType = String(relationshipProvenance?.join_type ?? '').toLowerCase()
   const relationshipVersion = relationshipProvenance?.version_number ?? null
+  const chartSpec = buildDatabaseResultChartSpec(result)
+  const chartAvailable = succeeded && chartSpec.eligible && !chartFailed
+  const resultPanelId = `database-result-${String(result.execution_id ?? 'result').replace(/[^A-Za-z0-9_-]/g, '') || 'result'}`
+  const selectPresentation = event => {
+    const next = event.currentTarget.dataset.presentation
+    if (next === 'table' || next === 'chart') setPresentation(next)
+  }
+  const handlePresentationKeyDown = event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const next = event.key === 'ArrowLeft' || event.key === 'Home' ? 'table' : 'chart'
+    setPresentation(next)
+    event.currentTarget.parentElement?.querySelector(`[data-presentation="${next}"]`)?.focus()
+  }
 
   return (
     <section aria-label="Controlled PostgreSQL result" style={{ marginTop: 10, border: '1px solid var(--color-border)', borderRadius: 8, overflow: 'hidden', background: 'white' }}>
@@ -222,14 +241,39 @@ function PostgresResultTable({ result }) {
           {warnings.map((warning, index) => (
             <p key={`${warning}-${index}`} role="status" style={{ margin: 0, padding: '8px 12px', fontFamily: 'var(--font-body)', fontSize: 12, color: '#92400E', background: '#FFFBEB', borderBottom: '1px solid #FDE68A' }}>{warning}</p>
           ))}
+          {rows.length > 0 && (
+            <>
+              {chartAvailable ? (
+                <div role="tablist" aria-label="Database result presentation" style={{ display: 'flex', gap: 6, padding: '9px 11px', borderBottom: '1px solid var(--color-border-light)', background: 'var(--color-base)' }}>
+                  <button type="button" role="tab" data-presentation="table" aria-selected={presentation === 'table'} aria-controls={`${resultPanelId}-table`} onClick={selectPresentation} onKeyDown={handlePresentationKeyDown} className="btn btn-ghost-neutral btn-sm">Table</button>
+                  <button type="button" role="tab" data-presentation="chart" aria-selected={presentation === 'chart'} aria-controls={`${resultPanelId}-chart`} onClick={selectPresentation} onKeyDown={handlePresentationKeyDown} className="btn btn-ghost-neutral btn-sm">Chart</button>
+                </div>
+              ) : (
+                <p role="note" style={{ margin: 0, padding: '9px 12px', borderBottom: '1px solid var(--color-border-light)', fontFamily: 'var(--font-body)', fontSize: 12, lineHeight: 1.45, color: 'var(--color-text-secondary)' }}>
+                  {chartFailed ? 'The chart could not be rendered. The exact table result remains available and no query was rerun.' : chartSpec.message}
+                </p>
+              )}
+              {chartAvailable && presentation === 'chart' && (
+                <div id={`${resultPanelId}-chart`} role="tabpanel" aria-label="Database result chart" style={{ padding: 11 }}>
+                  <DatabaseChartRenderer
+                    spec={chartSpec}
+                    onFailure={() => {
+                      setChartFailed(true)
+                      setPresentation('table')
+                    }}
+                  />
+                </div>
+              )}
+            </>
+          )}
           {rows.length === 0 ? (
             <p style={{ margin: 0, padding: '14px 12px', fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-secondary)' }}>
               {partial
                 ? 'No result rows could be safely displayed before a safety limit was reached. This does not mean no rows matched.'
                 : 'No rows matched this query.'}
             </p>
-          ) : (
-            <div style={{ overflowX: 'auto' }}>
+          ) : (presentation === 'table' || !chartAvailable) && (
+            <div id={`${resultPanelId}-table`} role="tabpanel" aria-label="Database result table" style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
                   <tr style={{ background: 'var(--color-base)' }}>
@@ -572,7 +616,7 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
                 ) : sessionError ? (
                   <><h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>Database chat is unavailable</h3><Link to="/upload" className="btn btn-primary btn-sm" style={{ marginTop: 8 }}>Go to sources</Link></>
                 ) : (
-                  <><h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>Ask about {displayName}</h3><p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-secondary)', maxWidth: 410, lineHeight: 1.6 }}>This feature supports controlled, read-only questions over one authorized table, plus a confirmed metric with one approved direct lookup relationship. Profiling, findings, chart generation, and arbitrary joins are not available.</p></>
+                  <><h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>Ask about {displayName}</h3><p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-secondary)', maxWidth: 410, lineHeight: 1.6 }}>This feature supports controlled, read-only questions over one authorized table, plus a confirmed metric with one approved direct lookup relationship. Eligible returned results can be viewed as a deterministic chart; the exact table remains the record. Arbitrary joins are not available.</p></>
                 )}
               </div>
             ) : messages.map(message => (

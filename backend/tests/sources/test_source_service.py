@@ -14,7 +14,7 @@ from app.core.connector_credentials import CredentialProtector
 from app.db.models.source import DataSource, SourceCredential, SourceStatus, SourceTableScope
 from app.db.models.user import User, UserRole
 from app.exceptions.custom_exceptions import NotFoundError
-from app.schemas.source_schemas import CreateSourceRequest, PostgresTestRequest
+from app.schemas.source_schemas import CreateSourceRequest, PostgresTestRequest, SourceScopeUpdateRequest
 from app.services import source_service
 
 
@@ -166,6 +166,73 @@ async def test_owner_scope_and_delete_do_not_decrypt_credentials(source_session)
     assert (await source_session.execute(select(DataSource))).scalars().all() == []
     assert (await source_session.execute(select(SourceCredential))).scalars().all() == []
     assert (await source_session.execute(select(SourceTableScope))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_saved_source_retest_reuses_protected_credential_and_records_safe_state(source_session):
+    owner = await _make_user(source_session, "owner@example.test")
+    adapter = _Adapter([InventoryTable("public", "orders")])
+    settings = _settings()
+    created = await source_service.create_postgresql_source(
+        source_session,
+        owner_user_id=owner.id,
+        request=_request(),
+        settings=settings,
+        adapter_factory=lambda _settings: adapter,
+    )
+
+    result = await source_service.retest_saved_postgresql_source_for_owner(
+        source_session,
+        source_id=created.source_id,
+        owner_user_id=owner.id,
+        settings=settings,
+        adapter_factory=lambda _settings: adapter,
+    )
+
+    assert result.count == 1
+    assert result.source.status is SourceStatus.TESTED
+    assert result.source.configuration_generation == 0
+    assert "not-in-response" not in result.model_dump_json()
+    assert adapter.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_saved_scope_update_revalidates_inventory_and_returns_reloaded_scope(
+    source_session, monkeypatch
+):
+    owner = await _make_user(source_session, "owner@example.test")
+    settings = _settings()
+    created = await source_service.create_postgresql_source(
+        source_session,
+        owner_user_id=owner.id,
+        request=_request(),
+        settings=settings,
+        adapter_factory=lambda _settings: _Adapter([InventoryTable("public", "orders")]),
+    )
+    adapter = _Adapter([InventoryTable("public", "customers")])
+
+    async def no_active_work(*_args, **_kwargs):
+        # The focused source fixture does not create the separate Stage 3/6
+        # durable tables; their cancellation fence is covered at that layer.
+        return None
+
+    monkeypatch.setattr(source_service, "_cancel_source_work", no_active_work)
+    monkeypatch.setattr(source_service, "_clear_source_transcript_results", no_active_work)
+    updated = await source_service.update_saved_postgresql_scope_for_owner(
+        source_session,
+        source_id=created.source_id,
+        owner_user_id=owner.id,
+        request=SourceScopeUpdateRequest(
+            selected_tables=[{"schema_name": "public", "table_name": "customers"}]
+        ),
+        settings=settings,
+        adapter_factory=lambda _settings: adapter,
+    )
+
+    assert updated.configuration_generation == 1
+    assert [(table.schema_name, table.table_name) for table in updated.selected_tables] == [
+        ("public", "customers")
+    ]
 
 
 @pytest.mark.asyncio

@@ -142,6 +142,34 @@ async def test_planner_accepts_only_authorized_structured_column_ids(
 
 
 @pytest.mark.asyncio
+async def test_malformed_envelope_gets_one_pre_execution_repair_only(monkeypatch, settings_with_key):
+    orders = _asset("public", "orders")
+    amount = _column("amount")
+    await _install_context(monkeypatch, [orders], {orders.id: [amount]})
+    llm = FakeStreamingLLM(json_responses=[
+        {"kind": "plan", "plan": {"unexpected": "shape"}},
+        {
+            "kind": "plan",
+            "plan": {
+                "schema_version": 1,
+                "asset_id": str(orders.id),
+                "projections": [{"column_id": str(amount.id)}],
+                "filters": [], "aggregations": [], "group_by": [], "sort": None, "limit": 5,
+            },
+        },
+    ])
+
+    result = await postgres_planner.plan_postgres_question(
+        session=object(), owner_user_id=uuid.uuid4(), source_id=uuid.uuid4(),
+        question="Show the amount from orders", history=[], settings=settings_with_key, llm=llm,
+    )
+
+    assert result.executable
+    assert len(llm.json_calls) == 2
+    assert "one permitted pre-execution correction" in llm.json_calls[1].user
+
+
+@pytest.mark.asyncio
 async def test_raw_sql_or_extra_plan_fields_are_rejected_without_execution(
     monkeypatch, settings_with_key
 ):

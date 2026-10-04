@@ -14,3 +14,9 @@ The bounded approved-relationship extension is documented in
 Optional, manually requested PostgreSQL profiling and its aggregate-only
 findings boundary are documented in
 [docs/stage6a-optional-database-profiling.md](docs/stage6a-optional-database-profiling.md).
+The deterministic, presentation-only database-result and profiling-chart
+boundary is documented in
+[docs/stage6b-database-charts.md](docs/stage6b-database-charts.md).
+Saved-source maintenance, optional structural refresh scheduling, and the
+explicit operational/deployment limits are documented in
+[docs/stage7-operational-completion.md](docs/stage7-operational-completion.md).

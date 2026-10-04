@@ -88,6 +88,7 @@ from app.services.catalog_service import (
     CatalogSyncLease,
     CatalogTableIdentity,
     claim_next_catalog_sync_run,
+    enqueue_due_catalog_refreshes,
     finalize_catalog_sync_worker_failure,
     publish_catalog_snapshot,
     renew_catalog_sync_lease,
@@ -265,6 +266,10 @@ class CatalogDiscoveryWorker:
         """Claim one catalog run first, otherwise one profile run."""
 
         async with self._session_factory() as session:
+            # Due refreshes become normal durable jobs before a claim.  This
+            # never decrypts a source or performs network I/O in the polling
+            # path, so the web/worker separation remains intact.
+            await enqueue_due_catalog_refreshes(session)
             claim = await claim_next_catalog_sync_run(
                 session,
                 worker_id=self._worker_id,
@@ -318,6 +323,8 @@ class CatalogDiscoveryWorker:
         try:
             while not stop_event.is_set():
                 scheduled = False
+                async with self._session_factory() as session:
+                    await enqueue_due_catalog_refreshes(session)
                 kinds = ("profile", "catalog") if prefer_profile else ("catalog", "profile")
                 prefer_profile = not prefer_profile
                 for kind in kinds:

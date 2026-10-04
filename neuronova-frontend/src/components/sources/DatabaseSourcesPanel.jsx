@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { sourceApi, sourceErrorCode } from '../../api/sources'
 import CatalogInspector from './CatalogInspector'
+import SavedSourceMaintenance from './SavedSourceMaintenance'
 
 const EMPTY_FORM = {
   displayName: '',
@@ -686,6 +687,15 @@ export default function DatabaseSourcesPanel({ active }) {
                           <ul>
                             {detail.selected_tables.map(table => <li key={scopeKey(table)}>{tableLabel(table)}</li>)}
                           </ul>
+                          <SavedSourceMaintenance
+                            source={source}
+                            detail={detail}
+                            onUpdated={updated => {
+                              if (!updated?.source_id) return
+                              setSources(current => current.map(item => item.source_id === updated.source_id ? { ...item, ...updated } : item))
+                              setDetailsById(current => ({ ...current, [updated.source_id]: updated }))
+                            }}
+                          />
                         </>
                       )}
                     </div>

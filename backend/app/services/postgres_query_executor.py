@@ -45,7 +45,7 @@ from app.core.connector_credentials import (
     CredentialUnavailableError,
     InvalidCredentialBundleError,
 )
-from app.db.models.catalog import CatalogColumn
+from app.db.models.catalog import CatalogColumn, SourceCatalogHead
 from app.db.models.metric_definition import MetricDefinitionVersion
 from app.db.models.postgres_query_run import PostgresQueryRun, PostgresQueryRunStatus
 from app.db.models.relationship_definition import RelationshipDefinitionVersion
@@ -173,6 +173,23 @@ class PostgresRelationshipProvenance(BaseModel):
     join_type: Literal["inner", "left"]
 
 
+@dataclass(frozen=True)
+class PostgresQueryDeliveryBinding:
+    """Internal source fence carried only until chat result delivery.
+
+    It is deliberately excluded from the typed result transport and transcript
+    JSON.  The executor captures it after its final remote-work revalidation;
+    chat uses it to serialize the row-bearing transcript write and SSE frame
+    with saved-source configuration changes.
+    """
+
+    owner_user_id: UUID
+    source_id: UUID
+    snapshot_id: UUID
+    configuration_generation: int
+    required_relations: tuple[tuple[str, str], ...]
+
+
 class PostgresQueryExecutionResult(BaseModel):
     """A typed, bounded result for a successful or failed Stage 4B run."""
 
@@ -202,6 +219,12 @@ class PostgresQueryExecutionResult(BaseModel):
     session_time_zone: str = "UTC"
     warnings: tuple[str, ...] = ()
     failure_code: str | None = None
+    # Never serialize this implementation-only fence into SSE, persisted chat
+    # rows, API models, logs, or model prompts.  It exists only while a
+    # completed result crosses from the executor to the chat delivery guard.
+    delivery_binding: PostgresQueryDeliveryBinding | None = Field(
+        default=None, exclude=True, repr=False
+    )
     started_at: datetime
     completed_at: datetime
     duration_ms: float = Field(ge=0.0)
@@ -282,6 +305,7 @@ class _ResultSerializationError(Exception):
 @dataclass(frozen=True)
 class _ExecutionSource:
     source_id: UUID
+    configuration_generation: int
     host: str
     port: int
     database_name: str
@@ -630,6 +654,7 @@ async def _load_execution_source(
                 raise _ExecutionBoundaryError("credential_unavailable") from None
             return _ExecutionSource(
                 source_id=source.id,
+                configuration_generation=getattr(source, "configuration_generation", 0),
                 host=source.host,
                 port=source.port,
                 database_name=source.database_name,
@@ -649,6 +674,7 @@ async def _verify_delivery_source_access(
     owner_user_id: UUID,
     source_id: UUID,
     expectation: LiveQueryExpectation,
+    expected_configuration_generation: int,
     settings: Settings,
 ) -> None:
     """Fail closed if source activation or scope changed during remote work.
@@ -686,6 +712,7 @@ async def _verify_delivery_source_access(
                 or source.source_type is not SourceType.POSTGRESQL
                 or source.status is not SourceStatus.TESTED
                 or source.credential is None
+                or source.configuration_generation != expected_configuration_generation
                 or not required_relations.issubset(permitted_relations)
             ):
                 raise _ExecutionBoundaryError("access_revoked")
@@ -695,6 +722,100 @@ async def _verify_delivery_source_access(
             raise _ExecutionBoundaryError("catalog_unavailable") from None
         finally:
             await _rollback_quietly(session)
+
+
+async def _verify_locked_delivery_binding(
+    session: AsyncSession,
+    *,
+    owner_user_id: UUID,
+    binding: PostgresQueryDeliveryBinding,
+    settings: Settings,
+) -> None:
+    """Lock and validate the saved-source facts that authorize result delivery.
+
+    Source maintenance mutations acquire the same ``DataSource`` row lock
+    before replacing scope or credentials.  Keeping this check and a caller's
+    transcript write in one transaction gives either operation a clear order:
+    a prior mutation makes the binding fail, while a later scope removal sees
+    and clears a committed result blob.
+    """
+
+    if binding.owner_user_id != owner_user_id:
+        raise _ExecutionBoundaryError("access_revoked")
+    try:
+        require_credential_operations(settings)
+    except (ConnectorDisabledError, ConnectorActivationError, CredentialKeyUnavailableError):
+        raise _ExecutionBoundaryError("access_revoked") from None
+
+    try:
+        source = (
+            await session.execute(
+                select(DataSource)
+                .where(
+                    DataSource.id == binding.source_id,
+                    DataSource.owner_user_id == owner_user_id,
+                )
+                .options(selectinload(DataSource.credential), selectinload(DataSource.table_scopes))
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        permitted_relations = {
+            (scope.schema_name, scope.table_name) for scope in source.table_scopes
+        } if source is not None else set()
+        # Catalog publication takes this same source-row lock.  Once it is
+        # held, the head cannot change until the caller commits/releases the
+        # delivery critical section.  A newer head that committed first makes
+        # the executor's pinned snapshot historical and must withhold rows.
+        head = await session.get(SourceCatalogHead, binding.source_id)
+        if (
+            source is None
+            or source.source_type is not SourceType.POSTGRESQL
+            or source.status is not SourceStatus.TESTED
+            or source.credential is None
+            or source.configuration_generation != binding.configuration_generation
+            or head is None
+            or head.snapshot_id != binding.snapshot_id
+            or not set(binding.required_relations).issubset(permitted_relations)
+        ):
+            raise _ExecutionBoundaryError("access_revoked")
+    except _ExecutionBoundaryError:
+        raise
+    except SQLAlchemyError:
+        raise _ExecutionBoundaryError("catalog_unavailable") from None
+
+
+@asynccontextmanager
+async def postgres_query_delivery_guard(
+    session_factory: _SessionFactory,
+    *,
+    owner_user_id: UUID,
+    binding: PostgresQueryDeliveryBinding,
+    settings: Settings,
+) -> AsyncIterator[AsyncSession]:
+    """Hold the saved-source delivery fence across one local critical section.
+
+    Callers may persist a transcript result or yield its SSE frame while this
+    context is active.  It deliberately never performs remote I/O.
+    """
+
+    async with session_factory() as session:
+        try:
+            await _verify_locked_delivery_binding(
+                session,
+                owner_user_id=owner_user_id,
+                binding=binding,
+                settings=settings,
+            )
+            try:
+                yield session
+            except BaseException:
+                await _rollback_quietly(session)
+                raise
+            else:
+                await session.commit()
+        except BaseException:
+            await _rollback_quietly(session)
+            raise
 
 
 async def _create_run(
@@ -1102,6 +1223,7 @@ def _success_result(
     safety_byte_limit: int,
     started_at: datetime,
     started_monotonic: float,
+    delivery_binding: PostgresQueryDeliveryBinding,
 ) -> PostgresQueryExecutionResult:
     byte_truncated = collector.byte_truncated or remote.collector_stopped
     row_truncated = remote.safety_row_truncated
@@ -1132,6 +1254,7 @@ def _success_result(
         calculation_semantics=_semantics(compiled),
         relationship_provenance=_relationship_provenance(compiled),
         warnings=tuple(warnings),
+        delivery_binding=delivery_binding,
         started_at=started_at,
         completed_at=datetime.now(timezone.utc),
         duration_ms=max(0.0, (monotonic() - started_monotonic) * 1000),
@@ -1193,6 +1316,7 @@ async def execute_postgres_query(
     started_monotonic = monotonic()
     compiled: CompiledPostgresQuery | None = None
     run_created = False
+    delivery_binding: PostgresQueryDeliveryBinding | None = None
 
     # A semantic version UUID is only trustworthy when a caller carries a
     # fresh owner/catalog pin for that exact definition.  Reject either half
@@ -1329,6 +1453,21 @@ async def execute_postgres_query(
                 expectation=expectation,
                 settings=settings,
             )
+            # Retain only non-secret source authorization facts so a typed
+            # remote failure can still be delivered safely through chat.  A
+            # later configuration/scope change invalidates this binding there.
+            delivery_binding = PostgresQueryDeliveryBinding(
+                owner_user_id=owner_user_id,
+                source_id=getattr(source, "source_id", source_id),
+                snapshot_id=compiled.snapshot_id,
+                configuration_generation=getattr(source, "configuration_generation", 0),
+                required_relations=tuple(
+                    sorted(
+                        (relation.schema_name, relation.table_name)
+                        for relation in expectation.relation_expectations()
+                    )
+                ),
+            )
             if metric_pin_verifier is not None:
                 # This is intentionally the last authorization action before
                 # the client gateway receives a remote execution request.
@@ -1385,6 +1524,10 @@ async def execute_postgres_query(
                 owner_user_id=owner_user_id,
                 source_id=source_id,
                 expectation=delivery_expectation,
+                # Internal callers/tests that construct a legacy execution
+                # source still receive the existing delivery checks. Real
+                # sources always carry the persisted generation fence.
+                expected_configuration_generation=getattr(source, "configuration_generation", 0),
                 settings=settings,
             )
             if metric_pin_verifier is not None:
@@ -1421,6 +1564,18 @@ async def execute_postgres_query(
                 raise PostgresExecutionCancelledError()
             if delivered_compiled.fingerprint != compiled.fingerprint:
                 raise _ExecutionBoundaryError("access_revoked")
+            delivery_binding = PostgresQueryDeliveryBinding(
+                owner_user_id=owner_user_id,
+                source_id=getattr(source, "source_id", source_id),
+                snapshot_id=compiled.snapshot_id,
+                configuration_generation=getattr(source, "configuration_generation", 0),
+                required_relations=tuple(
+                    sorted(
+                        (relation.schema_name, relation.table_name)
+                        for relation in delivery_expectation.relation_expectations()
+                    )
+                ),
+            )
             result = _success_result(
                 execution_id=execution_id,
                 compiled=compiled,
@@ -1430,6 +1585,7 @@ async def execute_postgres_query(
                 safety_byte_limit=settings.postgres_execution_max_result_bytes,
                 started_at=started_at,
                 started_monotonic=started_monotonic,
+                delivery_binding=delivery_binding,
             )
     except asyncio.CancelledError:
         cancelled = _failure_result(
@@ -1473,6 +1629,8 @@ async def execute_postgres_query(
             started_monotonic=started_monotonic,
             code=_failure_code(exc, delivery_phase=run_created),
         )
+    if delivery_binding is not None and result.delivery_binding is None:
+        result = result.model_copy(update={"delivery_binding": delivery_binding})
     return await _finalize_or_record_failure(
         session_factory,
         result=result,
@@ -1488,9 +1646,11 @@ __all__ = [
     "RelationshipExecutionPinVerifier",
     "PostgresMetricProvenance",
     "PostgresRelationshipProvenance",
+    "PostgresQueryDeliveryBinding",
     "PostgresQueryExecutionResult",
     "PostgresQueryOrdering",
     "PostgresQueryResultColumn",
     "PostgresResultValue",
     "execute_postgres_query",
+    "postgres_query_delivery_guard",
 ]

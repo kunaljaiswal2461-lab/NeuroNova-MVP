@@ -90,6 +90,16 @@ class CatalogSyncRun(Base, TimestampMixin):
     # SHA-256 hex of canonical JSON tuples, never a concatenated dotted name.
     scope_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     scope_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Captured independently of the catalog sequence so a credential/scope
+    # maintenance operation can fence a lease that was already remote.
+    source_configuration_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    # Owner-triggered refreshes and due maintenance share the durable queue,
+    # but only scheduled jobs are withdrawn when scheduling is disabled.
+    scheduled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     status: Mapped[CatalogSyncRunStatus] = mapped_column(
         Enum(CatalogSyncRunStatus, name="catalog_sync_run_status_enum", native_enum=True),
         nullable=False,

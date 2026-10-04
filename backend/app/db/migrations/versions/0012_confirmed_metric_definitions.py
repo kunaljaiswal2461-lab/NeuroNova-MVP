@@ -19,7 +19,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision: str = "0012_confirmed_metric_definitions"
-down_revision: Union[str, None] = "0011_postgres_chat_bindings"
+down_revision: Union[str, None] = "0011b_widen_alembic_version"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -19,9 +19,11 @@ from app.core.config import Settings, get_settings
 from app.db.session import get_sessionmaker
 from app.services import metric_service, relationship_service
 from app.services.postgres_query_executor import (
+    PostgresQueryDeliveryBinding,
     PostgresQueryExecutionResult,
     PostgresRelationshipProvenance,
     execute_postgres_query,
+    postgres_query_delivery_guard,
 )
 from agentic_engine.conversational import conversation_manager as manager
 from agentic_engine.conversational.models import (
@@ -44,6 +46,10 @@ from agentic_engine.llm_engine.openai_client import build_client
 
 def _event(event: ChatStreamEventType, data: dict[str, Any]) -> ChatStreamEvent:
     return ChatStreamEvent(event=event, data=data)
+
+
+class _PostgresResultPersistenceError(Exception):
+    """A local transcript write failed after a delivery fence was accepted."""
 
 
 def _summary_for_result(result: PostgresQueryExecutionResult) -> str:
@@ -83,6 +89,7 @@ async def _persist_assistant(
     degraded: bool = False,
     degraded_reason: str | None = None,
     token_usage: Any | None = None,
+    commit: bool = True,
 ) -> ChatMessage:
     return await manager.append_message(
         session_db=session_db,
@@ -95,7 +102,7 @@ async def _persist_assistant(
         degraded=degraded,
         degraded_reason=degraded_reason,
         token_usage=token_usage,
-        commit=True,
+        commit=commit,
     )
 
 
@@ -137,6 +144,93 @@ async def _authorize_before_disclosure(
         # A missing/deleted source is intentionally indistinguishable here;
         # any result rows must remain undisclosed.
         return False
+
+
+def _delivery_binding_for_result(
+    result: PostgresQueryExecutionResult,
+    *,
+    owner_user_id: uuid.UUID,
+    source_id: uuid.UUID,
+) -> PostgresQueryDeliveryBinding | None:
+    """Accept only the executor's non-serializable source delivery fence."""
+
+    binding = result.delivery_binding
+    if (
+        binding is None
+        or binding.owner_user_id != owner_user_id
+        or binding.source_id != source_id
+        or result.source_id != source_id
+        or result.snapshot_id != binding.snapshot_id
+    ):
+        return None
+    return binding
+
+
+async def _persist_postgres_result_with_delivery_guard(
+    *,
+    owner_user_id: uuid.UUID,
+    session_id: uuid.UUID,
+    source_id: uuid.UUID,
+    result: PostgresQueryExecutionResult,
+    content: str,
+    settings: Settings,
+    session_factory: Callable[[], Any],
+    degraded: bool,
+    degraded_reason: str | None,
+    token_usage: Any | None,
+) -> ChatMessage | None:
+    """Commit one row-bearing message while the saved source remains fenced.
+
+    Scope and credential maintenance take the same source-row lock.  A change
+    that committed before this point invalidates the executor binding; a change
+    that waits behind this commit observes and clears this newly persisted
+    result before it can become a retained stale transcript blob.
+    """
+
+    binding = _delivery_binding_for_result(
+        result, owner_user_id=owner_user_id, source_id=source_id
+    )
+    if binding is None:
+        return None
+    try:
+        async with postgres_query_delivery_guard(
+            session_factory,
+            owner_user_id=owner_user_id,
+            binding=binding,
+            settings=settings,
+        ) as delivery_session:
+            conversation = await manager.get_session_for_access(
+                delivery_session,
+                session_id,
+                access=manager.ConversationAccess.for_user(owner_user_id),
+            )
+            if (
+                conversation.session.source_id != source_id
+                or conversation.source is None
+                or conversation.source.id != source_id
+            ):
+                return None
+            try:
+                return await _persist_assistant(
+                    session_db=delivery_session,
+                    session_id=session_id,
+                    content=content,
+                    postgres_result=result,
+                    degraded=degraded,
+                    degraded_reason=degraded_reason,
+                    token_usage=token_usage,
+                    commit=False,
+                )
+            except Exception as exc:
+                raise _PostgresResultPersistenceError() from exc
+    except asyncio.CancelledError:
+        raise
+    except _PostgresResultPersistenceError:
+        raise
+    except Exception:
+        # The caller emits only a generic access/delivery failure.  Never turn
+        # a failed fence into a fallback path that retains or streams rows.
+        return None
 
 
 async def _verify_metric_pin(
@@ -821,25 +915,52 @@ async def stream_postgres_chat_turn(
             return
 
         summary = _summary_for_result(result)
+        binding = _delivery_binding_for_result(
+            result, owner_user_id=owner_user_id, source_id=session.source_id
+        )
+        if binding is None:
+            # Results supplied by the production executor always carry a
+            # non-serializable binding.  Without it there is no safe way to
+            # prove that scope/credential state still authorizes delivery.
+            terminal_emitted = True
+            yield _event(
+                ChatStreamEventType.ERROR,
+                {"message": "Access changed before the database result could be delivered."},
+            )
+            yield _event(ChatStreamEventType.DONE, {"session_id": str(session_id)})
+            return
         # Atomically order a cancel request and the final row-bearing write.
         # A cancellation already accepted means we never retain the result;
         # one accepted later is still checked before SSE disclosure below.
         delivery_allowed = False
+        assistant: ChatMessage | None = None
         async with cancellation.delivery_guard() as delivery_allowed:
             if delivery_allowed:
-                assistant = await _persist_assistant(
-                    session_db=session_db,
+                assistant = await _persist_postgres_result_with_delivery_guard(
+                    owner_user_id=owner_user_id,
                     session_id=session_id,
+                    source_id=session.source_id,
+                    result=result,
                     content=summary,
-                    postgres_result=result,
+                    settings=settings,
+                    session_factory=app_session_factory,
                     degraded=not result.is_ok,
                     degraded_reason=result.failure_code,
                     token_usage=planning.token_usage,
                 )
-                terminal_persisted = True
+                if assistant is not None:
+                    terminal_persisted = True
         if not delivery_allowed:
             for event in await _cancelled_events():
                 yield event
+            return
+        if assistant is None:
+            terminal_emitted = True
+            yield _event(
+                ChatStreamEventType.ERROR,
+                {"message": "Access changed before the database result could be delivered."},
+            )
+            yield _event(ChatStreamEventType.DONE, {"session_id": str(session_id)})
             return
 
         # Store the bounded typed result before sending it, then repeat owner
@@ -871,9 +992,54 @@ async def stream_postgres_chat_turn(
             )
             yield _done(assistant, token_usage=planning.token_usage)
             return
-        safe_result = result.model_dump(mode="json")
-        terminal_emitted = True
-        yield _event(ChatStreamEventType.POSTGRES_RESULT, {"postgres_result": safe_result})
+
+        # The source row remains locked through the actual row-bearing yield.
+        # A scope or credential mutation therefore either committed first (and
+        # invalidates the binding) or waits until this frame is delivered.  It
+        # is not enough to read authorization immediately before yielding: the
+        # mutation could otherwise commit in that check-to-yield window.
+        sse_allowed = False
+        try:
+            async with postgres_query_delivery_guard(
+                app_session_factory,
+                owner_user_id=owner_user_id,
+                binding=binding,
+                settings=settings,
+            ) as delivery_session:
+                conversation = await manager.get_session_for_access(
+                    delivery_session,
+                    session_id,
+                    access=manager.ConversationAccess.for_user(owner_user_id),
+                )
+                if (
+                    conversation.session.source_id == session.source_id
+                    and conversation.source is not None
+                    and conversation.source.id == session.source_id
+                    and not cancellation.cancelled
+                ):
+                    safe_result = result.model_dump(mode="json")
+                    sse_allowed = True
+                    terminal_emitted = True
+                    yield _event(ChatStreamEventType.POSTGRES_RESULT, {"postgres_result": safe_result})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            sse_allowed = False
+        if not sse_allowed:
+            terminal_emitted = True
+            if cancellation.cancelled:
+                yield _event(
+                    ChatStreamEventType.ERROR,
+                    {"message": "The database calculation was cancelled before its result could be delivered."},
+                )
+                yield _done(assistant, token_usage=planning.token_usage)
+            else:
+                yield _event(
+                    ChatStreamEventType.ERROR,
+                    {"message": "Access changed before the database result could be delivered."},
+                )
+                yield _event(ChatStreamEventType.DONE, {"session_id": str(session_id)})
+            return
         yield _event(ChatStreamEventType.TOKEN, {"text": summary})
         yield _done(assistant, token_usage=planning.token_usage)
     except asyncio.CancelledError:

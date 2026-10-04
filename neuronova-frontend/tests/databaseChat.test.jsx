@@ -114,6 +114,71 @@ it('creates a JWT-only source session and renders precision-safe PostgreSQL valu
   )
 })
 
+it('switches an eligible returned result between its exact table and a local chart without another request', async () => {
+  const chartableResult = {
+    ...result,
+    complete: true,
+    safety_row_truncated: false,
+    explicit_top_n: true,
+    requested_limit: 2,
+    columns: [
+      { alias: 'region', logical_type: 'text' },
+      { alias: 'revenue', logical_type: 'decimal' },
+    ],
+    rows: [
+      [{ kind: 'text', value: 'East' }, { kind: 'decimal', value: '-5.00' }],
+      [{ kind: 'text', value: 'West' }, { kind: 'decimal', value: '10.25' }],
+    ],
+  }
+  async function* stream() {
+    yield { event: 'postgres_result', data: { postgres_result: chartableResult } }
+    yield { event: 'done', data: {} }
+  }
+  api.streamSSE.mockImplementation(() => stream())
+  renderDatabaseChat()
+
+  const composer = await screen.findByRole('textbox', { name: 'Database question' })
+  fireEvent.change(composer, { target: { value: 'Show revenue by region' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send database question' }))
+
+  await screen.findByText('-5.00')
+  expect(screen.getByRole('tab', { name: 'Table' }).getAttribute('aria-selected')).toBe('true')
+  fireEvent.click(screen.getByRole('tab', { name: 'Chart' }))
+  expect(await screen.findByRole('tabpanel', { name: 'Database result chart' })).toBeTruthy()
+  expect(screen.getByText(/Requested Top-2 result/)).toBeTruthy()
+  expect(api.streamSSE).toHaveBeenCalledTimes(1)
+
+  fireEvent.click(screen.getByRole('tab', { name: 'Table' }))
+  expect(await screen.findByText('-5.00')).toBeTruthy()
+})
+
+it('explains why repeated categories remain table-only', async () => {
+  const ambiguousResult = {
+    ...result,
+    complete: true,
+    safety_row_truncated: false,
+    columns: [{ alias: 'region', logical_type: 'text' }, { alias: 'revenue', logical_type: 'decimal' }],
+    rows: [
+      [{ kind: 'text', value: 'East' }, { kind: 'decimal', value: '1' }],
+      [{ kind: 'text', value: 'East' }, { kind: 'decimal', value: '2' }],
+    ],
+  }
+  async function* stream() {
+    yield { event: 'postgres_result', data: { postgres_result: ambiguousResult } }
+    yield { event: 'done', data: {} }
+  }
+  api.streamSSE.mockImplementation(() => stream())
+  renderDatabaseChat()
+
+  const composer = await screen.findByRole('textbox', { name: 'Database question' })
+  fireEvent.change(composer, { target: { value: 'Show revenue by region' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send database question' }))
+
+  expect(await screen.findByText(/repeated category labels would make the bars ambiguous/i)).toBeTruthy()
+  expect(screen.queryByRole('tab', { name: 'Chart' })).toBeNull()
+  expect(screen.getByRole('tabpanel', { name: 'Database result table' })).toBeTruthy()
+})
+
 it('does not create a source session when current metadata is unavailable', async () => {
   api.get.mockImplementation(path => {
     if (path === `/sources/${sourceId}`) return Promise.resolve({ source_id: sourceId, display_name: 'Production analytics' })

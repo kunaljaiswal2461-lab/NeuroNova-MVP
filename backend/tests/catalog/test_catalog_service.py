@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,7 @@ from app.services.catalog_service import (
     CatalogTableIdentity,
     cancel_catalog_sync_run_for_owner,
     canonical_scope_fingerprint,
+    enqueue_due_catalog_refreshes,
     get_catalog_availability_for_owner,
     get_catalog_sync_run_for_owner,
     get_catalog_snapshot_for_owner,
@@ -239,6 +241,26 @@ async def _publish(session, source: DataSource, owner: User, snapshot_input: Cat
 
 async def _count(session, model) -> int:
     return (await session.execute(select(func.count()).select_from(model))).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_due_opt_in_refresh_becomes_one_fenced_scheduled_catalog_run(catalog_session):
+    owner = await _make_user(catalog_session, "scheduled@example.test")
+    source = await _make_source(catalog_session, owner=owner)
+    due = datetime.now(timezone.utc) - timedelta(minutes=1)
+    source.catalog_refresh_enabled = True
+    source.catalog_refresh_interval_minutes = 60
+    source.catalog_refresh_next_due_at = due
+    await catalog_session.commit()
+
+    created = await enqueue_due_catalog_refreshes(catalog_session, now=datetime.now(timezone.utc))
+
+    assert created == 1
+    run = (await catalog_session.execute(select(CatalogSyncRun))).scalar_one()
+    assert run.scheduled is True
+    assert run.source_configuration_generation == source.configuration_generation
+    assert run.status is CatalogSyncRunStatus.QUEUED
+    assert source.catalog_refresh_next_due_at > due
 
 
 async def test_persists_complete_catalog_with_ordered_composite_keys_and_relationships(catalog_session):
