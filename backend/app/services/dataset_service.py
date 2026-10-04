@@ -134,7 +134,14 @@ async def create_dataset_from_upload(
     session: AsyncSession,
     storage: StorageBackend,
     settings: Settings,
+    owner_user_id: uuid.UUID | None = None,
 ) -> DatasetRecord:
+    """Persist an uploaded dataset with its verified owner in the first commit.
+
+    ``None`` is reserved for a legitimate legacy API-key upload.  Public JWT
+    callers pass their identity from the trusted authentication dependency, so
+    a newly uploaded private record is never briefly visible as legacy data.
+    """
     if upload.filename is None or upload.filename.strip() == "":
         raise ValidationFailure("filename is required")
 
@@ -194,6 +201,7 @@ async def create_dataset_from_upload(
         status=DatasetStatus.QUEUED,
         progress_pct=0,
         uploaded_at=datetime.now(timezone.utc),
+        user_id=owner_user_id,
     )
     session.add(record)
     await session.commit()

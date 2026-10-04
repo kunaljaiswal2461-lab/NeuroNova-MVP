@@ -86,13 +86,6 @@ async def stream_chat_turn(
     handler) just pump the events to the client.
     """
     settings = settings or get_settings()
-    # Build the LLM + embedder once per turn so test fixtures can
-    # inject fakes; default to the production OpenAI implementations.
-    eff_llm = llm if llm is not None else build_client(settings.openai_api_key)
-    eff_embedder = (
-        embedder if embedder is not None else build_embedder(settings.openai_api_key)
-    )
-
     # ── 1. Load session + dataset metadata. ───────────────────────────────
     # HTTP callers pre-authorize this pair before opening their SSE stream and
     # pass it here. The fallback keeps this lower-level orchestrator usable by
@@ -110,8 +103,19 @@ async def stream_chat_turn(
     else:
         session = authorized_session
         dataset_record = authorized_dataset
-        if session.session_id != session_id or session.dataset_id != dataset_record.id:
+        if (
+            session.session_id != session_id
+            or session.dataset_id != dataset_record.id
+        ):
             raise ValueError("authorized conversation context does not match session id")
+
+    # Build the LLM + embedder only after the supplied authorized context has
+    # been validated. This keeps a mismatched handoff from even constructing
+    # downstream clients before it is rejected.
+    eff_llm = llm if llm is not None else build_client(settings.openai_api_key)
+    eff_embedder = (
+        embedder if embedder is not None else build_embedder(settings.openai_api_key)
+    )
 
     if dataset_record.status is not DatasetStatus.COMPLETE:
         # Dataset is still being processed — refuse the turn rather than

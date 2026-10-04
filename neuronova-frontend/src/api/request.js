@@ -1,6 +1,7 @@
 export const RETRY_MESSAGE = 'Backend is temporarily unavailable. Retrying...'
 export const UNAVAILABLE_MESSAGE = 'Processing may still be running. Please try again shortly.'
 export const UPLOAD_UNCERTAIN_MESSAGE = 'The upload may still be processing. Check its status before uploading again to avoid a duplicate.'
+export const JWT_REQUIRED_MESSAGE = 'Please sign in again to manage database connections.'
 
 const TRANSIENT_STATUSES = new Set([502, 503, 504])
 const READ_TIMEOUT_MS = 15_000
@@ -17,7 +18,12 @@ function unavailable(uncertain = false) {
 function friendlyError(error, uncertain = false) {
   if (error.name === 'AbortError') return error
   if (error.transient || error.name === 'TimeoutError' || error.name === 'NetworkError' || error instanceof TypeError) {
-    return Object.assign(unavailable(uncertain), { retryable: error.retryable, status: error.status })
+    return Object.assign(unavailable(uncertain), {
+      retryable: error.retryable,
+      status: error.status,
+      response: error.response,
+      code: error.code,
+    })
   }
   return error
 }
@@ -71,9 +77,9 @@ function backoff(ms, signal) {
   })
 }
 
-async function validateResponse(res) {
+async function validateResponse(res, { preserveErrorBody = false } = {}) {
   if (res.ok) return res
-  if (TRANSIENT_STATUSES.has(res.status)) {
+  if (TRANSIENT_STATUSES.has(res.status) && !preserveErrorBody) {
     throw Object.assign(unavailable(), { status: res.status })
   }
   let response
@@ -83,6 +89,16 @@ async function validateResponse(res) {
     const detail = response.error?.message || response.detail || response.message
     if (typeof detail === 'string') message = detail
     else if (Array.isArray(detail)) message = detail.map(item => item.msg || 'Invalid input').join('; ')
+  }
+  if (TRANSIENT_STATUSES.has(res.status)) {
+    const code = response?.error?.code
+    // Source onboarding needs to distinguish deployment and connection errors
+    // returned in the normal API envelope. Other callers retain the historic
+    // transient/retry behaviour without parsing or exposing those details.
+    throw Object.assign(unavailable(), {
+      status: res.status,
+      ...(preserveErrorBody && response ? { response, code, retryable: false } : {}),
+    })
   }
   if (/failed to fetch|networkerror|load failed/i.test(message)) message = UNAVAILABLE_MESSAGE
   throw Object.assign(new Error(message), { status: res.status, response })
@@ -101,12 +117,22 @@ export function createApi({
 }) {
   let refreshPromise = null
 
-  function authHeaders() {
+  function authHeaders(options = {}) {
     const token = storage.getItem('access_token')
     return {
-      ...(token ? { Authorization: `Bearer ${token}` } : { 'X-API-Key': fallbackApiKey }),
+      ...(token ? { Authorization: `Bearer ${token}` }
+        : options.requireJwt ? {}
+          : { 'X-API-Key': fallbackApiKey }),
       'Content-Type': 'application/json',
     }
+  }
+
+  function jwtRequired() {
+    return Object.assign(new Error(JWT_REQUIRED_MESSAGE), {
+      status: 401,
+      code: 'authentication_required',
+      retryable: false,
+    })
   }
 
   function refresh() {
@@ -142,12 +168,12 @@ export function createApi({
     return refreshPromise
   }
 
-  async function fetchAuthenticated(path, init, signal, state = {}) {
+  async function fetchAuthenticated(path, init, signal, state = {}, responseOptions = {}, allowAuthRefresh = true) {
     // A prior read attempt or another caller may already have refreshed auth.
     const currentToken = storage.getItem('access_token')
     if (currentToken) init = { ...init, headers: { ...init.headers, Authorization: `Bearer ${currentToken}` } }
     let res = await fetchImpl(`${baseUrl}${path}`, { ...init, signal })
-    if (res.status === 401 && storage.getItem('refresh_token')) {
+    if (allowAuthRefresh && res.status === 401 && storage.getItem('refresh_token')) {
       // Refresh is shared, but each waiting caller can cancel independently.
       await res.body?.cancel()
       state.waitingForRefresh = true
@@ -162,17 +188,23 @@ export function createApi({
         signal,
       })
     }
-    return validateResponse(res)
+    return validateResponse(res, responseOptions)
   }
 
   async function request(path, init, consume, options = {}, uncertain = false) {
+    // A source endpoint must never silently become a legacy API-key request.
+    // Reject before fetch instead, while ordinary existing endpoints retain
+    // their established fallback behaviour.
+    if (options.requireJwt && !storage.getItem('access_token')) throw jwtRequired()
     const safeRead = !init.method || init.method === 'GET'
     for (let attempt = 0; attempt < (safeRead ? 3 : 1); attempt++) {
       const scope = deadline(options.signal, options.timeoutMs ?? (uncertain ? longTimeoutMs : readTimeoutMs))
       const state = {}
       try {
         return await scope.run(async () => {
-          const res = await fetchAuthenticated(path, init, scope.signal, state)
+          const res = await fetchAuthenticated(path, init, scope.signal, state, {
+            preserveErrorBody: options.preserveErrorBody,
+          })
           return consume(res)
         })
       } catch (error) {
@@ -188,21 +220,33 @@ export function createApi({
   }
 
   function get(path, options = {}) {
-    return request(path, { headers: authHeaders() }, res => res.json(), options)
+    return request(path, { headers: authHeaders(options) }, res => res.json(), options)
   }
 
   function getBlob(path, options = {}) {
-    return request(path, { headers: authHeaders() }, res => res.blob(), options)
+    return request(path, { headers: authHeaders(options) }, res => res.blob(), options)
   }
 
   function post(path, body = {}, options = {}) {
     return request(path, {
-      method: 'POST', headers: authHeaders(), body: JSON.stringify(body),
-    }, res => res.json(), options)
+      method: 'POST', headers: authHeaders(options), body: JSON.stringify(body),
+    // A cancellation acknowledgement intentionally has a 202 response with
+    // no JSON body. Keep ordinary POSTs unchanged while allowing that narrow
+    // acknowledged-empty contract to avoid parsing an empty response.
+    }, res => options.expectEmptyResponse ? null : res.json(), options)
+  }
+
+  // Source-owned configuration is intentionally a replacement operation, not
+  // an implicitly retryable create. Keep it on the same authenticated JSON
+  // transport as POST while preserving the no-replay rule for writes.
+  function put(path, body = {}, options = {}) {
+    return request(path, {
+      method: 'PUT', headers: authHeaders(options), body: JSON.stringify(body),
+    }, res => options.expectEmptyResponse ? null : res.json(), options)
   }
 
   function postForm(path, formData, options = {}) {
-    const headers = authHeaders()
+    const headers = authHeaders(options)
     delete headers['Content-Type']
     return request(path, { method: 'POST', headers, body: formData }, res => res.json(), options, true)
   }
@@ -210,7 +254,7 @@ export function createApi({
   function del(path, body, options = {}) {
     return request(path, {
       method: 'DELETE',
-      headers: authHeaders(),
+      headers: authHeaders(options),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }, res => res.status === 204 ? null : res.json(), options)
   }
@@ -218,12 +262,15 @@ export function createApi({
   async function* streamSSE(path, body = {}, options = {}) {
     // One deadline spans connection and body consumption. Streams are never
     // retried: reconnecting a chat mutation could generate a duplicate reply.
+    // Do not replay a stream after a token refresh either: a server may have
+    // accepted the turn before the browser receives a failed stream response.
+    if (options.requireJwt && !storage.getItem('access_token')) throw jwtRequired()
     const scope = deadline(options.signal, options.timeoutMs ?? longTimeoutMs)
     let reader
     try {
       const res = await scope.run(() => fetchAuthenticated(path, {
-        method: 'POST', headers: authHeaders(), body: JSON.stringify(body),
-      }, scope.signal))
+        method: 'POST', headers: authHeaders(options), body: JSON.stringify(body),
+      }, scope.signal, {}, { preserveErrorBody: options.preserveErrorBody }, false))
       reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
@@ -261,5 +308,5 @@ export function createApi({
     }
   }
 
-  return { get, getBlob, post, postForm, delete: del, streamSSE }
+  return { get, getBlob, post, put, postForm, delete: del, streamSSE }
 }

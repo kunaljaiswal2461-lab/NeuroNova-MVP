@@ -95,6 +95,9 @@ export const AuthProvider = ({ children }) => {
   );
 };
 
+// This module intentionally exports the provider and its custom hook together.
+// The hook has no component state of its own, so Fast Refresh remains safe.
+// eslint-disable-next-line react-refresh/only-export-components
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {

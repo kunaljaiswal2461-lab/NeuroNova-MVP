@@ -51,11 +51,25 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error_handler(request: Request, exc: RequestValidationError):
+        # Source onboarding accepts database passwords and optional CA bundles.
+        # Pydantic's default error shape includes the rejected ``input`` value,
+        # which must never be reflected to the browser or a proxy response.
+        if request.url.path.startswith("/api/v1/sources"):
+            errors = [
+                {
+                    key: value
+                    for key, value in error.items()
+                    if key in {"loc", "msg", "type"}
+                }
+                for error in exc.errors()
+            ]
+        else:
+            errors = exc.errors()
         return _error_response(
             422,
             "validation_error",
             "request validation failed",
-            {"errors": exc.errors()},
+            {"errors": errors},
             _request_id(request),
         )
 

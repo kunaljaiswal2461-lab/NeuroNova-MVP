@@ -12,8 +12,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.services.postgres_query_executor import PostgresQueryExecutionResult
 from agentic_engine.findings.finding_types import FindingType, Severity
 from agentic_engine.llm_engine.models import TokenUsage
 
@@ -132,6 +133,19 @@ class QueryResult(BaseModel):
         return self.error is None
 
 
+class PostgresChatResult(PostgresQueryExecutionResult):
+    """A Stage 4B result retained as one database-chat transcript artefact.
+
+    This intentionally has the exact, flat wire shape of
+    :class:`~app.services.postgres_query_executor.PostgresQueryExecutionResult`
+    rather than a chat-specific wrapper.  It preserves execution, source and
+    snapshot provenance; typed columns and values; ordering; precision; safety
+    truncation; timestamps; and warnings.  The executor already bounds the
+    retained rows and bytes, so chat persistence never becomes an unbounded
+    second result store.
+    """
+
+
 # ── chat message + session ───────────────────────────────────────────────────
 
 class ChatMessage(BaseModel):
@@ -153,6 +167,9 @@ class ChatMessage(BaseModel):
     intent: IntentDecision | None = None
     citations: list[RagCitation] = Field(default_factory=list)
     query_result: QueryResult | None = None
+    # Bounded typed PostgreSQL data is intentionally kept distinct from the
+    # legacy uploaded-file/Polars ``query_result`` contract.
+    postgres_result: PostgresChatResult | None = None
     # Display-only provenance for QUERY turns. This is deliberately kept out
     # of ``history_for_prompt`` so generated query code is never sent back to
     # the LLM on later turns.
@@ -171,10 +188,11 @@ class ChatMessage(BaseModel):
 
 
 class ConversationSession(BaseModel):
-    """Top-level session record. One per (dataset, user-flow)."""
+    """Top-level session record bound to exactly one dataset or source."""
 
     session_id: uuid.UUID
-    dataset_id: uuid.UUID
+    dataset_id: uuid.UUID | None = None
+    source_id: uuid.UUID | None = None
     mode: ConversationMode = ConversationMode.AUTO
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
@@ -185,6 +203,13 @@ class ConversationSession(BaseModel):
     message_count: int = 0
 
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="after")
+    def _require_exactly_one_resource_binding(self) -> "ConversationSession":
+        """Keep the public model aligned with the persistence XOR check."""
+        if (self.dataset_id is None) == (self.source_id is None):
+            raise ValueError("conversation session must bind exactly one dataset or source")
+        return self
 
 
 # ── stream events (SSE wire format) ─────────────────────────────────────────
@@ -200,6 +225,14 @@ class ChatStreamEventType(str, enum.Enum):
     """
 
     START = "start"
+    # Source-bound PostgreSQL chat uses explicit lifecycle events rather than
+    # overloading the uploaded-file ``query_result`` contract.
+    PLANNING = "planning"
+    EXECUTING = "executing"
+    CLARIFICATION = "clarification"
+    UNSUPPORTED = "unsupported"
+    CATALOG = "catalog"
+    POSTGRES_RESULT = "postgres_result"
     INTENT = "intent"
     CITATIONS = "citations"
     QUERY_RESULT = "query_result"

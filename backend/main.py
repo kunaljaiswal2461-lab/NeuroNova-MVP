@@ -40,13 +40,27 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="NeuroNova API", lifespan=lifespan)
 
+    allowed_origins = [
+        origin.strip().rstrip("/")
+        for origin in settings.frontend_allowed_origins.split(",")
+        if origin.strip()
+    ]
+
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
     # Middleware order: Starlette runs the *last-added* middleware first,
     # so the request-size guard must be added LAST to inspect the raw
     # request before anything else touches it.
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+    # Browser policy is not an authorization boundary, but source-onboarding
+    # requests carry customer database credentials. Keep it to configured
+    # first-party origins rather than allowing every web origin.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(TimingMiddleware)
     app.add_middleware(RequestIDMiddleware)

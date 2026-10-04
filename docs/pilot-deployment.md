@@ -1,7 +1,13 @@
 # Free-tier pilot deployment
 
-This mitigation needs no paid infrastructure, external scheduler, or profiling
-algorithm changes. It reduces load; it does not make in-process jobs durable.
+This is a historical, file-upload-pipeline mitigation. It needs no paid
+infrastructure, external scheduler, or file-profiling algorithm changes. It
+reduces upload load; it does not make in-process upload jobs durable. It is
+not the deployment runbook for PostgreSQL sources, scheduled catalog refresh,
+or optional database profiling; use
+[Stage 7 operational completion](stage7-operational-completion.md) and
+[Stage 8 acceptance](stage8-live-verification-and-acceptance.md) for those
+requirements.
 
 ## Required backend environment
 

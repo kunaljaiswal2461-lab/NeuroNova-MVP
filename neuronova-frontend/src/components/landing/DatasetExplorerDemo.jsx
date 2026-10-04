@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { AreaChart, Area, BarChart, Bar, LineChart, Line, ScatterChart, Scatter, XAxis, YAxis, ResponsiveContainer } from 'recharts';
-import { FileText, Grid, PieChart, AlertCircle, FileSpreadsheet } from 'lucide-react';
+import { Grid, PieChart, AlertCircle, FileSpreadsheet } from 'lucide-react';
 
 const SCHEMA_ROWS = [
   { col: 'transaction_id', type: 'UUID', nulls: '0%', badge: 'PRIMARY KEY', color: '#2563EB', bg: '#EFF6FF' },

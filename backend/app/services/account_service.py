@@ -10,6 +10,7 @@ from app.core.config import Settings
 from app.core.logging import get_logger
 from app.db.models.conversation import ConversationSessionRow
 from app.db.models.dataset import DatasetRecord, DatasetStatus
+from app.db.models.source import DataSource
 from app.db.models.user import User
 from app.exceptions.custom_exceptions import ConflictError
 from agentic_engine.tools.uploader.storage import StorageBackend
@@ -64,6 +65,11 @@ async def delete_account(
         )
 
     try:
+        # Connector ownership is deliberately non-null/RESTRICT. Remove a
+        # user's sources first so neither encrypted credentials nor explicit
+        # scope rows can become legacy/null-owned data after account deletion.
+        await session.execute(delete(DataSource).where(DataSource.owner_user_id == user.id))
+
         for dataset in datasets:
             # ``DatasetRecord.filename`` is already prefixed with the UUID;
             # use the original basename expected by StorageBackend.delete.

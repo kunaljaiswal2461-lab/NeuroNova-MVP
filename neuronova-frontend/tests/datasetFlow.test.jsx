@@ -9,12 +9,16 @@ import Sidebar from '../src/components/Sidebar'
 import Upload from '../src/pages/Upload'
 import { MAX_UPLOAD_BYTES, UPLOAD_LIMIT_MESSAGE } from '../src/context/datasetStatus'
 
-vi.mock('../src/api/client', () => ({ api: { get: vi.fn(), postForm: vi.fn() } }))
+vi.mock('../src/api/client', () => ({ api: { get: vi.fn(), post: vi.fn(), delete: vi.fn(), postForm: vi.fn() } }))
 let context
 let navigate
 function Probe() {
-  context = useDataset()
-  navigate = useNavigate()
+  const datasetContext = useDataset()
+  const routerNavigate = useNavigate()
+  useEffect(() => {
+    context = datasetContext
+    navigate = routerNavigate
+  }, [datasetContext, routerNavigate])
   return null
 }
 function setup(children, path = '/upload') {
@@ -71,6 +75,21 @@ it('ignores upload acknowledgement after page unmount and aborts the request', a
   expect(signal.aborted).toBe(true)
   await act(async () => acknowledge(queued))
   expect(api.get.mock.calls.filter(([path]) => path.endsWith('/status'))).toHaveLength(0)
+})
+
+it('keeps an active upload mounted when switching to the Database tab', async () => {
+  let acknowledge
+  api.postForm.mockImplementation(() => new Promise(resolve => { acknowledge = resolve }))
+  setup(<Upload />)
+  chooseFile(100)
+  const signal = api.postForm.mock.calls[0][2].signal
+
+  fireEvent.click(screen.getByRole('tab', { name: 'Database' }))
+  expect(signal.aborted).toBe(false)
+  expect(document.getElementById('file-source-panel').hidden).toBe(true)
+
+  await act(async () => acknowledge(queued))
+  expect(context.activeDatasetId).toBe('new')
 })
 
 it.each(['/explorer', '/insights', '/visualization', '/chat', '/explorer/', '/EXPLORER', '/EXPLORER/'])('guards direct route %s, then auto-unlocks only on COMPLETE', async path => {

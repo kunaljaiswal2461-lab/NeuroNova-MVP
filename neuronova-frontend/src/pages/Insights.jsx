@@ -15,20 +15,22 @@ export default function Insights() {
 
   useEffect(() => {
     if (!activeDatasetId) return
-    setLoading(true)
-    setError(null)
-    Promise.all([
-      api.get(`/datasets/${activeDatasetId}/insights`),
-      api.get(`/datasets/${activeDatasetId}/findings?severity=HIGH`),
-      api.get(`/datasets/${activeDatasetId}/findings?severity=MEDIUM`),
-    ])
-      .then(([ins, highResp, medResp]) => {
-        setInsights(ins)
-        setHighFindings(highResp.findings ?? [])
-        setMediumFindings(medResp.findings ?? [])
-      })
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false))
+    queueMicrotask(() => {
+      setLoading(true)
+      setError(null)
+      Promise.all([
+        api.get(`/datasets/${activeDatasetId}/insights`),
+        api.get(`/datasets/${activeDatasetId}/findings?severity=HIGH`),
+        api.get(`/datasets/${activeDatasetId}/findings?severity=MEDIUM`),
+      ])
+        .then(([ins, highResp, medResp]) => {
+          setInsights(ins)
+          setHighFindings(highResp.findings ?? [])
+          setMediumFindings(medResp.findings ?? [])
+        })
+        .catch(err => setError(err.message))
+        .finally(() => setLoading(false))
+    })
   }, [activeDatasetId])
 
   const handleSuggestedQuestion = (q) => {
@@ -41,8 +43,6 @@ export default function Insights() {
   const tags = exec ? [...(exec.key_strengths ?? []).map(s => `✓ ${s}`).slice(0, 3), ...(exec.key_concerns ?? []).map(s => `⚠ ${s}`).slice(0, 2)] : []
 
   const noDataset = !activeDatasetId
-  const noData = !loading && !insights && !error
-
   if (noDataset) {
     return (
       <Layout title="AI Insights" subtitle="LLM-powered analysis grounded in your dataset findings">
