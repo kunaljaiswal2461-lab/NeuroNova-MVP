@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 import structlog
 from app.core.config import Settings
 
@@ -28,9 +29,53 @@ async def send_password_reset_email(
 
 
 async def _send(settings: Settings, to: str, subject: str, html: str) -> None:
-    if not settings.smtp_host:
-        log.warning("email.skipped", reason="SMTP_HOST not configured", to=to, subject=subject)
+    if settings.resend_api_key:
+        await _send_with_resend_api(settings, to, subject, html)
         return
+
+    if not settings.smtp_host:
+        log.warning(
+            "email.skipped",
+            reason="No email delivery provider configured",
+            to=to,
+            subject=subject,
+        )
+        return
+
+    await _send_with_smtp(settings, to, subject, html)
+
+
+async def _send_with_resend_api(settings: Settings, to: str, subject: str, html: str) -> None:
+    """Send through Resend over HTTPS, which works on Render Free instances."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {settings.resend_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": settings.smtp_from_email,
+                    "to": [to],
+                    "subject": subject,
+                    "html": html,
+                },
+            )
+            response.raise_for_status()
+        log.info("email.sent", to=to, subject=subject, transport="resend_api")
+    except httpx.HTTPStatusError as exc:
+        log.error(
+            "email.failed",
+            to=to,
+            error=f"Resend API returned HTTP {exc.response.status_code}",
+            transport="resend_api",
+        )
+    except httpx.HTTPError as exc:
+        log.error("email.failed", to=to, error=str(exc), transport="resend_api")
+
+
+async def _send_with_smtp(settings: Settings, to: str, subject: str, html: str) -> None:
     try:
         import aiosmtplib
         from email.mime.multipart import MIMEMultipart
