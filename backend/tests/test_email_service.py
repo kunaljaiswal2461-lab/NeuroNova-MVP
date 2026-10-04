@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -33,6 +33,43 @@ async def test_send_uses_the_correct_encrypted_smtp_transport(
 
     assert send.await_args.kwargs["use_tls"] is expected_use_tls
     assert send.await_args.kwargs["start_tls"] is expected_start_tls
+
+
+@pytest.mark.asyncio
+async def test_send_prefers_resend_https_api_when_a_key_is_configured() -> None:
+    settings = _settings(587)
+    settings.resend_api_key = "re_test_api_key"
+
+    response = MagicMock()
+    client = MagicMock()
+    client.post = AsyncMock(return_value=response)
+    client_context = MagicMock()
+    client_context.__aenter__ = AsyncMock(return_value=client)
+    client_context.__aexit__ = AsyncMock(return_value=None)
+    smtp_send = AsyncMock()
+
+    with (
+        patch.object(email_service.httpx, "AsyncClient", return_value=client_context),
+        patch.object(email_service, "_send_with_smtp", smtp_send),
+    ):
+        await email_service._send(
+            settings, "recipient@example.com", "Subject", "<p>Body</p>"
+        )
+
+    client.post.assert_awaited_once_with(
+        "https://api.resend.com/emails",
+        headers={
+            "Authorization": "Bearer re_test_api_key",
+            "Content-Type": "application/json",
+        },
+        json={
+            "from": "mailer@example.com",
+            "to": ["recipient@example.com"],
+            "subject": "Subject",
+            "html": "<p>Body</p>",
+        },
+    )
+    smtp_send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

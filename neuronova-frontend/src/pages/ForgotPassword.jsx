@@ -1,122 +1,121 @@
-import { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { authApi } from '../api/auth';
+import { useState } from 'react'
+import { ArrowLeft, ArrowRight, Check, CircleAlert, Mail } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { authApi } from '../api/auth'
+import PasswordRecoveryShell from '../components/PasswordRecoveryShell'
 
 export default function ForgotPassword() {
-  const [email, setEmail] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
-  const [error, setError] = useState('');
+  const [email, setEmail] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
+  const [submitted, setSubmitted] = useState(false)
+  const [error, setError] = useState('')
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    setIsLoading(true);
+  const handleSubmit = async (event) => {
+    event.preventDefault()
+    setError('')
+    setIsLoading(true)
+
     try {
-      await authApi.forgotPassword(email);
-      setSubmitted(true);
+      await authApi.forgotPassword(email)
+      setSubmitted(true)
     } catch (err) {
-      console.error('Forgot password error:', err);
-      setError('We could not send a reset link. Please try again.');
+      console.error('Forgot password error:', err)
+      setError('We could not send a reset link. Please try again.')
     } finally {
-      setIsLoading(false);
+      setIsLoading(false)
     }
-  };
+  }
 
   if (submitted) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-[#F8F9FA] px-6">
-        <div className="max-w-md text-center">
-          <div className="mb-6 flex justify-center">
-            <svg className="w-16 h-16 text-[#34A853]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-            </svg>
-          </div>
-          <h1 className="text-2xl font-bold text-[#111827] mb-2">Check your inbox</h1>
-          <p className="text-[#4B5563] mb-8">
-            If that email is registered, we've sent a password reset link.
-          </p>
-          <Link
-            to="/login"
-            className="inline-block px-5 h-11 bg-[#1E3A5F] hover:bg-[#152A45] text-white font-semibold rounded-[6px]"
-          >
-            Back to login
-          </Link>
+      <PasswordRecoveryShell
+        icon={Check}
+        tone="success"
+        eyebrow="Recovery request received"
+        title="Check your email"
+        description="If an account exists for the email address you entered, we’ve sent a secure password-reset link."
+      >
+        <div className="recovery-status-copy" role="status" aria-live="polite">
+          <strong>Next step:</strong> Open the email and use the link within one hour. For privacy,
+          we can’t confirm whether an address is registered.
         </div>
-      </div>
-    );
+
+        <div className="recovery-actions">
+          <Link to="/login" className="recovery-button">
+            Return to log in
+            <ArrowRight size={17} aria-hidden="true" />
+          </Link>
+          <button
+            type="button"
+            className="recovery-button recovery-button--secondary"
+            onClick={() => {
+              setSubmitted(false)
+              setError('')
+            }}
+          >
+            Use a different email
+          </button>
+        </div>
+      </PasswordRecoveryShell>
+    )
   }
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-[#F8F9FA] relative py-[64px]">
-      {/* Background Grid */}
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          backgroundSize: '24px 24px',
-          backgroundImage: 'radial-gradient(circle, #E5E7EB 1px, transparent 1px)'
-        }}
-      />
+    <PasswordRecoveryShell
+      icon={Mail}
+      eyebrow="Account recovery"
+      title="Reset your password"
+      description="Enter the email address associated with your NeuroNova account and we’ll send a secure reset link."
+    >
+      <form className="recovery-form" onSubmit={handleSubmit}>
+        {error && (
+          <div id="forgot-password-error" className="recovery-alert" role="alert" aria-live="assertive">
+            <CircleAlert size={17} aria-hidden="true" />
+            <span>{error}</span>
+          </div>
+        )}
 
-      <div className="relative z-10 w-full max-w-[480px] px-6">
-        {/* Header */}
-        <div className="text-center mb-[48px]">
-          <h1 className="text-[40px] leading-[48px] font-bold text-[#111827] tracking-[-0.02em] mb-2">
-            Forgot your password?
-          </h1>
-          <p className="text-[18px] leading-[28px] font-normal text-[#4B5563]">
-            Enter your email to receive a password reset link.
+        <div className="recovery-field">
+          <label className="recovery-label" htmlFor="forgot-password-email">Email address</label>
+          <input
+            id="forgot-password-email"
+            type="email"
+            required
+            autoComplete="email"
+            autoFocus
+            placeholder="you@company.com"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            aria-invalid={Boolean(error)}
+            aria-describedby={error ? 'forgot-password-error' : 'forgot-password-hint'}
+            className="recovery-input"
+          />
+          <p id="forgot-password-hint" className="recovery-hint">
+            We’ll only use this address to send your recovery instructions.
           </p>
         </div>
 
-        {/* Card with Brackets */}
-        <div className="relative">
-          {/* Brackets */}
-          <div className="absolute -top-1 -left-1 w-6 h-6 border-t-[4px] border-l-[4px] border-[#6B7280]" />
-          <div className="absolute -top-1 -right-1 w-6 h-6 border-t-[4px] border-r-[4px] border-[#6B7280]" />
-          <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-[4px] border-l-[4px] border-[#6B7280]" />
-          <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-[4px] border-r-[4px] border-[#6B7280]" />
+        <button type="submit" disabled={isLoading} className="recovery-button">
+          {isLoading ? (
+            <>
+              <span className="recovery-button__spinner" aria-hidden="true" />
+              Sending link…
+            </>
+          ) : (
+            <>
+              Send reset link
+              <ArrowRight size={17} aria-hidden="true" />
+            </>
+          )}
+        </button>
+      </form>
 
-          <div className="bg-[#F9FAFB] p-[32px] shadow-sm rounded-none border border-transparent relative z-10">
-            <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-              {error && (
-                <div
-                  role="alert"
-                  className="rounded-[6px] border border-red-200 bg-red-50 p-3 text-sm text-red-700"
-                >
-                  {error}
-                </div>
-              )}
-              <div className="flex flex-col gap-1">
-                <label className="text-[14px] font-medium text-[#4B5563]">Work email</label>
-                <input
-                  type="email"
-                  required
-                  placeholder="you@work-email.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="h-[44px] px-3 bg-[#E5E5E5] border border-[#9CA3AF] rounded-[6px] text-[#111827] focus:outline-none focus:ring-2 focus:ring-[#1E3A5F] focus:border-transparent placeholder-[#4B5563] transition-all"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="relative w-full h-[48px] mt-2 bg-[#1E3A5F] hover:bg-[#152A45] text-white font-bold text-[16px] rounded-[6px] transition-all hover:scale-[1.01] flex items-center justify-center gap-2 disabled:opacity-70 disabled:hover:scale-100"
-              >
-                {isLoading ? 'Sending...' : 'Send reset link'}
-              </button>
-            </form>
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="mt-8 text-center">
-          <Link to="/login" className="text-[14px] text-[#1E3A5F] hover:underline">
-            Back to login
-          </Link>
-        </div>
+      <div className="recovery-footer">
+        <Link to="/login" className="recovery-link">
+          <ArrowLeft size={16} aria-hidden="true" />
+          Back to log in
+        </Link>
       </div>
-    </div>
-  );
+    </PasswordRecoveryShell>
+  )
 }

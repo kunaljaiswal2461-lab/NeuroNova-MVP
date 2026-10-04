@@ -234,6 +234,7 @@ export default function Upload() {
           hidden={activeTab !== 'file'}
           inert={activeTab !== 'file'}
         >
+          <div className="upload-workflow">
 
         {error && (
           <div role="alert" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, background: '#FFF1F2', border: '1px solid #FECDD3', borderRadius: 8, padding: '12px 16px', fontFamily: 'var(--font-body)', fontSize: 13, color: '#9F1239' }}>
@@ -276,8 +277,8 @@ export default function Upload() {
 
         {/* Pipeline Progress */}
         {pipelineStatus && (
-          <div className="card card-pad anim-fade-up">
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <div className="card card-pad anim-fade-up upload-pipeline-card">
+            <div className="upload-pipeline-header">
               <div style={{ minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere' }}>
                 <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 15, fontWeight: 600, color: 'var(--color-text-primary)' }}>
                   Processing Pipeline
@@ -301,23 +302,23 @@ export default function Upload() {
               })()}
             </div>
 
-            <p role="status" style={{ marginBottom: 12, fontSize: 13 }}>
+            <p role="status" className="upload-pipeline-status">
               {stageLabel(pipelineStatus)}{pipelineStatus !== 'UPLOADING' && ` · ${progressPct}%`}
               {pipelineStatus === 'QUEUED' && ' — Waiting for an available processing slot.'}
               {pipelineStatus === 'UPLOADING' && ' — If you leave now, check Recent Datasets before uploading again.'}
             </p>
-            {statusMessage && <p role="status" style={{ marginBottom: 12 }}>{statusMessage}</p>}
+            {statusMessage && <p role="status" className="upload-pipeline-status">{statusMessage}</p>}
             {pipelineStatus === 'FAILED' && (
               <div role="alert" style={{ marginBottom: 16 }}>
                 <p>{activeDataset.error_message || 'Processing failed. Please upload the dataset again.'}</p>
                 <button className="btn btn-primary btn-sm" onClick={handleClick}>Upload dataset again</button>
               </div>
             )}
-            <div role="progressbar" aria-label="Dataset processing progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPct} style={{ height: 4, background: 'var(--color-border-light)', borderRadius: 2, marginBottom: 20, overflow: 'hidden' }}>
+            <div role="progressbar" aria-label="Dataset processing progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPct} className="upload-pipeline-progress">
               <div style={{ height: '100%', width: `${progressPct}%`, background: pipelineStatus === 'FAILED' ? 'var(--color-danger)' : 'var(--color-primary-indigo)', borderRadius: 2, transition: 'width 600ms ease' }} />
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div className="upload-pipeline-steps">
               {steps.map((step, i) => (
                 <div key={i} className="progress-step">
                   <StepIcon status={step.status} />
@@ -341,7 +342,7 @@ export default function Upload() {
             </div>
 
             {pipelineStatus === 'COMPLETE' && (
-              <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+              <div className="upload-pipeline-actions">
                 <button className="btn btn-primary btn-sm" onClick={() => navigate('/explorer')}>Explore Dataset →</button>
                 <button className="btn btn-ghost-neutral btn-sm" onClick={() => navigate('/insights')}>View Insights</button>
               </div>
@@ -350,15 +351,15 @@ export default function Upload() {
         )}
 
         {/* Recent Datasets */}
-        <div className="card">
-          <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div className="card upload-recent-card">
+          <div className="upload-recent-header">
             <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 15, fontWeight: 600, color: 'var(--color-text-primary)' }}>Recent Datasets</h3>
             <button className="btn btn-ghost-neutral btn-sm" onClick={fetchDatasets}>Refresh</button>
           </div>
 
-          {listError && <p role="status" style={{ padding: '12px 20px' }}>{listError}</p>}
-          <div style={{ overflowX: 'auto' }}>
-          <table className="data-table" style={{ width: '100%' }}>
+          {listError && <p role="status" className="upload-list-status">{listError}</p>}
+          <div className="upload-recent-table-scroll">
+          <table className="data-table upload-datasets-table">
             <thead>
               <tr>
                 <th>Name</th>
@@ -373,7 +374,7 @@ export default function Upload() {
             <tbody>
               {datasets.length === 0 ? (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: 'center', padding: '32px 16px' }}>
+                  <td colSpan={7} className="upload-empty-state">
                     <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-muted)', marginBottom: 6 }}>No datasets yet</div>
                     <div style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-muted)', opacity: 0.7 }}>Upload a file above to get started</div>
                   </td>
@@ -420,7 +421,8 @@ export default function Upload() {
             </tbody>
           </table>
           </div>
-        </div>
+          </div>
+          </div>
         </section>
 
         <section
