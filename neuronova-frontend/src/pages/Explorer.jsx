@@ -56,23 +56,26 @@ export default function Explorer() {
     if (!activeDatasetId) return
     const controller = new AbortController()
     const options = { signal: controller.signal }
-    setLoading(true)
-    setError(null)
-    Promise.all([
-      api.get(`/datasets/${activeDatasetId}/profile`, options),
-      api.get(`/datasets/${activeDatasetId}/findings?severity=HIGH`, options),
-      api.get(`/datasets/${activeDatasetId}/viz`, options).catch(() => ({ skipped_columns: [] })),
-    ])
-      .then(([prof, findingsResp, vizResp]) => {
-        if (controller.signal.aborted) return
-        setProfile(prof)
-        setAnomalyFlags((findingsResp.findings ?? []).slice(0, 6).map(findingToFlag))
-        setSkippedVizCols(new Set((vizResp.skipped_columns ?? []).map(s => s.column_name)))
-        // push health into context so Sidebar can show it
-        updateDataset(activeDatasetId, { _health: prof.health })
-      })
-      .catch(err => { if (!controller.signal.aborted) setError(err.message) })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    queueMicrotask(() => {
+      if (controller.signal.aborted) return
+      setLoading(true)
+      setError(null)
+      Promise.all([
+        api.get(`/datasets/${activeDatasetId}/profile`, options),
+        api.get(`/datasets/${activeDatasetId}/findings?severity=HIGH`, options),
+        api.get(`/datasets/${activeDatasetId}/viz`, options).catch(() => ({ skipped_columns: [] })),
+      ])
+        .then(([prof, findingsResp, vizResp]) => {
+          if (controller.signal.aborted) return
+          setProfile(prof)
+          setAnomalyFlags((findingsResp.findings ?? []).slice(0, 6).map(findingToFlag))
+          setSkippedVizCols(new Set((vizResp.skipped_columns ?? []).map(s => s.column_name)))
+          // push health into context so Sidebar can show it
+          updateDataset(activeDatasetId, { _health: prof.health })
+        })
+        .catch(err => { if (!controller.signal.aborted) setError(err.message) })
+        .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    })
     return () => controller.abort()
   }, [activeDatasetId, updateDataset])
 

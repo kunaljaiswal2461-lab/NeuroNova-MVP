@@ -216,12 +216,13 @@ function PieChart({ values, totalCount, compact = false }) {
 
   const COLORS = ['#1E3A5F', '#0D9488', '#D97706', '#7C3AED', '#E11D48', '#2D5A8E', '#7BA7CC', '#9CA3AF']
 
-  let cumulative = 0
   const slices = values.map(([label, count], i) => {
     const frac = total > 0 ? count / total : 0
-    const startAngle = cumulative * 2 * Math.PI - Math.PI / 2
-    cumulative += frac
-    const endAngle = cumulative * 2 * Math.PI - Math.PI / 2
+    const startFraction = values
+      .slice(0, i)
+      .reduce((sum, [, previousCount]) => sum + (total > 0 ? previousCount / total : 0), 0)
+    const startAngle = startFraction * 2 * Math.PI - Math.PI / 2
+    const endAngle = (startFraction + frac) * 2 * Math.PI - Math.PI / 2
     const x1 = cx + r * Math.cos(startAngle)
     const y1 = cy + r * Math.sin(startAngle)
     const x2 = cx + r * Math.cos(endAngle)
@@ -499,7 +500,6 @@ export default function Visualization() {
   const [loading, setLoading] = useState(false)
   const [charts, setCharts] = useState([])
   const [skippedColumns, setSkippedColumns] = useState([])
-  const [vizSummary, setVizSummary] = useState({ total: 0, rendered: 0 })
   const [activeCol, setActiveCol] = useState(null)
   const [activeBarCol, setActiveBarCol] = useState(null)
   const [error, setError] = useState(null)
@@ -508,24 +508,25 @@ export default function Visualization() {
 
   useEffect(() => {
     if (!activeDatasetId) return
-    setLoading(true)
-    setError(null)
-    api.get(`/datasets/${activeDatasetId}/viz`)
-      .then(data => {
-        const allCharts = data.charts ?? []
-        setCharts(allCharts)
-        setSkippedColumns(data.skipped_columns ?? [])
-        setVizSummary({ total: data.total_columns ?? 0, rendered: data.rendered_columns ?? 0 })
-        const firstHistogram = allCharts.find(c => c.type === 'HISTOGRAM')
-        if (firstHistogram) setActiveCol(firstHistogram.config?.x_col ?? firstHistogram.columns?.[0] ?? null)
-        const firstBar = allCharts.find(c => c.type === 'BAR')
-        if (firstBar) setActiveBarCol(firstBar.config?.x_col ?? firstBar.columns?.[0] ?? null)
-        const tabForType = { HISTOGRAM: 'Numeric', BOXPLOT: 'Numeric', BAR: 'Categorical', PIE: 'Categorical', HEATMAP: 'Dataset', SCATTER: 'Dataset', TIMESERIES: 'Temporal', NULL_MATRIX: 'Dataset', RADAR: 'Dataset' }
-        const firstChart = allCharts[0]
-        if (firstChart) setActiveTab(tabForType[firstChart.type] ?? 'Numeric')
-      })
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false))
+    queueMicrotask(() => {
+      setLoading(true)
+      setError(null)
+      api.get(`/datasets/${activeDatasetId}/viz`)
+        .then(data => {
+          const allCharts = data.charts ?? []
+          setCharts(allCharts)
+          setSkippedColumns(data.skipped_columns ?? [])
+          const firstHistogram = allCharts.find(c => c.type === 'HISTOGRAM')
+          if (firstHistogram) setActiveCol(firstHistogram.config?.x_col ?? firstHistogram.columns?.[0] ?? null)
+          const firstBar = allCharts.find(c => c.type === 'BAR')
+          if (firstBar) setActiveBarCol(firstBar.config?.x_col ?? firstBar.columns?.[0] ?? null)
+          const tabForType = { HISTOGRAM: 'Numeric', BOXPLOT: 'Numeric', BAR: 'Categorical', PIE: 'Categorical', HEATMAP: 'Dataset', SCATTER: 'Dataset', TIMESERIES: 'Temporal', NULL_MATRIX: 'Dataset', RADAR: 'Dataset' }
+          const firstChart = allCharts[0]
+          if (firstChart) setActiveTab(tabForType[firstChart.type] ?? 'Numeric')
+        })
+        .catch(err => setError(err.message))
+        .finally(() => setLoading(false))
+    })
   }, [activeDatasetId])
 
   const histogramCharts = charts.filter(c => c.type === 'HISTOGRAM')

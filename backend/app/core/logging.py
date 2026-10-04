@@ -18,6 +18,12 @@ _SENSITIVE_KEY_SUBSTRINGS: tuple[str, ...] = (
     "session",
     "openai",
     "database_url",
+    "credential",
+    "ciphertext",
+    "connection_string",
+    "dsn",
+    "private_key",
+    "ca_pem",
 )
 _REDACTED = "[REDACTED]"
 

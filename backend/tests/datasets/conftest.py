@@ -34,6 +34,7 @@ class StubDatasetRecord:
     row_count: int | None = 20
     col_count: int | None = 10
     status: DatasetStatus = DatasetStatus.COMPLETE
+    user_id: uuid.UUID | None = None
 
 
 class FakeSession:

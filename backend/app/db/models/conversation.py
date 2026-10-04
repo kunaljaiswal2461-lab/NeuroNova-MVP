@@ -2,8 +2,11 @@
 
 Two tables — sessions and messages — joined via FK with cascade delete.
 
-  * ``conversation_sessions`` — one row per chat session, scoped to a
-    dataset. Stores the routing mode the session was created with so an
+  * ``conversation_sessions`` — one row per chat session, bound to exactly
+    one uploaded dataset *or* one creator-owned database source.  The binding
+    is enforced by the database rather than inferred from a request path so a
+    source deletion cannot leave a transcript that bypasses source ownership.
+    The row stores the routing mode the session was created with so an
     explicit pin (RAG-only / QUERY-only) survives restarts.
   * ``chat_messages`` — one row per turn (user or assistant). Assistant
     rows carry the routing decision, the RAG citations, and the
@@ -24,9 +27,11 @@ from typing import Any
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     String,
     Text,
@@ -61,9 +66,32 @@ class ChatRoleDB(str, enum.Enum):
 # ── tables ───────────────────────────────────────────────────────────────────
 
 class ConversationSessionRow(Base, TimestampMixin):
-    """Header row for one conversation. Owned by exactly one dataset."""
+    """Header row for one conversation bound to exactly one data resource.
+
+    ``dataset_id`` is retained for the existing uploaded-file chat surface.
+    ``source_id`` is deliberately a separate foreign key: a PostgreSQL source
+    must never be represented as a ``DatasetRecord`` just to reuse chat
+    persistence.  The XOR check also makes an invalid / unbound session
+    impossible to persist.
+    """
 
     __tablename__ = "conversation_sessions"
+    __table_args__ = (
+        CheckConstraint(
+            "(dataset_id IS NOT NULL AND source_id IS NULL) "
+            "OR (dataset_id IS NULL AND source_id IS NOT NULL AND user_id IS NOT NULL)",
+            name="exactly_one_binding",
+        ),
+        # A source conversation is not merely source-shaped: its session owner
+        # must be the source's current owner.  The source model exposes this
+        # exact unique key specifically for owner-scoped child records.
+        ForeignKeyConstraint(
+            ["source_id", "user_id"],
+            ["data_sources.id", "data_sources.owner_user_id"],
+            name="fk_conversation_sessions_source_owner",
+            ondelete="CASCADE",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True),
@@ -71,13 +99,20 @@ class ConversationSessionRow(Base, TimestampMixin):
         server_default=text("uuid_generate_v4()"),
     )
 
-    # Cascade delete tied to the dataset: blowing away a dataset removes
-    # all its conversations and (via the messages FK below) all their
-    # messages in a single statement.
-    dataset_id: Mapped[uuid.UUID] = mapped_column(
+    # Cascade deletion of either bound resource removes all its conversations
+    # and (via the messages FK below) all their messages in one database-side
+    # operation.  This is particularly important for sources: historical rows
+    # cannot survive source deletion and later become a transcript bypass.
+    dataset_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("dataset_records.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+        index=True,
+    )
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("data_sources.id", ondelete="CASCADE"),
+        nullable=True,
         index=True,
     )
 
@@ -120,8 +155,9 @@ class ChatMessageRow(Base):
     User rows fill only ``role`` + ``content``. Assistant rows
     additionally carry ``mode_used`` (which branch handled the turn),
     ``intent`` (the routing decision), ``citations`` (RAG-mode only),
-    ``query_result`` (QUERY-mode only), and token usage / degradation
-    metadata.
+    ``query_result`` (uploaded-file QUERY-mode only), ``postgres_result``
+    (the bounded, typed Stage 4B database result), and token usage /
+    degradation metadata.
     """
 
     __tablename__ = "chat_messages"
@@ -164,6 +200,11 @@ class ChatMessageRow(Base):
     intent: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     citations: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     query_result: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # This contains the executor's deliberately bounded typed result, never a
+    # query string, credential, connection detail, or unbounded raw result
+    # set.  It is separate from the legacy Polars ``query_result`` blob so the
+    # two execution contracts cannot be confused on transcript reads.
+    postgres_result: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     degraded: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False

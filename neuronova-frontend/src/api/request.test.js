@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createApi, RETRY_MESSAGE, UNAVAILABLE_MESSAGE, UPLOAD_UNCERTAIN_MESSAGE } from './request.js'
+import { createApi, JWT_REQUIRED_MESSAGE, RETRY_MESSAGE, UNAVAILABLE_MESSAGE, UPLOAD_UNCERTAIN_MESSAGE } from './request.js'
 
 function json(data = {}, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } })
@@ -174,6 +174,60 @@ test('POST never replays network failures, timeouts or transient HTTP errors', a
     await assert.rejects(api.post('/write', { value: 1 }), { message: UNAVAILABLE_MESSAGE })
     assert.equal(calls, 1)
   }
+})
+
+test('JWT-only requests reject before fetch and never fall back to the global API key', async () => {
+  let calls = 0
+  const { api, tokens } = harness(async () => { calls++; return json({ ok: true }) })
+  tokens.delete('access_token')
+  tokens.delete('refresh_token')
+
+  await assert.rejects(api.post('/sources/postgresql/test', {}, { requireJwt: true }), {
+    status: 401,
+    code: 'authentication_required',
+    message: JWT_REQUIRED_MESSAGE,
+  })
+  assert.equal(calls, 0)
+})
+
+test('JWT-only requests preserve structured connector errors without retrying them', async () => {
+  let calls = 0
+  const { api } = harness(async (_url, init) => {
+    calls++
+    assert.equal(init.headers.Authorization, 'Bearer old')
+    assert.equal(init.headers['X-API-Key'], undefined)
+    return json({ error: { code: 'connectors_disabled', message: 'disabled' } }, 503)
+  })
+
+  await assert.rejects(api.post('/sources/postgresql/test', {}, {
+    requireJwt: true,
+    preserveErrorBody: true,
+  }), error => {
+    assert.equal(error.status, 503)
+    assert.equal(error.response.error.code, 'connectors_disabled')
+    assert.equal(error.code, 'connectors_disabled')
+    return true
+  })
+  assert.equal(calls, 1)
+})
+
+test('JWT-only source POST refreshes only after a rejected request and never sends the API key', async () => {
+  const sourceRequests = []
+  const { api } = harness(async (url, init) => {
+    if (url.endsWith('/auth/refresh')) return json({ access_token: 'new' })
+    sourceRequests.push(init)
+    return sourceRequests.length === 1 ? json({}, 401) : json({ source_id: 'source-1' }, 201)
+  })
+
+  assert.deepEqual(
+    await api.post('/sources', { display_name: 'Fixture' }, { requireJwt: true }),
+    { source_id: 'source-1' },
+  )
+  assert.equal(sourceRequests.length, 2)
+  assert.equal(sourceRequests[0].headers.Authorization, 'Bearer old')
+  assert.equal(sourceRequests[1].headers.Authorization, 'Bearer new')
+  assert.equal(sourceRequests[0].headers['X-API-Key'], undefined)
+  assert.equal(sourceRequests[1].headers['X-API-Key'], undefined)
 })
 
 test('DELETE sends the confirmation payload once and handles a 204 response', async () => {
@@ -379,4 +433,50 @@ test('SSE honors explicit cancellation while reading', async () => {
   await started.promise
   controller.abort()
   await assert.rejects(result, { name: 'AbortError' })
+})
+
+test('JWT-only SSE rejects before fetch without a browser token', async () => {
+  let calls = 0
+  const { api, tokens } = harness(async () => { calls++; return json() })
+  tokens.delete('access_token')
+  tokens.delete('refresh_token')
+  await assert.rejects(
+    api.streamSSE('/chat/sessions/source/message', { message: 'count rows' }, { requireJwt: true }).next(),
+    error => error.status === 401 && error.code === 'authentication_required',
+  )
+  assert.equal(calls, 0)
+})
+
+test('JWT-only SSE never refreshes or replays a potentially accepted turn', async () => {
+  let messageCalls = 0
+  let refreshCalls = 0
+  const { api } = harness(async (url, init) => {
+    if (url.endsWith('/auth/refresh')) {
+      refreshCalls++
+      return json({ access_token: 'new' })
+    }
+    messageCalls++
+    assert.equal(init.method, 'POST')
+    assert.equal(init.headers.Authorization, 'Bearer old')
+    assert.equal(init.headers['X-API-Key'], undefined)
+    return json({ error: { code: 'access_revoked', message: 'access changed' } }, 401)
+  })
+
+  await assert.rejects(
+    api.streamSSE('/chat/sessions/source/message', { message: 'count rows' }, { requireJwt: true, preserveErrorBody: true }).next(),
+    error => error.status === 401 && error.response.error.code === 'access_revoked',
+  )
+  assert.equal(messageCalls, 1)
+  assert.equal(refreshCalls, 0)
+})
+
+test('POST accepts an explicitly acknowledged empty cancellation response', async () => {
+  let request
+  const { api } = harness(async (_url, init) => {
+    request = init
+    return new Response(null, { status: 202 })
+  })
+  assert.equal(await api.post('/chat/sessions/source/turns/turn/cancel', {}, { expectEmptyResponse: true }), null)
+  assert.equal(request.method, 'POST')
+  assert.equal(request.body, '{}')
 })

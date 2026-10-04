@@ -65,12 +65,10 @@ async def _send_with_resend_api(settings: Settings, to: str, subject: str, html:
             response.raise_for_status()
         log.info("email.sent", to=to, subject=subject, transport="resend_api")
     except httpx.HTTPStatusError as exc:
-        # Include the provider response in Render logs, but never log the API key.
-        detail = exc.response.text[:500].replace("\n", " ")
         log.error(
             "email.failed",
             to=to,
-            error=f"Resend API returned {exc.response.status_code}: {detail}",
+            error=f"Resend API returned HTTP {exc.response.status_code}",
             transport="resend_api",
         )
     except httpx.HTTPError as exc:

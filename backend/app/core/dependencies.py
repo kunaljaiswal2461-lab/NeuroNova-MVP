@@ -8,6 +8,7 @@ from fastapi import Depends, Header
 from jose import JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import DatasetAccess
 from app.core.config import Settings, get_settings
 from app.core.security import decode_access_token
 from app.db.session import get_session
@@ -33,11 +34,34 @@ async def _resolve_user_from_jwt(
     db: AsyncSession = Depends(get_session),
 ):
     """Extract and validate a Bearer JWT; return the User row or raise 401."""
+    if authorization is None:
+        raise UnauthorizedError("missing or malformed Authorization header")
+    return await _resolve_bearer_user(authorization, settings=settings, db=db)
+
+
+async def _resolve_bearer_user(
+    authorization: str,
+    *,
+    settings: Settings,
+    db: AsyncSession,
+):
+    """Resolve a syntactically valid Bearer access token to an active user.
+
+    This is deliberately shared by JWT-only routes and mixed JWT/API-key
+    routes.  Once an ``Authorization`` header is present it is authoritative:
+    a malformed or invalid Bearer credential must fail closed rather than
+    quietly falling back to the global legacy API key.
+    """
     from app.db.models.user import User  # local import avoids circular at module load
 
-    if not authorization or not authorization.startswith("Bearer "):
+    parts = authorization.split(None, 1)
+    if (
+        len(parts) != 2
+        or parts[0].casefold() != "bearer"
+        or not parts[1].strip()
+    ):
         raise UnauthorizedError("missing or malformed Authorization header")
-    token = authorization[len("Bearer "):]
+    token = parts[1].strip()
     try:
         payload = decode_access_token(token, settings.jwt_secret_key)
     except JWTError:
@@ -45,7 +69,15 @@ async def _resolve_user_from_jwt(
     if payload.get("type") != "access":
         raise UnauthorizedError("token type mismatch")
 
-    user = await db.get(User, uuid.UUID(payload["sub"]))
+    subject = payload.get("sub")
+    if not isinstance(subject, str):
+        raise UnauthorizedError("invalid or expired access token")
+    try:
+        user_id = uuid.UUID(subject)
+    except ValueError:
+        raise UnauthorizedError("invalid or expired access token")
+
+    user = await db.get(User, user_id)
     if not user or not user.is_active:
         raise UnauthorizedError("user not found or disabled")
     return user
@@ -64,24 +96,18 @@ async def get_auth_context(
     settings: Settings = Depends(get_settings),
     db: AsyncSession = Depends(get_session),
 ):
-    """Accept either a JWT Bearer token (returns User) or legacy X-API-Key (returns None).
+    """Resolve JWT or legacy API-key authentication for mixed public routes.
 
-    Raises 401 if neither is present or valid.
+    A present ``Authorization`` header is always validated as Bearer JWT and
+    takes precedence over ``X-API-Key``. The legacy key is considered only
+    when the Authorization header is absent. Raises 401 if neither accepted
+    credential is present and valid.
     """
-    from app.db.models.user import User
-
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization[len("Bearer "):]
-        try:
-            payload = decode_access_token(token, settings.jwt_secret_key)
-        except JWTError:
-            raise UnauthorizedError("invalid or expired access token")
-        if payload.get("type") != "access":
-            raise UnauthorizedError("token type mismatch")
-        user = await db.get(User, uuid.UUID(payload["sub"]))
-        if not user or not user.is_active:
-            raise UnauthorizedError("user not found or disabled")
-        return user  # authenticated as a real user
+    # Never downgrade an explicitly supplied Authorization credential to the
+    # less-privileged legacy namespace.  A valid JWT takes precedence over an
+    # API key (valid or invalid); malformed/invalid Bearer credentials are 401.
+    if authorization is not None:
+        return await _resolve_bearer_user(authorization, settings=settings, db=db)
 
     if x_api_key is not None:
         if hmac.compare_digest(x_api_key, settings.api_key):
@@ -91,12 +117,27 @@ async def get_auth_context(
     raise UnauthorizedError("authentication required — provide Bearer token or X-API-Key")
 
 
+async def get_dataset_access(
+    current_user=Depends(get_auth_context),
+) -> DatasetAccess:
+    """Build a dataset actor only from verified authentication context.
+
+    A valid legacy API key deliberately receives an explicit legacy scope,
+    rather than a bare ``None`` user id. Dataset services can then restrict it
+    to unowned legacy records instead of treating it as global access.
+    """
+    if current_user is None:
+        return DatasetAccess.for_legacy_api_key()
+    return DatasetAccess.for_user(current_user.id)
+
+
 # ── typed aliases ─────────────────────────────────────────────────────────────
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 DBSession = Annotated[AsyncSession, Depends(get_session)]
 AuthRequired = Depends(require_api_key)           # legacy — kept so existing usages compile
 AuthContext = Depends(get_auth_context)           # new combined auth
+DatasetAccessDep = Annotated[DatasetAccess, Depends(get_dataset_access)]
 
 
 # ── storage ───────────────────────────────────────────────────────────────────

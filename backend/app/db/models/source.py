@@ -1,0 +1,182 @@
+"""Persisted external PostgreSQL source ownership and encrypted credentials.
+
+The three tables in this module intentionally stop at onboarding. They do not
+contain catalog snapshots, profile observations, semantic definitions, query
+runs, or client data.
+"""
+from __future__ import annotations
+
+import enum
+import uuid
+from datetime import datetime
+
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.base import Base, TimestampMixin
+
+
+class SourceType(str, enum.Enum):
+    POSTGRESQL = "POSTGRESQL"
+
+
+class SourceStatus(str, enum.Enum):
+    # A successful test/save observation. It does not claim that a catalog has
+    # been built or that the remote database will stay reachable.
+    TESTED = "TESTED"
+    CONNECTION_FAILED = "CONNECTION_FAILED"
+    CREDENTIAL_UNAVAILABLE = "CREDENTIAL_UNAVAILABLE"
+
+
+class TLSMode(str, enum.Enum):
+    VERIFY_FULL = "VERIFY_FULL"
+
+
+class DataSource(Base, TimestampMixin):
+    __tablename__ = "data_sources"
+    __table_args__ = (
+        CheckConstraint("catalog_sync_sequence >= 0", name="catalog_sync_sequence_nonnegative"),
+        CheckConstraint("profiling_generation >= 0", name="profiling_generation_nonnegative"),
+        CheckConstraint("configuration_generation >= 0", name="configuration_generation_nonnegative"),
+        # The catalog run composite FK uses this exact key to prove that the
+        # recorded requester was the source owner when the run was created.
+        Index("uq_data_sources_id_owner_user_id", "id", "owner_user_id", unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("uuid_generate_v4()"),
+    )
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    source_type: Mapped[SourceType] = mapped_column(
+        Enum(SourceType, name="source_type_enum", native_enum=True),
+        nullable=False,
+        default=SourceType.POSTGRESQL,
+        server_default=SourceType.POSTGRESQL.value,
+    )
+    display_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    host: Mapped[str] = mapped_column(String(253), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, nullable=False, default=5432)
+    database_name: Mapped[str] = mapped_column(String(63), nullable=False)
+    tls_mode: Mapped[TLSMode] = mapped_column(
+        Enum(TLSMode, name="source_tls_mode_enum", native_enum=True),
+        nullable=False,
+        default=TLSMode.VERIFY_FULL,
+        server_default=TLSMode.VERIFY_FULL.value,
+    )
+    has_custom_ca: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    status: Mapped[SourceStatus] = mapped_column(
+        Enum(SourceStatus, name="source_status_enum", native_enum=True),
+        nullable=False,
+        default=SourceStatus.TESTED,
+        server_default=SourceStatus.TESTED.value,
+    )
+    # Safe classification only; no server, role, or driver exception text.
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Stored now for the later profiling stage; it cannot be enabled in 2B.
+    profiling_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    # Changes to the owner-controlled profiling switch advance this fence.
+    # Queued or leased profile jobs may publish only if this generation still
+    # matches; disabling profiling therefore cannot leave a stale worker able
+    # to persist fresh observations.
+    profiling_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    # Changes to credentials or the selected relation scope advance this
+    # fence.  Long-running executor and worker paths capture it before remote
+    # I/O and must refuse to publish or disclose work from an older source
+    # configuration.
+    configuration_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    # Optional, source-owner configured catalog maintenance.  A dedicated
+    # worker materializes due refreshes; web requests never contact a source.
+    catalog_refresh_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    catalog_refresh_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    catalog_refresh_next_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    catalog_last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # A bounded service/worker classification only, never an exception body.
+    catalog_last_failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Monotonic source-local generation allocated under a database row lock by
+    # the catalog service. It is separate from connection-test status.
+    catalog_sync_sequence: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+
+    credential: Mapped["SourceCredential | None"] = relationship(
+        back_populates="source",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    table_scopes: Mapped[list["SourceTableScope"]] = relationship(
+        back_populates="source",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class SourceCredential(Base, TimestampMixin):
+    """One encrypted credential bundle per source; never serialize this model."""
+
+    __tablename__ = "source_credentials"
+
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("data_sources.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    key_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    encryption_format: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    source: Mapped[DataSource] = relationship(back_populates="credential")
+
+
+class SourceTableScope(Base):
+    """Explicit current table selection; no schema wildcard is represented."""
+
+    __tablename__ = "source_table_scopes"
+
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("data_sources.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    schema_name: Mapped[str] = mapped_column(String(63), primary_key=True)
+    table_name: Mapped[str] = mapped_column(String(63), primary_key=True)
+    selected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    source: Mapped[DataSource] = relationship(back_populates="table_scopes")

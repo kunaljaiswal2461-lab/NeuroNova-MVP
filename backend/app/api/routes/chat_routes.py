@@ -1,6 +1,7 @@
 """Conversational chat routes — Layer 7 HTTP surface.
 
-Five endpoints, all under ``/api/v1`` and ``X-API-Key`` protected:
+Endpoints are available to JWT users and to the tightly scoped legacy API-key
+namespace. A legacy key can never act as an arbitrary user's session owner.
 
   * ``POST   /datasets/{dataset_id}/chat/sessions``      — create a session
   * ``GET    /datasets/{dataset_id}/chat/sessions``      — list sessions
@@ -14,20 +15,29 @@ each :class:`ChatStreamEvent` from the chat agent is encoded as one
 ``event: <type>\\ndata: <json>\\n\\n`` frame. The frontend's
 ``EventSource`` reads them in order and renders incrementally.
 """
+import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 from fastapi import APIRouter, Query, Request, status
 from fastapi.responses import Response, StreamingResponse
 
 from fastapi import Depends
 from app.core.config import get_settings
-from app.core.dependencies import AuthContext, DBSession, SettingsDep, get_auth_context
+from app.core.dependencies import (
+    AuthContext,
+    DBSession,
+    SettingsDep,
+    get_auth_context,
+    get_current_user,
+)
+from app.connectors.postgres_query_executor import PostgresExecutionCancellation
+from app.db.models.user import User
+from app.exceptions.custom_exceptions import NotFoundError
 from app.middlewares.rate_limiter import limiter
 from app.core.logging import get_logger
-from app.db.models.dataset import DatasetStatus
-from app.exceptions.custom_exceptions import NotFoundError
 from app.schemas.chat_schemas import (
     CreateSessionRequest,
     MessageListResponse,
@@ -35,13 +45,77 @@ from app.schemas.chat_schemas import (
     SessionListResponse,
     SessionResponse,
 )
-from app.services import dataset_service
 from agentic_engine.conversational import conversation_manager as manager
 from agentic_engine.conversational.chat_agent import stream_chat_turn
-from agentic_engine.conversational.models import ChatStreamEvent
+from agentic_engine.conversational.postgres_chat_agent import stream_postgres_chat_turn
+from agentic_engine.conversational.models import ChatStreamEvent, ConversationMode
 
 
 logger = get_logger("chat_routes")
+
+
+@dataclass(frozen=True)
+class _ActiveDatabaseTurn:
+    """A process-local cancellation handle for one already-authorized turn."""
+
+    session_id: uuid.UUID
+    owner_user_id: uuid.UUID
+    cancellation: PostgresExecutionCancellation
+
+
+_active_database_turns: dict[uuid.UUID, _ActiveDatabaseTurn] = {}
+_active_database_turns_lock = asyncio.Lock()
+
+
+async def _register_database_turn(
+    *,
+    turn_id: uuid.UUID,
+    session_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+    cancellation: PostgresExecutionCancellation,
+) -> None:
+    async with _active_database_turns_lock:
+        _active_database_turns[turn_id] = _ActiveDatabaseTurn(
+            session_id=session_id,
+            owner_user_id=owner_user_id,
+            cancellation=cancellation,
+        )
+
+
+async def _unregister_database_turn(turn_id: uuid.UUID | None) -> None:
+    if turn_id is None:
+        return
+    async with _active_database_turns_lock:
+        _active_database_turns.pop(turn_id, None)
+
+
+async def _active_database_turn_for_owner(
+    *, turn_id: uuid.UUID, session_id: uuid.UUID, owner_user_id: uuid.UUID
+) -> _ActiveDatabaseTurn | None:
+    async with _active_database_turns_lock:
+        turn = _active_database_turns.get(turn_id)
+        if (
+            turn is None
+            or turn.session_id != session_id
+            or turn.owner_user_id != owner_user_id
+        ):
+            return None
+        return turn
+
+
+async def get_conversation_access(
+    current_user=Depends(get_auth_context),
+) -> manager.ConversationAccess:
+    """Build an actor only from the already-verified authentication context.
+
+    ``get_auth_context`` returns ``None`` exclusively for a valid legacy
+    ``X-API-Key``. The manager receives an explicit legacy actor rather than a
+    bare ``None`` user id, preventing the legacy all-datasets behavior used by
+    older dataset endpoints from leaking into conversation authorization.
+    """
+    if current_user is None:
+        return manager.ConversationAccess.for_legacy_api_key()
+    return manager.ConversationAccess.for_user(current_user.id)
 
 
 router = APIRouter(
@@ -65,25 +139,13 @@ async def create_session(
     dataset_id: uuid.UUID,
     body: CreateSessionRequest,
     session: DBSession,
-    current_user=Depends(get_auth_context),
+    access: manager.ConversationAccess = Depends(get_conversation_access),
 ) -> SessionResponse:
-    # Sessions can only be opened on datasets that have completed the
-    # full pipeline — the chat agent depends on the profile, findings,
-    # and (for RAG) the vector index all being on disk / in PG.
-    record = await dataset_service.get_dataset(
-        session, dataset_id,
-        user_id=current_user.id if current_user is not None else None,
-    )
-    if record.status is not DatasetStatus.COMPLETE:
-        raise NotFoundError(
-            f"dataset {dataset_id} is not ready for chat",
-            details={"status": record.status.value},
-        )
-    created = await manager.create_session(
+    created = await manager.create_session_for_access(
         session_db=session,
         dataset_id=dataset_id,
         mode=body.mode,
-        user_id=current_user.id if current_user is not None else None,
+        access=access,
     )
     return SessionResponse(session=created)
 
@@ -97,11 +159,115 @@ async def list_sessions(
     dataset_id: uuid.UUID,
     session: DBSession,
     limit: int = Query(50, ge=1, le=200),
+    access: manager.ConversationAccess = Depends(get_conversation_access),
 ) -> SessionListResponse:
     sessions = await manager.list_sessions_for_dataset(
-        session, dataset_id, limit=limit
+        session, dataset_id, limit=limit, access=access
     )
     return SessionListResponse(sessions=sessions, count=len(sessions))
+
+
+# ── source-bound database session lifecycle ────────────────────────────────
+
+@router.post(
+    "/sources/{source_id}/chat/sessions",
+    response_model=SessionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a JWT-owned chat session against a PostgreSQL source",
+)
+@limiter.limit(get_settings().rate_limit_session_create)
+async def create_database_session(
+    request: Request,
+    source_id: uuid.UUID,
+    body: CreateSessionRequest,
+    session: DBSession,
+    current_user: User = Depends(get_current_user),
+) -> SessionResponse:
+    """Create a source binding without treating the source as a dataset.
+
+    The explicit JWT dependency is intentional even though this router also
+    supports legacy file-chat API keys.  A legacy credential has no source
+    owner and therefore can never create a database transcript.
+    """
+
+    created = await manager.create_database_session_for_access(
+        session_db=session,
+        source_id=source_id,
+        # Database chat has a single controlled planner/executor path; retain
+        # AUTO on the session for compatibility, not a user-selectable RAG/
+        # Polars override.
+        mode=ConversationMode.AUTO,
+        access=manager.ConversationAccess.for_user(current_user.id),
+    )
+    return SessionResponse(session=created)
+
+
+@router.get(
+    "/sources/{source_id}/chat/sessions",
+    response_model=SessionListResponse,
+    summary="List JWT-owned chat sessions for a PostgreSQL source",
+)
+async def list_database_sessions(
+    source_id: uuid.UUID,
+    session: DBSession,
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+) -> SessionListResponse:
+    sessions = await manager.list_sessions_for_source(
+        session,
+        source_id,
+        limit=limit,
+        access=manager.ConversationAccess.for_user(current_user.id),
+    )
+    return SessionListResponse(sessions=sessions, count=len(sessions))
+
+
+@router.post(
+    "/chat/sessions/{session_id}/turns/{turn_id}/cancel",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_class=Response,
+    summary="Cancel an active controlled PostgreSQL chat turn",
+)
+async def cancel_database_turn(
+    session_id: uuid.UUID,
+    turn_id: uuid.UUID,
+    session: DBSession,
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    """Cancel only a live, same-process source-bound turn owned by this JWT.
+
+    This is intentionally not a retry/replay facility. The handle exists
+    only while the original SSE request is alive and calls Stage 4B's
+    connection-termination cancellation primitive. If a source is deleted
+    mid-turn, the owner-bound live handle is still allowed to terminate that
+    already-authorized connection; it can never retrieve the deleted session.
+    """
+
+    active_turn = await _active_database_turn_for_owner(
+        turn_id=turn_id,
+        session_id=session_id,
+        owner_user_id=current_user.id,
+    )
+    if active_turn is None:
+        raise NotFoundError("database chat turn not found")
+    try:
+        conversation = await manager.get_session_for_access(
+            session,
+            session_id,
+            access=manager.ConversationAccess.for_user(current_user.id),
+        )
+    except NotFoundError:
+        # Deleting a source/session cascades its transcript before this
+        # request can reauthorize it. The live registry was created only for
+        # this exact JWT owner and source-bound session, so it remains safe to
+        # terminate the already-authorized remote connection without reading
+        # any deleted resource or exposing a result.
+        await active_turn.cancellation.cancel()
+        return Response(status_code=status.HTTP_202_ACCEPTED)
+    if conversation.source is None:
+        raise NotFoundError("database chat turn not found")
+    await active_turn.cancellation.cancel()
+    return Response(status_code=status.HTTP_202_ACCEPTED)
 
 
 @router.get(
@@ -112,9 +278,12 @@ async def list_sessions(
 async def get_session(
     session_id: uuid.UUID,
     session: DBSession,
+    access: manager.ConversationAccess = Depends(get_conversation_access),
 ) -> SessionResponse:
-    fetched = await manager.get_session(session, session_id)
-    return SessionResponse(session=fetched)
+    conversation = await manager.get_session_for_access(
+        session, session_id, access=access
+    )
+    return SessionResponse(session=conversation.session)
 
 
 @router.delete(
@@ -126,8 +295,9 @@ async def get_session(
 async def delete_session(
     session_id: uuid.UUID,
     session: DBSession,
+    access: manager.ConversationAccess = Depends(get_conversation_access),
 ) -> None:
-    await manager.delete_session(session, session_id)
+    await manager.delete_session(session, session_id, access=access)
 
 
 # ── transcript ──────────────────────────────────────────────────────────────
@@ -141,11 +311,11 @@ async def list_messages(
     session_id: uuid.UUID,
     session: DBSession,
     limit: int = Query(100, ge=1, le=500),
+    access: manager.ConversationAccess = Depends(get_conversation_access),
 ) -> MessageListResponse:
-    # Ensure the session exists so callers get a 404 (not an empty list)
-    # when they hit a stale id.
-    await manager.get_session(session, session_id)
-    messages = await manager.get_recent_messages(session, session_id, limit=limit)
+    _conversation, messages = await manager.get_recent_messages_for_access(
+        session, session_id, access=access, limit=limit
+    )
     return MessageListResponse(
         session_id=session_id,
         messages=messages,
@@ -163,7 +333,9 @@ async def list_messages(
             "description": (
                 "Server-Sent Events stream. Each frame is "
                 "`event: <type>\\ndata: <json>\\n\\n` where `<type>` is one "
-                "of start / intent / citations / query_result / token / done / error."
+                "of start / intent / citations / query_result / token / done / error "
+                "for file chat, or planning / executing / clarification / unsupported / "
+                "catalog / postgres_result for source-bound database chat."
             ),
             "content": {"text/event-stream": {}},
         },
@@ -176,35 +348,120 @@ async def send_message(
     body: SendMessageRequest,
     session: DBSession,
     settings: SettingsDep,
+    access: manager.ConversationAccess = Depends(get_conversation_access),
 ) -> StreamingResponse:
-    # Probe the session up-front so we can return a 404 cleanly before
-    # opening the SSE stream — clients much prefer a status code over a
-    # malformed event stream.
-    await manager.get_session(session, session_id)
+    # Resolve ownership before constructing the stream. This prevents an
+    # unauthorized caller from reaching model calls, file-query execution, or
+    # the generator that writes messages to the transcript.
+    conversation = await manager.get_session_for_access(
+        session, session_id, access=access
+    )
+
+    is_database_chat = conversation.source is not None
+    cancellation = PostgresExecutionCancellation() if is_database_chat else None
+    # The browser receives this identifier in the ``start`` event.  It is
+    # registered only for a live database SSE stream and is deliberately
+    # opaque: the cancellation endpoint also verifies both session ownership
+    # and the source-bound session before it touches the handle.
+    turn_id = uuid.uuid4() if is_database_chat else None
+    stream_finished = asyncio.Event()
+
+    async def watch_disconnect() -> None:
+        """Terminate the dedicated client DB connection on a dropped SSE stream."""
+        if cancellation is None:
+            return
+        try:
+            while not stream_finished.is_set():
+                if await request.is_disconnected():
+                    await cancellation.cancel()
+                    return
+                await asyncio.sleep(0.2)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A watcher failure is never an authorization bypass. The normal
+            # generator cancellation path still terminates the connection.
+            return
 
     async def event_stream() -> AsyncIterator[bytes]:
+        watcher = asyncio.create_task(watch_disconnect()) if is_database_chat else None
+        registered_turn = False
         try:
-            async for event in stream_chat_turn(
-                session_id=session_id,
-                user_message=body.message,
-                session_db=session,
-                settings=settings,
-            ):
+            if is_database_chat:
+                # A source session can only have a JWT-derived owner. The
+                # manager rejects legacy access above; the assertion keeps the
+                # typed executor boundary explicit rather than treating None
+                # as a source owner.
+                if access.user_id is None or cancellation is None:
+                    return
+                if turn_id is None:  # Defensive narrowing for the registry.
+                    return
+                await _register_database_turn(
+                    turn_id=turn_id,
+                    session_id=session_id,
+                    owner_user_id=access.user_id,
+                    cancellation=cancellation,
+                )
+                registered_turn = True
+                stream = stream_postgres_chat_turn(
+                    session_id=session_id,
+                    user_message=body.message,
+                    session_db=session,
+                    settings=settings,
+                    owner_user_id=access.user_id,
+                    cancellation=cancellation,
+                    authorized_session=conversation.session,
+                    authorized_source=conversation.source,
+                    turn_id=turn_id,
+                )
+            else:
+                # Existing uploaded-file path remains unchanged.
+                stream = stream_chat_turn(
+                    session_id=session_id,
+                    user_message=body.message,
+                    session_db=session,
+                    settings=settings,
+                    authorized_session=conversation.session,
+                    authorized_dataset=conversation.dataset,
+                )
+            async for event in stream:
+                if cancellation is not None and await request.is_disconnected():
+                    await cancellation.cancel()
+                    return
                 yield _encode_sse(event)
+        except asyncio.CancelledError:
+            if cancellation is not None:
+                await cancellation.cancel()
+            raise
         except Exception as exc:  # pragma: no cover — top-level safety
             # If the agent itself crashes (it tries hard not to), emit
             # one terminal error frame so the client closes cleanly
             # rather than hanging on a dead connection.
-            logger.exception(
-                "chat_routes.stream_crashed",
-                session_id=str(session_id),
-                error=str(exc),
-            )
+            if is_database_chat:
+                # Do not stringify/log a database-chat exception: a driver or
+                # malformed result exception can contain customer data.
+                logger.error("chat_routes.database_stream_crashed", session_id=str(session_id))
+            else:
+                logger.exception(
+                    "chat_routes.stream_crashed",
+                    session_id=str(session_id),
+                    error=str(exc),
+                )
             yield _encode_sse_raw(
                 event="error",
                 data={"message": "internal error in chat stream"},
             )
             yield _encode_sse_raw(event="done", data={})
+        finally:
+            stream_finished.set()
+            if registered_turn:
+                await _unregister_database_turn(turn_id)
+            if watcher is not None:
+                watcher.cancel()
+                try:
+                    await watcher
+                except asyncio.CancelledError:
+                    pass
 
     return StreamingResponse(
         event_stream(),

@@ -7,6 +7,9 @@ email-validator==2.2.0
 
 # auth
 python-jose[cryptography]==3.3.0
+# Direct dependency: source credentials use authenticated Fernet encryption.
+# Do not rely on python-jose's optional dependency to provide this at runtime.
+cryptography==44.0.0
 bcrypt==4.2.1
 slowapi==0.1.9
 aiosmtplib==3.0.1

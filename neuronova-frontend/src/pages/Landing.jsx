@@ -1,4 +1,4 @@
-import { Link, Navigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import DatasetExplorerDemo from '../components/landing/DatasetExplorerDemo'
@@ -73,13 +73,6 @@ const COMPARISON = [
   { feature: 'Statistical Profiling', neuronova: true, ydata: true, chatgpt: false },
   { feature: 'Relationship Intelligence', neuronova: true, ydata: false, chatgpt: false },
   { feature: 'Persistent Dataset Memory', neuronova: true, ydata: false, chatgpt: false },
-]
-
-const SCHEMA_PREVIEW_ROWS = [
-  { col: 'transaction_id', type: 'UUID', nulls: '0%', insight: 'PRIMARY KEY', insightColor: '#3B82F6' },
-  { col: 'customer_email', type: 'STRING', nulls: '12%', insight: 'PII DETECTED', insightColor: '#EF4444' },
-  { col: 'purchase_amount', type: 'FLOAT', nulls: '0%', insight: 'FINANCIAL', insightColor: '#10B981' },
-  { col: 'region_code', type: 'CATEGORICAL', nulls: '2.1%', insight: 'GEOGRAPHIC', insightColor: '#F59E0B' },
 ]
 
 const Check = ({ ok }) => ok ? (

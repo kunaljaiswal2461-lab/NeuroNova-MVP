@@ -95,7 +95,10 @@ async def test_delete_account_removes_owned_dataset_artifacts_and_user(tmp_path)
     assert session.did_flush is True
     assert session.did_commit is True
     assert session.did_rollback is False
-    assert len(session.executed) == 2
+    # Source cleanup runs first so user-owned credentials can never become
+    # null/legacy-owned records when the account row is removed.
+    assert len(session.executed) == 3
+    assert "data_sources" in str(session.executed[1])
 
 
 @pytest.mark.asyncio

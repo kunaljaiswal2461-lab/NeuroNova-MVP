@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { NavLink, Link } from 'react-router-dom'
+import { NavLink, Link, useLocation } from 'react-router-dom'
 import { useDataset } from '../context/DatasetContext'
 import { stageLabel } from '../context/datasetStatus'
 
@@ -54,10 +54,16 @@ const NAV_ITEMS = [
 ]
 
 export default function Sidebar({ isOpen = false, onClose = () => {} }) {
-  const { activeDataset, datasetReady } = useDataset()
+  // Source-bound database chat deliberately does not mount DatasetProvider.
+  // Navigation remains present but never manufactures a dataset binding.
+  const datasetContext = useDataset({ optional: true })
+  const activeDataset = datasetContext?.activeDataset ?? null
+  const datasetReady = datasetContext?.datasetReady ?? false
+  const { pathname } = useLocation()
   const [isSupportOpen, setIsSupportOpen] = useState(false) // Added state for Support Menu
 
   const health = activeDataset?._health ?? null
+  const sourceChatActive = /^\/sources\/[^/]+\/chat\/?$/i.test(pathname)
 
   return (
     <aside id="workspace-navigation" className={`sidebar ${isOpen ? 'is-open' : ''}`} aria-label="Workspace navigation">
@@ -129,7 +135,7 @@ export default function Sidebar({ isOpen = false, onClose = () => {} }) {
 
       {/* Navigation */}
       <nav style={{ padding: '0 8px', flex: 1 }}>
-        {NAV_ITEMS.map(item => item.to !== '/upload' && !datasetReady ? (
+        {NAV_ITEMS.map(item => item.to !== '/upload' && !datasetReady && !(item.to === '/chat' && sourceChatActive) ? (
           <button key={item.to} type="button" disabled aria-disabled="true" className="nav-item"
             title="Available when dataset processing is complete"
             style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 12px', marginBottom: 2, borderRadius: 8, border: 'none', background: 'transparent', color: 'rgba(255,255,255,0.35)', fontSize: 14, fontFamily: 'var(--font-body)', fontWeight: 500, cursor: 'not-allowed' }}>
@@ -139,8 +145,8 @@ export default function Sidebar({ isOpen = false, onClose = () => {} }) {
         ) : (
           <NavLink
             key={item.to}
-            to={item.to}
-            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+            to={item.to === '/chat' && sourceChatActive ? pathname : item.to}
+            className={({ isActive }) => `nav-item ${isActive || (item.to === '/chat' && sourceChatActive) ? 'active' : ''}`}
             onClick={onClose}
             style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', marginBottom: 2, borderRadius: 8, textDecoration: 'none', color: 'rgba(255,255,255,0.65)', fontSize: 14, fontFamily: 'var(--font-body)', fontWeight: 500, cursor: 'pointer', transition: 'all 150ms' }}
           >
@@ -213,8 +219,8 @@ export default function Sidebar({ isOpen = false, onClose = () => {} }) {
               zIndex: 50,
               boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.5)'
             }}>
-              <Link 
-                to="/" 
+              <Link
+                to="/"
                 onClick={onClose}
                 style={{ display: 'block', padding: '8px 16px', fontSize: 13, color: 'white', textDecoration: 'none', fontFamily: 'var(--font-body)', transition: 'background 150ms' }}
                 onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
