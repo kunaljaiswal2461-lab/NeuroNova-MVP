@@ -54,10 +54,16 @@ To rotate:
    safe to rerun because active-key rows remain unchanged.
 3. Verify that no row references the old ID, then remove the old key.
 
-Stage 2B does not expose credential rotation through HTTP and does not run any
-rotation process automatically. Never remove a historical key before all rows
-using it have been rewrapped. Missing key IDs, malformed ciphertext, and
-unsupported formats fail closed. Source listing/deletion remains possible
+Stage 2B did not expose **encryption-key** rotation through HTTP and the
+application still does not run a key-rotation process automatically. Stage 7
+does provide an owner-scoped saved-source credential-replacement endpoint
+(`PUT /api/v1/sources/{source_id}/credentials`): it tests and atomically
+replaces that source's database credential without changing the immutable
+endpoint. It is not a Fernet-key rotation service and never rewraps other
+sources. Follow [the Stage 7 operations runbook](stage7-operational-completion.md)
+for the saved-source maintenance contract. Never remove a historical key before
+all rows using it have been rewrapped. Missing key IDs, malformed ciphertext,
+and unsupported formats fail closed. Source listing/deletion remains possible
 without decryption.
 
 ## Supported connection boundary
@@ -116,4 +122,6 @@ samples, column descriptions, or detailed metadata are fetched.
 
 Selecting a schema in the future UI must expand to its currently listed table
 names. There are no schema wildcards, so subsequently discovered tables remain
-excluded until selected. `profiling_enabled` is permanently false in Stage 2B.
+excluded until selected. Stage 2B creates sources with `profiling_enabled=false`.
+Stage 6A later permits an owner to opt in explicitly; it never enables
+profiling automatically. See [the Stage 6A profiling contract](stage6a-optional-database-profiling.md).

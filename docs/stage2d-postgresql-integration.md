@@ -169,10 +169,13 @@ topology above:
    `401`. Check no response exposes a lease token, ciphertext, metadata
    comment, client row, or raw driver error.
 
-This live procedure remains pending until it is actually executed against the
-isolated PostgreSQL/TLS fixture. SQLite and mocked-adapter tests only cover
-the application and adapter contracts, not PostgreSQL lock, migration, or
-privilege semantics.
+The application-metadata migration portion was exercised separately with
+disposable PostgreSQL databases and is recorded in
+[Stage 8](stage8-live-verification-and-acceptance.md). This live procedure
+still remains pending until the isolated PostgreSQL/**TLS client** fixture is
+actually executed. SQLite and mocked-adapter tests only cover the application
+and adapter contracts, not client PostgreSQL lock, migration, or privilege
+semantics.
 
 ## Stage 4B controlled-execution checks
 

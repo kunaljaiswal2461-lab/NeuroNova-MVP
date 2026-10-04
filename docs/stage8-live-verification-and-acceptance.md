@@ -1,14 +1,17 @@
 # Stage 8 — Live Verification and Acceptance
 
 This report records the verification that was actually performed on
-2026-10-04. It preserves the existing uncommitted Stage 6B and Stage 7 work
-and does not treat mock, SQLite, static SQL, or browser-unit evidence as a
-substitute for a live PostgreSQL/TLS/model/browser check.
+2026-10-04, before this report was committed. It covers the accumulated Stage
+6B and Stage 7 work and does not treat mock, SQLite, static SQL, or
+browser-unit evidence as a substitute for a live PostgreSQL/TLS/model/browser
+check.
 
 ## Tested environment
 
-- Repository branch: `stage6a-optional-database-profiling`; migration head:
-  `0015_stage7_source_operations`.
+- Repository working branch at the time of verification:
+  `stage6a-optional-database-profiling`; migration head:
+  `0015_stage7_source_operations`. This is historical test provenance, not a
+  claim about the branch where this report is subsequently stored.
 - Application-metadata verification: a user-owned local PostgreSQL 18.4
   server, using three explicitly named disposable databases. Only synthetic
   application records were seeded; all three databases were dropped after the

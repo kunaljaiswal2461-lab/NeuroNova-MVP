@@ -5,6 +5,15 @@ plans defined in Stage 4A. It adds no HTTP route, natural-language planning,
 chat integration, frontend feature, join support, automatic repair, or
 arbitrary-SQL capability.
 
+This document records the Stage 4B boundary, not the repository's final
+capability set. Later stages add source-bound chat, controlled same-source
+joins, optional profiling, charts, and source operations; see
+[Stage 4C](stage4c-postgres-natural-language-chat.md),
+[Stage 5B](stage5b-controlled-same-source-joins.md),
+[Stage 6A](stage6a-optional-database-profiling.md), and
+[Stage 7](stage7-operational-completion.md). Those additions do not relax the
+execution gateway's authorization, compilation, or bounded-result contract.
+
 ```text
 trusted actor/source/snapshot + PostgresQueryPlan
   -> current-head authorization and deterministic compilation
