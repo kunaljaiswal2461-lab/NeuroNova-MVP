@@ -315,6 +315,75 @@ async def test_cancellation_after_executor_return_never_persists_or_emits_succes
 
 
 @pytest.mark.asyncio
+async def test_late_cancellation_is_ordered_after_result_delivery(monkeypatch, settings_with_key):
+    """A cancel request cannot win after rows are stored but before their SSE frame."""
+
+    owner_id, source_id, snapshot_id, asset_id, column_id = [uuid.uuid4() for _ in range(5)]
+    session = ConversationSession(session_id=uuid.uuid4(), source_id=source_id)
+    source = SimpleNamespace(id=source_id, owner_user_id=owner_id)
+    saved = await _install_manager(monkeypatch, session=session, source=source)
+    plan = PostgresQueryPlan(asset_id=asset_id, projections=({"column_id": column_id},), limit=5)
+    cancellation = PostgresExecutionCancellation()
+    original_append = postgres_chat_agent.manager.append_message
+    cancellation_task = None
+    authorization_checks = 0
+
+    async def append_and_request_cancellation(*args, **kwargs):
+        nonlocal cancellation_task
+        message = await original_append(*args, **kwargs)
+        if kwargs.get("postgres_result") is not None:
+            cancellation_task = asyncio.create_task(cancellation.cancel())
+            await asyncio.sleep(0)
+        return message
+
+    async def authorize_with_old_delivery_window(*_args, **_kwargs):
+        nonlocal authorization_checks
+        authorization_checks += 1
+        if authorization_checks > 1:
+            await asyncio.sleep(0)
+        return True
+
+    async def fake_plan(**_kwargs):
+        return PostgresPlanningResult(
+            kind="plan", message="ready", snapshot_id=snapshot_id, plan=plan
+        )
+
+    async def fake_executor(*_args, **_kwargs):
+        return _execution(source_id=source_id, snapshot_id=snapshot_id)
+
+    @asynccontextmanager
+    async def factory():
+        yield _Session()
+
+    monkeypatch.setattr(postgres_chat_agent, "plan_postgres_question", fake_plan)
+    monkeypatch.setattr(postgres_chat_agent.manager, "append_message", append_and_request_cancellation)
+    monkeypatch.setattr(
+        postgres_chat_agent, "_authorize_before_disclosure", authorize_with_old_delivery_window
+    )
+    events = [
+        event
+        async for event in postgres_chat_agent.stream_postgres_chat_turn(
+            session_id=session.session_id,
+            user_message="show amount",
+            session_db=_Session(),
+            owner_user_id=owner_id,
+            settings=settings_with_key,
+            authorized_session=session,
+            authorized_source=source,
+            executor=fake_executor,
+            session_factory=factory,
+            cancellation=cancellation,
+        )
+    ]
+
+    assert cancellation_task is not None
+    await asyncio.wait_for(cancellation_task, timeout=1)
+    assert cancellation.cancelled is True
+    assert ChatStreamEventType.POSTGRES_RESULT in [event.event for event in events]
+    assert saved[-1].postgres_result is not None
+
+
+@pytest.mark.asyncio
 async def test_cancellation_after_planning_short_circuits_before_stage4b(monkeypatch, settings_with_key):
     owner_id, source_id, snapshot_id, asset_id, column_id = [uuid.uuid4() for _ in range(5)]
     session = ConversationSession(session_id=uuid.uuid4(), source_id=source_id)
