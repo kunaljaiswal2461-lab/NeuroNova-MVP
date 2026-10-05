@@ -11,7 +11,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.config import Settings
 from app.core.security import hash_password
 from app.db.models.user import RefreshToken, User, UserRole
-from app.exceptions.custom_exceptions import UnauthorizedError
+from app.core.security import create_one_time_token
+from app.exceptions.custom_exceptions import (
+    EmailDeliveryUnavailableError,
+    PasswordResetRequiredError,
+    UnauthorizedError,
+)
 from app.services import auth_service, email_service
 
 EMAIL = "priya@acme-logistics.com"
@@ -78,7 +83,8 @@ async def session():
         await engine.dispose()
 
 
-async def _seed(session, *, verified: bool, password: str | None = "Mall0ry!pass",
+async def _seed(session, *, verified: bool, proven: bool = False,
+                password: str | None = "Mall0ry!pass",
                 google_id: str | None = None, active: bool = True,
                 name: str = "Priya", avatar_url: str | None = None) -> User:
     user = User(
@@ -86,6 +92,7 @@ async def _seed(session, *, verified: bool, password: str | None = "Mall0ry!pass
         hashed_password=hash_password(password) if password else None,
         is_active=active, is_verified=verified, role=UserRole.USER,
         google_id=google_id, avatar_url=avatar_url,
+        password_proven_at=datetime.now(timezone.utc) if proven else None,
     )
     session.add(user)
     await session.commit()
@@ -152,7 +159,7 @@ async def test_new_google_user_created_verified_without_password(session, settin
 
 
 async def test_verified_password_user_links_and_keeps_password(session, settings):
-    await _seed(session, verified=True, password="Real!pass1")
+    await _seed(session, verified=True, proven=True, password="Real!pass1")
     _, _, user = await _google(session, settings, avatar_url="http://a/p.png")
     assert user.google_id == "G-PRIYA"
     assert user.name == "Priya"
@@ -204,19 +211,118 @@ def test_dev_auto_verify_refused_outside_dev():
 
 
 @pytest.fixture
-def no_email(monkeypatch):
-    async def _noop(*a, **k):
-        return None
-    monkeypatch.setattr(email_service, "send_verification_email", _noop)
+def sent(monkeypatch):
+    calls = []
+
+    async def _record(*args, **kwargs):
+        calls.append(args)
+
+    monkeypatch.setattr(email_service, "send_verification_email", _record)
+    monkeypatch.setattr(email_service, "send_password_reset_email", _record)
+    return calls
 
 
-async def test_register_unverified_without_opt_in(session, no_email):
-    s = _settings(app_env="dev", auth_dev_auto_verify=False)
+async def test_register_unverified_without_opt_in(session, sent):
+    # M12: email provider configured, opt-in off.
+    s = _settings(app_env="dev", auth_dev_auto_verify=False, resend_api_key="re_test")
     user = await auth_service.register_user(session, s, EMAIL, "Priya", "Pass!word1")
     assert user.is_verified is False
+    assert user.password_proven_at is None
+    assert len(sent) == 1
 
 
-async def test_register_auto_verified_with_opt_in(session, no_email):
+async def test_register_auto_verified_with_opt_in(session, sent):
+    # M13: dev opt-in verifies AND proves the password, so local login works.
     s = _settings(app_env="dev", auth_dev_auto_verify=True)
     user = await auth_service.register_user(session, s, EMAIL, "Priya", "Pass!word1")
     assert user.is_verified is True
+    assert user.password_proven_at is not None
+    await auth_service.login_user(session, s, EMAIL, "Pass!word1")
+
+
+async def test_register_fails_loudly_in_dev_without_delivery(session, sent):
+    # M21
+    s = _settings(app_env="dev", auth_dev_auto_verify=False)
+    with pytest.raises(EmailDeliveryUnavailableError, match="AUTH_DEV_AUTO_VERIFY"):
+        await auth_service.register_user(session, s, EMAIL, "Priya", "Pass!word1")
+    assert await _user_count(session) == 0
+
+
+async def test_register_fails_generically_in_prod_without_delivery(session, sent):
+    # M22
+    s = _settings(app_env="prod")
+    with pytest.raises(EmailDeliveryUnavailableError) as exc:
+        await auth_service.register_user(session, s, EMAIL, "Priya", "Pass!word1")
+    assert "AUTH_DEV_AUTO_VERIFY" not in str(exc.value)
+    assert await _user_count(session) == 0
+
+
+async def test_forgot_password_fails_without_delivery_for_any_email(session, sent):
+    # M23: same error whether or not the email exists.
+    await _seed(session, verified=True)
+    s = _settings()
+    for email in (EMAIL, "nobody@example.com"):
+        with pytest.raises(EmailDeliveryUnavailableError):
+            await auth_service.forgot_password(session, s, email)
+
+
+async def test_legacy_verified_row_with_unproven_password_is_reclaimed(session, settings):
+    # M14 / A1.2: a row auto-verified before Rule 4 keeps the squatter's password.
+    await _seed(session, verified=True)
+    _, _, user = await _google(session, settings)
+    assert user.hashed_password is None
+    assert user.name == "Priya Sharma"
+    with pytest.raises(UnauthorizedError):
+        await auth_service.login_user(session, settings, EMAIL, "Mall0ry!pass")
+
+
+async def test_google_only_row_is_linked_not_reclaimed(session, settings):
+    # M15
+    await _seed(session, verified=True, password=None, name="Original")
+    _, _, user = await _google(session, settings)
+    assert user.google_id == "G-PRIYA"
+    assert user.name == "Original"
+
+
+async def test_login_with_unproven_password_requires_reset(session, settings):
+    # M16
+    await _seed(session, verified=True)
+    with pytest.raises(PasswordResetRequiredError) as exc:
+        await auth_service.login_user(session, settings, EMAIL, "Mall0ry!pass")
+    assert exc.value.code == "password_reset_required"
+
+
+async def test_wrong_password_gives_no_reset_hint(session, settings):
+    # M17
+    await _seed(session, verified=True)
+    with pytest.raises(UnauthorizedError, match="invalid credentials") as exc:
+        await auth_service.login_user(session, settings, EMAIL, "wrong")
+    assert not isinstance(exc.value, PasswordResetRequiredError)
+
+
+async def test_reset_password_proves_password(session, settings):
+    # M18
+    row = await _seed(session, verified=True)
+    token = create_one_time_token(str(row.id), "password_reset", settings.jwt_secret_key, expire_hours=1)
+    user = await auth_service.reset_password(session, settings, token, "Brand!new1")
+    assert user.password_proven_at is not None
+    await auth_service.login_user(session, settings, EMAIL, "Brand!new1")
+    with pytest.raises(UnauthorizedError):
+        await auth_service.login_user(session, settings, EMAIL, "Mall0ry!pass")
+
+
+async def test_verify_email_transition_proves_password(session, settings):
+    # M19
+    row = await _seed(session, verified=False)
+    token = create_one_time_token(str(row.id), "email_verification", settings.jwt_secret_key, expire_hours=24)
+    user = await auth_service.verify_email(session, settings, token)
+    assert user.is_verified is True
+    assert user.password_proven_at is not None
+
+
+async def test_verify_email_cannot_bless_legacy_password(session, settings):
+    # M20
+    row = await _seed(session, verified=True)
+    token = create_one_time_token(str(row.id), "email_verification", settings.jwt_secret_key, expire_hours=24)
+    user = await auth_service.verify_email(session, settings, token)
+    assert user.password_proven_at is None

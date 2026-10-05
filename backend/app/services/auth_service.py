@@ -20,13 +20,28 @@ from app.core.security import (
 from app.db.models.user import RefreshToken, User, UserRole
 from app.exceptions.custom_exceptions import (
     ConflictError,
+    EmailDeliveryUnavailableError,
     NotFoundError,
+    PasswordResetRequiredError,
     UnauthorizedError,
     ValidationFailure,
 )
 from app.services import email_service
 
 log = structlog.get_logger()
+
+
+def _require_email_delivery(settings: Settings) -> None:
+    """Fail loudly instead of reporting success for an email that cannot be sent."""
+    if email_service.delivery_configured(settings):
+        return
+    if settings.app_env == "dev":
+        raise EmailDeliveryUnavailableError(
+            "Email delivery is not configured. For local development set "
+            "AUTH_DEV_AUTO_VERIFY=true in backend .env (allowed only with APP_ENV=dev)."
+        )
+    log.error("auth.email_delivery_unavailable")
+    raise EmailDeliveryUnavailableError("This feature is temporarily unavailable.")
 
 
 async def register_user(
@@ -47,12 +62,17 @@ async def register_user(
         and not settings.resend_api_key
     )
 
+    if not dev_auto_verify:
+        _require_email_delivery(settings)
+
     user = User(
         email=email.lower(),
         name=name,
         hashed_password=hash_password(password),
         is_active=True,
         is_verified=dev_auto_verify,
+        # Only the explicit dev opt-in proves a password at registration.
+        password_proven_at=datetime.now(timezone.utc) if dev_auto_verify else None,
         role=UserRole.USER,
     )
     db.add(user)
@@ -88,6 +108,10 @@ async def login_user(
         raise UnauthorizedError("account disabled")
     if not user.is_verified:
         raise UnauthorizedError("email not verified — check your inbox")
+    if user.password_proven_at is None:
+        raise PasswordResetRequiredError(
+            "For security, please set a new password using “Forgot password”."
+        )
 
     access_token = create_access_token(
         str(user.id), user.email, user.role.value,
@@ -140,6 +164,8 @@ async def verify_email(db: AsyncSession, settings: Settings, token: str) -> User
         raise NotFoundError("user not found")
     if not user.is_verified:
         user.is_verified = True
+        if user.hashed_password is not None:
+            user.password_proven_at = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(user)
     return user
@@ -148,6 +174,7 @@ async def verify_email(db: AsyncSession, settings: Settings, token: str) -> User
 async def forgot_password(
     db: AsyncSession, settings: Settings, email: str, frontend_url: str | None = None
 ) -> None:
+    _require_email_delivery(settings)  # before the lookup: same error for any email
     user = await db.scalar(select(User).where(User.email == email.lower()))
     if not user:
         return  # don't leak whether the email exists
@@ -173,6 +200,7 @@ async def reset_password(
         raise NotFoundError("user not found")
 
     user.hashed_password = hash_password(new_password)
+    user.password_proven_at = datetime.now(timezone.utc)
 
     # revoke all existing refresh tokens after password reset
     tokens = await db.scalars(
@@ -232,8 +260,11 @@ async def get_or_create_google_user(
             if user.google_id is not None and user.google_id != google_id:
                 log.warning("auth.google.link_conflict", user_id=str(user.id))
                 raise UnauthorizedError("Google sign-in could not be completed for this account.")
-            if not user.is_verified:
-                # The row was never proven; its credentials are untrusted.
+            if not user.is_verified or (
+                user.hashed_password is not None and user.password_proven_at is None
+            ):
+                # Unproven row, or a verified inbox with a password nobody proved
+                # (rows auto-verified before the dev opt-in existed).
                 await _reclaim_unproven_account(db, user, name=name, avatar_url=avatar_url)
             elif avatar_url and not user.avatar_url:
                 user.avatar_url = avatar_url

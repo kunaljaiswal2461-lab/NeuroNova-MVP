@@ -41,3 +41,12 @@ class FileTooLargeError(AppError):
 class ConflictError(AppError):
     status_code = 409
     code = "conflict"
+
+
+class PasswordResetRequiredError(UnauthorizedError):
+    code = "password_reset_required"
+
+
+class EmailDeliveryUnavailableError(AppError):
+    status_code = 503
+    code = "email_delivery_unavailable"

@@ -23,4 +23,4 @@ def test_long_revision_identifier_is_preceded_by_version_column_widening() -> No
     assert len(long_revision.revision) > 32
     assert long_revision.down_revision == widening_revision.revision
     assert widening_revision.down_revision == "0011_postgres_chat_bindings"
-    assert script.get_heads() == ["0015_stage7_source_operations"]
+    assert script.get_heads() == ["0016_password_provenance"]

@@ -28,6 +28,10 @@ async def send_password_reset_email(
     await _send(settings, to_email, "Reset your NeuroNova password", _reset_html(name, reset_url))
 
 
+def delivery_configured(settings: Settings) -> bool:
+    return bool(settings.resend_api_key or settings.smtp_host)
+
+
 async def _send(settings: Settings, to: str, subject: str, html: str) -> None:
     if settings.resend_api_key:
         await _send_with_resend_api(settings, to, subject, html)
@@ -122,7 +126,7 @@ def _verification_html(name: str, url: str) -> str:
         Verify Email
       </a>
       <p style="color:#888;font-size:12px;margin-top:24px">
-        This link expires in 24 hours. If you did not create an account, ignore this email.
+        This link expires in 24 hours. If you did not create a NeuroNova account, ignore this email. Do not click the link.
       </p>
     </div>"""
 

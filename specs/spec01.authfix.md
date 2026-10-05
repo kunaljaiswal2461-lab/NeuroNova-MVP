@@ -516,3 +516,79 @@ Record that failure in the PR description, then apply the fix.
 - **Tokens in `localStorage` and non-rotating refresh tokens.**
 - **Concurrent first-time Google callbacks for the same identity:** two simultaneous callbacks can both reach L41 and one hits the `google_id` unique constraint, giving a 500. It's not exploitable; handle it in a later hardening pass by catching `IntegrityError` and retrying the lookup.
 - **Link-notification email and expiry of unverified registrations** (§7 follow-ups).
+---
+
+# PART C — Pull request content
+
+## PR title
+
+```
+fix(auth): stop Google sign-in from handing pre-registered accounts to attackers (SPEC-01)
+```
+
+## PR description
+
+```markdown
+## Summary
+
+Fixes a **critical account-takeover** in Google sign-in (SPEC-01). Anyone who knew a victim's email could register that address with their own password; when the victim later signed in with Google, the account was marked verified **without removing the attacker's password**, so the attacker could log in as the victim and reach any production database the victim connected.
+
+## The issues
+
+| # | Issue | Where | Impact |
+|---|---|---|---|
+| A | **Pre-account hijacking.** `get_or_create_google_user` linked Google to an existing row by email and set `is_verified = True`, but left the password set by the unverified registrant in place. | `auth_service.py` | Attacker logs in with their password to the victim's account, with access to the victim's connected databases, chats and sources. The victim sees nothing. |
+| B | **Unverified Google email trusted.** `email_verified` from Google was never read. | `auth_routes.py`, `auth_service.py` | A Google identity with an unverified email could be linked to an existing account. |
+| C | **Dev auto-verify fails open.** Email verification was skipped whenever `APP_ENV=dev` (the default) and no email provider was configured, so a deploy with missing config verified every signup instantly. | `auth_service.register_user` | Makes A a no-wait attack, and a row that is already verified is not protected by the fix for A. |
+| D | Missing `email`/`name` claims raised `KeyError` and returned a 500. | `auth_routes.py` | Robustness only. |
+
+## The fixes
+
+1. **Reclaim unproven accounts (A).** New `_reclaim_unproven_account`: when Google proves the email for a row that was never verified, the password is cleared, name and avatar are overwritten with Google's, all refresh tokens are revoked, and only then is the row marked verified. The attacker's password stops working. The owner can set a password later via "forgot password".
+2. **Require `email_verified is True` (B).** Checked in the service with an identity check (not truthiness, since `"false"` is truthy). A missing or empty email is rejected cleanly. The route passes the raw claims through and makes no trust decision.
+3. **Refuse to re-link (defence in depth).** A row already linked to a different `google_id` is rejected with a generic message.
+4. **Explicit dev opt-in (C).** New `AUTH_DEV_AUTO_VERIFY` setting, default `false`. Auto-verify now needs the flag **and** `APP_ENV=dev` **and** no email provider. `Settings` refuses to start if the flag is set outside `dev`.
+5. **Unchanged behaviour:** a verified password user who signs in with Google still gets Google linked and keeps their password and profile.
+
+## Files changed
+
+- `backend/app/services/auth_service.py`: reclaim helper, new Google linking rules, `register_user` opt-in.
+- `backend/app/api/routes/auth_routes.py`: callback call site only.
+- `backend/app/core/config.py`: `auth_dev_auto_verify` and startup validator.
+- `.env.example`: documents `AUTH_DEV_AUTO_VERIFY` (commented out).
+- `backend/tests/unit/test_google_account_linking.py`: 14 new tests (one per behaviour-matrix row M1 to M13).
+
+## Evidence
+
+**Exploit reproduced on the unfixed code.** With the fix removed and the new `email_verified` argument dropped (the old code does not accept it), `test_preregistered_password_does_not_survive_google_link` fails:
+
+```
+Failed: DID NOT RAISE <class 'app.exceptions.custom_exceptions.UnauthorizedError'>
+```
+
+That is, after Google linked the row, `login_user` with the attacker's password **succeeded**.
+
+**With the fix:** `14 passed` in `tests/unit/test_google_account_linking.py`.
+
+**Full backend suite:** before (original code) 296 passed, 99 errors. After 310 passed, 99 errors, 0 failures. The 99 errors are identical in both runs, all in `tests/catalog/*` and `tests/sources/test_source_service.py`, and all fail at SQLite table creation (`near "(": syntax error` from PostgreSQL-only defaults) before reaching any code under test. They are not caused by this PR.
+
+**Grep check:** `grep -n "is_verified = True" backend/app` returns only `verify_email` and `_reclaim_unproven_account`.
+
+## Deployment notes
+
+- Local developers without an email provider must now set `AUTH_DEV_AUTO_VERIFY=true` in `.env` to keep auto-verified signups.
+- Existing unverified rows that later sign in with Google are reclaimed (password removed) automatically; a `auth.google.reclaimed_unverified_account` warning is logged.
+- Tests need `aiosqlite` installed; it is not currently in `requirements.txt`.
+
+## Reviewer checklist
+
+- [ ] M4 exploit test reviewed (fails before, passes after)
+- [ ] `get_or_create_google_user` requires `email_verified`; callback passes `info.get("email_verified")`
+- [ ] `Settings(auth_dev_auto_verify=True, app_env="prod", ...)` raises
+- [ ] `.env.example` documents the flag, commented out
+- [ ] **Before merge or deploy: search production logs for `auth.register.dev_auto_verified`.** Any hit means real signups were auto-verified in a deployed environment; review those accounts manually. (Not yet done: result to be noted here.)
+
+## Out of scope (tracked separately)
+
+SPEC-02 production startup guards, OAuth `state` CSRF, token storage, concurrent first-time Google callbacks, link-notification email and expiry of unverified registrations.
+```
