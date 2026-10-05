@@ -358,6 +358,16 @@ def _create_payload():
     }
 
 
+def test_postgres_test_route_keeps_body_and_settings_dependency_bound():
+    """Guard the SlowAPI/FastAPI binding contract used by the deployed image."""
+    app = create_app()
+    route = next(route for route in app.routes if getattr(route, "path", None) == "/api/v1/sources/postgresql/test")
+
+    assert [parameter.name for parameter in route.dependant.body_params] == ["body"]
+    assert [parameter.name for parameter in route.dependant.query_params] == []
+    assert {dependency.name for dependency in route.dependant.dependencies} >= {"settings", "current_user"}
+
+
 async def test_jwt_owner_can_test_create_read_list_and_delete(route_client, route_context):
     _app, owner, _other, source, _settings, headers, calls, _catalog_run = route_context
     owner_headers = headers(owner)

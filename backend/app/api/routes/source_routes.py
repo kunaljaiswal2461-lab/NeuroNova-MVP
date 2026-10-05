@@ -1,5 +1,11 @@
-"""JWT-only PostgreSQL source onboarding endpoints."""
-# from __future__ import annotations
+"""JWT-only PostgreSQL source onboarding endpoints.
+
+Keep endpoint annotations concrete in this module.  SlowAPI wraps the route
+callables, and the FastAPI version pinned by the deployment image evaluates
+postponed annotations in the wrapper module rather than this module.  That
+would incorrectly expose JSON bodies and injected dependencies as query
+parameters.
+"""
 
 import uuid
 
