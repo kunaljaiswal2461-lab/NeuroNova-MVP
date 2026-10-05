@@ -3,7 +3,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from functools import lru_cache
 from typing import Literal
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
 
@@ -270,6 +270,17 @@ class Settings(BaseSettings):
         if decimal_value.as_tuple().exponent < -4:
             raise ValueError("profile sample percent supports at most four decimal places")
         return float(decimal_value)
+
+    # --- auth ---
+    # Local development only: skip email verification when no email provider is
+    # configured. Must be explicitly enabled; refused outside APP_ENV=dev.
+    auth_dev_auto_verify: bool = False
+
+    @model_validator(mode="after")
+    def _auth_dev_auto_verify_only_in_dev(self) -> "Settings":
+        if self.auth_dev_auto_verify and self.app_env != "dev":
+            raise ValueError("AUTH_DEV_AUTO_VERIFY is only allowed when APP_ENV=dev")
+        return self
 
     # --- Google OAuth ---
     google_client_id: str = ""

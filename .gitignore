@@ -46,3 +46,8 @@ dist/
 
 # Cache
 *.log
+# Local run guide
+local.md
+
+# Spec
+@spec

@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -41,7 +41,8 @@ async def register_user(
     # Auto-verify instead and log the would-be verification URL so the verify
     # flow can still be tested.
     dev_auto_verify = (
-        settings.app_env == "dev"
+        settings.auth_dev_auto_verify
+        and settings.app_env == "dev"
         and not settings.smtp_host
         and not settings.resend_api_key
     )
@@ -188,29 +189,58 @@ async def reset_password(
     return user
 
 
+async def _reclaim_unproven_account(
+    db: AsyncSession, user: User, *, name: str, avatar_url: str | None
+) -> None:
+    """Hand an unverified row to the party that just proved the email.
+
+    Everything on the row was supplied by whoever registered it, who never
+    proved ownership of the email. Nothing from that party survives.
+    """
+    user.hashed_password = None
+    user.name = name
+    user.avatar_url = avatar_url
+    await db.execute(
+        update(RefreshToken)
+        .where(RefreshToken.user_id == user.id, RefreshToken.revoked.is_(False))
+        .values(revoked=True)
+    )
+    user.is_verified = True
+    log.warning("auth.google.reclaimed_unverified_account", user_id=str(user.id))
+
+
 async def get_or_create_google_user(
     db: AsyncSession,
     settings: Settings,
     google_id: str,
-    email: str,
+    email: str | None,
+    email_verified: object,
     name: str,
     avatar_url: str | None,
 ) -> tuple[str, str, User]:
-    # 1. Try by google_id
+    # Google's email is proof of ownership only when explicitly verified.
+    if email_verified is not True or not email:
+        log.warning("auth.google.rejected_unverified_email", google_id=google_id)
+        raise UnauthorizedError("Your Google account's email address is not verified.")
+    normalized_email = email.lower()
+
     user = await db.scalar(select(User).where(User.google_id == google_id))
-    if not user:
-        # 2. Try by email (link existing account)
-        user = await db.scalar(select(User).where(User.email == email.lower()))
-        if user:
-            user.google_id = google_id
-            if avatar_url and not user.avatar_url:
-                user.avatar_url = avatar_url
+    if user is None:
+        user = await db.scalar(select(User).where(User.email == normalized_email))
+        if user is not None:
+            # Never silently move an account to another Google identity.
+            if user.google_id is not None and user.google_id != google_id:
+                log.warning("auth.google.link_conflict", user_id=str(user.id))
+                raise UnauthorizedError("Google sign-in could not be completed for this account.")
             if not user.is_verified:
-                user.is_verified = True  # Google confirms the email
+                # The row was never proven; its credentials are untrusted.
+                await _reclaim_unproven_account(db, user, name=name, avatar_url=avatar_url)
+            elif avatar_url and not user.avatar_url:
+                user.avatar_url = avatar_url
+            user.google_id = google_id
         else:
-            # 3. New user via Google
             user = User(
-                email=email.lower(),
+                email=normalized_email,
                 name=name,
                 hashed_password=None,
                 is_active=True,
