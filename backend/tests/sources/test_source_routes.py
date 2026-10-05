@@ -27,6 +27,7 @@ from app.db.models.user import User, UserRole
 from app.exceptions.custom_exceptions import NotFoundError
 from app.schemas.source_schemas import (
     InventoryTableResponse,
+    PostgresTestRequest,
     PostgresTestResponse,
     SourceDetailResponse,
     SourceListResponse,
@@ -363,6 +364,10 @@ def test_postgres_test_route_keeps_body_and_settings_dependency_bound():
     app = create_app()
     route = next(route for route in app.routes if getattr(route, "path", None) == "/api/v1/sources/postgresql/test")
 
+    # SlowAPI's wrapper in the pinned FastAPI runtime cannot resolve postponed
+    # annotations from this route module.  Keep this check independent of the
+    # local FastAPI version so re-adding the future import fails CI.
+    assert route.endpoint.__annotations__["body"] is PostgresTestRequest
     assert [parameter.name for parameter in route.dependant.body_params] == ["body"]
     assert [parameter.name for parameter in route.dependant.query_params] == []
     assert {dependency.name for dependency in route.dependant.dependencies} >= {"settings", "current_user"}

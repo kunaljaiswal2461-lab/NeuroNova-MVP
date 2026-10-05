@@ -6,7 +6,6 @@ postponed annotations in the wrapper module rather than this module.  That
 would incorrectly expose JSON bodies and injected dependencies as query
 parameters.
 """
-from __future__ import annotations 
 
 import uuid
 
