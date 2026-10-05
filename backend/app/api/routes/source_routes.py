@@ -1,5 +1,5 @@
 """JWT-only PostgreSQL source onboarding endpoints."""
-from __future__ import annotations
+# from __future__ import annotations
 
 import uuid
 
