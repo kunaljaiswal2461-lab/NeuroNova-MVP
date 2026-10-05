@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -20,13 +20,28 @@ from app.core.security import (
 from app.db.models.user import RefreshToken, User, UserRole
 from app.exceptions.custom_exceptions import (
     ConflictError,
+    EmailDeliveryUnavailableError,
     NotFoundError,
+    PasswordResetRequiredError,
     UnauthorizedError,
     ValidationFailure,
 )
 from app.services import email_service
 
 log = structlog.get_logger()
+
+
+def _require_email_delivery(settings: Settings) -> None:
+    """Fail loudly instead of reporting success for an email that cannot be sent."""
+    if email_service.delivery_configured(settings):
+        return
+    if settings.app_env == "dev":
+        raise EmailDeliveryUnavailableError(
+            "Email delivery is not configured. For local development set "
+            "AUTH_DEV_AUTO_VERIFY=true in backend .env (allowed only with APP_ENV=dev)."
+        )
+    log.error("auth.email_delivery_unavailable")
+    raise EmailDeliveryUnavailableError("This feature is temporarily unavailable.")
 
 
 async def register_user(
@@ -41,10 +56,14 @@ async def register_user(
     # Auto-verify instead and log the would-be verification URL so the verify
     # flow can still be tested.
     dev_auto_verify = (
-        settings.app_env == "dev"
+        settings.auth_dev_auto_verify
+        and settings.app_env == "dev"
         and not settings.smtp_host
         and not settings.resend_api_key
     )
+
+    if not dev_auto_verify:
+        _require_email_delivery(settings)
 
     user = User(
         email=email.lower(),
@@ -52,6 +71,8 @@ async def register_user(
         hashed_password=hash_password(password),
         is_active=True,
         is_verified=dev_auto_verify,
+        # Only the explicit dev opt-in proves a password at registration.
+        password_proven_at=datetime.now(timezone.utc) if dev_auto_verify else None,
         role=UserRole.USER,
     )
     db.add(user)
@@ -87,6 +108,10 @@ async def login_user(
         raise UnauthorizedError("account disabled")
     if not user.is_verified:
         raise UnauthorizedError("email not verified — check your inbox")
+    if user.password_proven_at is None:
+        raise PasswordResetRequiredError(
+            "For security, please set a new password using “Forgot password”."
+        )
 
     access_token = create_access_token(
         str(user.id), user.email, user.role.value,
@@ -139,6 +164,8 @@ async def verify_email(db: AsyncSession, settings: Settings, token: str) -> User
         raise NotFoundError("user not found")
     if not user.is_verified:
         user.is_verified = True
+        if user.hashed_password is not None:
+            user.password_proven_at = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(user)
     return user
@@ -147,6 +174,7 @@ async def verify_email(db: AsyncSession, settings: Settings, token: str) -> User
 async def forgot_password(
     db: AsyncSession, settings: Settings, email: str, frontend_url: str | None = None
 ) -> None:
+    _require_email_delivery(settings)  # before the lookup: same error for any email
     user = await db.scalar(select(User).where(User.email == email.lower()))
     if not user:
         return  # don't leak whether the email exists
@@ -172,6 +200,7 @@ async def reset_password(
         raise NotFoundError("user not found")
 
     user.hashed_password = hash_password(new_password)
+    user.password_proven_at = datetime.now(timezone.utc)
 
     # revoke all existing refresh tokens after password reset
     tokens = await db.scalars(
@@ -188,29 +217,61 @@ async def reset_password(
     return user
 
 
+async def _reclaim_unproven_account(
+    db: AsyncSession, user: User, *, name: str, avatar_url: str | None
+) -> None:
+    """Hand an unverified row to the party that just proved the email.
+
+    Everything on the row was supplied by whoever registered it, who never
+    proved ownership of the email. Nothing from that party survives.
+    """
+    user.hashed_password = None
+    user.name = name
+    user.avatar_url = avatar_url
+    await db.execute(
+        update(RefreshToken)
+        .where(RefreshToken.user_id == user.id, RefreshToken.revoked.is_(False))
+        .values(revoked=True)
+    )
+    user.is_verified = True
+    log.warning("auth.google.reclaimed_unverified_account", user_id=str(user.id))
+
+
 async def get_or_create_google_user(
     db: AsyncSession,
     settings: Settings,
     google_id: str,
-    email: str,
+    email: str | None,
+    email_verified: object,
     name: str,
     avatar_url: str | None,
 ) -> tuple[str, str, User]:
-    # 1. Try by google_id
+    # Google's email is proof of ownership only when explicitly verified.
+    if email_verified is not True or not email:
+        log.warning("auth.google.rejected_unverified_email", google_id=google_id)
+        raise UnauthorizedError("Your Google account's email address is not verified.")
+    normalized_email = email.lower()
+
     user = await db.scalar(select(User).where(User.google_id == google_id))
-    if not user:
-        # 2. Try by email (link existing account)
-        user = await db.scalar(select(User).where(User.email == email.lower()))
-        if user:
-            user.google_id = google_id
-            if avatar_url and not user.avatar_url:
+    if user is None:
+        user = await db.scalar(select(User).where(User.email == normalized_email))
+        if user is not None:
+            # Never silently move an account to another Google identity.
+            if user.google_id is not None and user.google_id != google_id:
+                log.warning("auth.google.link_conflict", user_id=str(user.id))
+                raise UnauthorizedError("Google sign-in could not be completed for this account.")
+            if not user.is_verified or (
+                user.hashed_password is not None and user.password_proven_at is None
+            ):
+                # Unproven row, or a verified inbox with a password nobody proved
+                # (rows auto-verified before the dev opt-in existed).
+                await _reclaim_unproven_account(db, user, name=name, avatar_url=avatar_url)
+            elif avatar_url and not user.avatar_url:
                 user.avatar_url = avatar_url
-            if not user.is_verified:
-                user.is_verified = True  # Google confirms the email
+            user.google_id = google_id
         else:
-            # 3. New user via Google
             user = User(
-                email=email.lower(),
+                email=normalized_email,
                 name=name,
                 hashed_password=None,
                 is_active=True,

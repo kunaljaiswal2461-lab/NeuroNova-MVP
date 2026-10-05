@@ -330,8 +330,9 @@ async def google_oauth_callback(
         access_token, refresh_token, _user = await auth_service.get_or_create_google_user(
             db, settings,
             google_id=info["sub"],
-            email=info["email"],
-            name=info.get("name", info["email"]),
+            email=info.get("email"),
+            email_verified=info.get("email_verified"),
+            name=info.get("name") or info.get("email") or "Google user",
             avatar_url=info.get("picture"),
         )
     except UnauthorizedError as exc:

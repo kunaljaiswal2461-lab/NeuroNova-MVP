@@ -43,6 +43,10 @@ class User(Base, TimestampMixin):
         String(256), nullable=True, unique=True, index=True
     )
     avatar_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # NULL = the current password was never set by someone who proved the inbox.
+    password_proven_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
         back_populates="user", cascade="all, delete-orphan", passive_deletes=True
