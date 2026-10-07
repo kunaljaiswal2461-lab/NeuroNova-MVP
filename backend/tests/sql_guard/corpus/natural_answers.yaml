@@ -1,0 +1,91 @@
+# Written independently of the golden set, in the way people naturally write SQL.
+# Includes unqualified tables, date_trunc without casts, to_char labels.
+- id: nat-01
+  sql: SELECT count(*) FROM shop.orders
+- id: nat-02
+  sql: SELECT sum(total_amount) FROM shop.orders WHERE status = 'PAID'
+- id: nat-03
+  sql: SELECT count(*) FROM shop.orders WHERE status = 'pending'
+- id: nat-04
+  sql: SELECT count(*) FROM shop.customers WHERE lower(trim(segment)) = 'retail'
+- id: nat-05
+  sql: SELECT count(*) FROM shop.orders WHERE status = 'PAID' AND channel = 'web'
+- id: nat-06
+  sql: SELECT avg(total_amount) FROM shop.orders WHERE status = 'PAID' AND channel = 'phone'
+- id: nat-07
+  sql: SELECT status, count(*) FROM shop.orders GROUP BY status
+- id: nat-08
+  sql: |
+    SELECT sum(o.total_amount) FROM shop.orders o
+    WHERE o.status = 'PAID' AND (SELECT count(*) FROM shop.order_items i WHERE i.order_id = o.id) > 2
+- id: nat-09
+  sql: |
+    SELECT p.name, sum(i.quantity) AS units FROM shop.order_items i JOIN shop.products p ON p.id = i.product_id
+    GROUP BY p.id, p.name ORDER BY units DESC LIMIT 5
+- id: nat-10
+  sql: |
+    SELECT p.category, avg(p.unit_price) AS avg_list, avg(i.unit_price) AS avg_charged
+    FROM shop.order_items i JOIN shop.products p ON p.id = i.product_id GROUP BY p.category
+- id: nat-11
+  sql: |
+    SELECT p.category, o.channel, sum(i.quantity) FROM shop.order_items i
+    JOIN shop.orders o ON o.id = i.order_id JOIN shop.products p ON p.id = i.product_id
+    GROUP BY p.category, o.channel
+- id: nat-12
+  sql: |
+    SELECT avg(delivered_on - (ordered_at AT TIME ZONE 'Asia/Kolkata')::date) FROM shop.orders
+    WHERE delivered_on IS NOT NULL
+- id: nat-13
+  sql: |
+    SELECT count(*) FILTER (WHERE customer_id IS NOT NULL) AS logged_in,
+           count(*) FILTER (WHERE customer_id IS NULL) AS anonymous FROM shop.page_views
+- id: nat-14
+  sql: |
+    SELECT p.id, p.name, sum(i.quantity) FROM shop.order_items i JOIN shop.products p ON p.id = i.product_id
+    GROUP BY p.id, p.name HAVING sum(i.quantity) > 1000
+- id: nat-15
+  sql: |
+    WITH u AS (SELECT product_id, sum(quantity) s FROM shop.order_items GROUP BY product_id)
+    SELECT count(*) FROM u WHERE s > (SELECT avg(s) FROM u)
+- id: nat-16
+  sql: |
+    SELECT date_trunc('month', ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS m, count(*) FROM shop.orders
+    WHERE ordered_at >= TIMESTAMPTZ '2026-01-01 00:00+05:30' GROUP BY 1 ORDER BY 1
+- id: nat-17
+  sql: |
+    SELECT date_trunc('quarter', ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS q, sum(total_amount) FROM shop.orders
+    WHERE status = 'PAID' AND ordered_at >= TIMESTAMPTZ '2025-01-01 00:00+05:30'
+      AND ordered_at < TIMESTAMPTZ '2026-01-01 00:00+05:30' GROUP BY 1
+- id: nat-18
+  sql: |
+    SELECT m, sum(v) OVER (ORDER BY m) FROM (
+      SELECT date_trunc('month', ordered_at AT TIME ZONE 'Asia/Kolkata')::date m, sum(total_amount) v FROM shop.orders
+      WHERE status = 'PAID' AND ordered_at >= TIMESTAMPTZ '2025-01-01 00:00+05:30'
+        AND ordered_at < TIMESTAMPTZ '2026-01-01 00:00+05:30' GROUP BY 1) t ORDER BY m
+- id: nat-19
+  sql: |
+    SELECT zone, id, full_name, total FROM (
+      SELECT r.zone, c.id, c.full_name, sum(o.total_amount) total,
+             row_number() OVER (PARTITION BY r.zone ORDER BY sum(o.total_amount) DESC) rn
+      FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id JOIN shop.regions r ON r.id = c.region_id
+      WHERE o.status = 'PAID' GROUP BY r.zone, c.id, c.full_name) t WHERE rn <= 3
+- id: nat-20
+  sql: |
+    SELECT m, sum(n) OVER (ORDER BY m) FROM (
+      SELECT date_trunc('month', signup_at AT TIME ZONE 'Asia/Kolkata')::date m, count(*) n FROM shop.customers
+      GROUP BY 1) t WHERE m <= DATE '2026-05-01' ORDER BY m
+- id: nat-21
+  sql: |
+    SELECT date_trunc('month', ordered_at, 'Asia/Kolkata') AS m, count(*) FROM orders
+    WHERE ordered_at >= TIMESTAMPTZ '2026-01-01 00:00+05:30' GROUP BY 1 ORDER BY 1
+- id: nat-22
+  sql: |
+    SELECT to_char(m, 'YYYY-MM') AS month, sum(n) OVER (ORDER BY m) FROM (
+      SELECT date_trunc('month', signup_at AT TIME ZONE 'Asia/Kolkata') m, count(*) n FROM customers
+      GROUP BY 1) t WHERE m <= TIMESTAMP '2026-05-01' ORDER BY m
+- id: nat-23
+  sql: |
+    SELECT d::date AS month, count(o.id) AS orders
+    FROM generate_series(DATE '2026-01-01', DATE '2026-05-01', INTERVAL '1 month') AS g(d)
+    LEFT JOIN shop.orders o ON date_trunc('month', o.ordered_at AT TIME ZONE 'Asia/Kolkata') = d
+    GROUP BY 1 ORDER BY 1

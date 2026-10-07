@@ -206,6 +206,11 @@ class Settings(BaseSettings):
     )
     postgres_execution_cursor_prefetch: int = Field(default=50, ge=1, le=1_000)
 
+    # --- NL->SQL validator limits (SPEC-04); the caps sit far above real queries ---
+    sql_guard_max_chars: int = Field(default=20_000, ge=100, le=200_000)
+    sql_guard_max_paren_depth: int = Field(default=32, ge=4, le=100)
+    sql_guard_max_ast_nodes: int = Field(default=3_000, ge=100, le=50_000)
+
     # --- optional bounded PostgreSQL profiling (Stage 6A; disabled per source) ---
     # These are intentionally separate from analytical query budgets. A
     # profile uses fixed internal aggregate operations over a bounded
