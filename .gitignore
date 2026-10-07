@@ -55,3 +55,6 @@ local.md
 # Eval harness (SPEC-03)
 backend/evals/fixture/.generated/
 backend/evals/reports/
+
+# Specs are kept local
+specs/
