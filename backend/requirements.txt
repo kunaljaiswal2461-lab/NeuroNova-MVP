@@ -39,3 +39,8 @@ reportlab==4.2.5
 pytest==8.3.4
 pytest-asyncio==0.25.0
 aiosqlite==0.22.1  # test-only: in-memory SQLite for unit tests
+
+# NL->SQL eval harness (SPEC-03)
+sqlglot==30.21.0
+PyYAML==6.0.3
+hypothesis==6.168.5  # test-only

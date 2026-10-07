@@ -616,7 +616,8 @@ def _normalize_discovery(
             raise SelectedTableUnavailableError()
         constraint_name = text(row["constraint_name"])
         column_name = text(row["column_name"])
-        key_kind = str(row["key_kind"])
+        raw_kind = row["key_kind"]
+        key_kind = raw_kind.decode("ascii") if isinstance(raw_kind, bytes) else str(raw_kind)
         if constraint_name is None or column_name is None or key_kind not in {"p", "u"}:
             raise SelectedTableUnavailableError()
         key = table["keys"].setdefault(

@@ -1,0 +1,201 @@
+- id: time-001
+  question: "How many orders did we get in March 2026?"
+  tags: [time_bucket, tz_boundary, aggregate]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.orders
+      WHERE ordered_at >= TIMESTAMPTZ '2026-03-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-04-01 00:00:00+05:30'
+    output_type: kpi
+  notes: "Month boundaries are IST. UTC bucketing gives a different count (planted boundary orders)."
+  reviewed_by: null
+
+- id: time-002
+  question: "Show the number of orders in each month of 2025."
+  tags: [time_bucket]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT date_trunc('month', ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS month, count(*) FROM shop.orders WHERE ordered_at >= TIMESTAMPTZ '2025-01-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-01-01 00:00:00+05:30' GROUP BY 1 ORDER BY 1
+    output_type: line
+    order_matters: true
+  notes: "Month labels are the first day of the month (a date). IST buckets."
+  reviewed_by: null
+
+- id: time-003
+  question: "How many orders did we get in each month of 2026 so far?"
+  tags: [time_bucket, tz_boundary]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT date_trunc('month', ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS month, count(*) FROM shop.orders WHERE ordered_at >= TIMESTAMPTZ '2026-01-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-07-01 00:00:00+05:30' GROUP BY 1 ORDER BY 1
+    output_type: line
+    order_matters: true
+  notes: "Month labels are the first day of the month (a date). June is month-to-date. IST buckets; 2026 has planted boundary orders. accept-survivor:drop_predicate (dropping this predicate cannot change the answer on this data (the bound lies beyond the data, which ends on 14 June 2026, or the predicate is redundant)); accept-survivor:flip_comparison (no row sits exactly on this boundary, or the comparison is between aggregates that cannot tie)"
+  reviewed_by: null
+
+- id: time-004
+  question: "How many orders did we get last month?"
+  tags: [time_bucket, tz_boundary]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.orders
+      WHERE ordered_at >= TIMESTAMPTZ '2026-05-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-06-01 00:00:00+05:30'
+    output_type: kpi
+  notes: "Reference clock is 15 June 2026 10:00 IST, so last month is May 2026 (IST)."
+  reviewed_by: null
+
+- id: time-005
+  question: "How does this month's order count compare with last month's?"
+  tags: [time_bucket, tz_boundary]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FILTER (WHERE ordered_at >= TIMESTAMPTZ '2026-06-01 00:00:00+05:30') AS this_month,
+             count(*) FILTER (WHERE ordered_at <  TIMESTAMPTZ '2026-06-01 00:00:00+05:30') AS last_month
+      FROM shop.orders
+      WHERE ordered_at >= TIMESTAMPTZ '2026-05-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-07-01 00:00:00+05:30'
+    output_type: kpi_comparison
+  notes: "This month = June 2026 to date (the data ends on 14 June), last month = May 2026. Both IST. Two numbers: this month and last month. accept-survivor:drop_predicate (dropping this predicate cannot change the answer on this data (the bound lies beyond the data, which ends on 14 June 2026, or the predicate is redundant)); accept-survivor:flip_comparison (no row sits exactly on this boundary, or the comparison is between aggregates that cannot tie)"
+  reviewed_by: null
+
+- id: time-006
+  question: "What was the total value of paid orders in each quarter of 2025?"
+  tags: [time_bucket]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT date_trunc('quarter', ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS quarter, sum(total_amount) FROM shop.orders WHERE status = 'PAID' AND ordered_at >= TIMESTAMPTZ '2025-01-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-01-01 00:00:00+05:30' GROUP BY 1
+    output_type: bar
+  notes: "Quarter labels are the first day of the quarter (a date). IST."
+  reviewed_by: null
+
+- id: time-007
+  question: "Show the number of paid orders for each week of May 2026."
+  tags: [time_bucket]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT date_trunc('week', ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS week, count(*)
+      FROM shop.orders
+      WHERE status = 'PAID' AND ordered_at >= TIMESTAMPTZ '2026-05-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-06-01 00:00:00+05:30'
+      GROUP BY 1 ORDER BY 1
+    output_type: line
+    order_matters: true
+  notes: "Weeks start on Monday and are labelled by their Monday (a date). Only orders inside May are counted, so the first and last weeks are partial."
+  reviewed_by: null
+
+- id: time-008
+  question: "How many orders were placed on each day from 1 to 7 June 2026?"
+  tags: [time_bucket, tz_boundary]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT (ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS day, count(*) FROM shop.orders
+      WHERE ordered_at >= TIMESTAMPTZ '2026-06-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-06-08 00:00:00+05:30'
+      GROUP BY 1 ORDER BY 1
+    output_type: area
+    order_matters: true
+  notes: "IST days, labelled as dates. accept-survivor:flip_comparison (no row sits exactly on this boundary, or the comparison is between aggregates that cannot tie)"
+  reviewed_by: null
+
+- id: time-009
+  question: "How many orders were placed between midnight and 6 am?"
+  tags: [time_bucket]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.orders WHERE extract(hour FROM ordered_at AT TIME ZONE 'Asia/Kolkata') < 6
+    output_type: kpi
+  notes: "Local (IST) time of day, hours 0 through 5."
+  reviewed_by: null
+
+- id: time-010
+  question: "Which two hours of the day are busiest for orders?"
+  tags: [time_bucket]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT extract(hour FROM ordered_at AT TIME ZONE 'Asia/Kolkata')::int AS hour, count(*) FROM shop.orders GROUP BY 1 ORDER BY 2 DESC LIMIT 2
+    output_type: ranked_list
+    order_matters: true
+  notes: "IST hour of day, 0-23."
+  reviewed_by: null
+
+- id: time-011
+  question: "Show paid order counts per month for the six full months before this one."
+  tags: [time_bucket]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT date_trunc('month', ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS month, count(*) FROM shop.orders
+      WHERE status = 'PAID' AND ordered_at >= TIMESTAMPTZ '2025-12-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-06-01 00:00:00+05:30'
+      GROUP BY 1 ORDER BY 1
+    output_type: multi_line
+    order_matters: true
+  notes: "Six full months before June 2026 = December 2025 to May 2026."
+  reviewed_by: null
+
+- id: time-012
+  question: "Show monthly order counts by channel for 2026 so far."
+  tags: [time_bucket, tz_boundary]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT date_trunc('month', ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS month, channel, count(*) FROM shop.orders WHERE ordered_at >= TIMESTAMPTZ '2026-01-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-07-01 00:00:00+05:30' GROUP BY 1, 2
+    output_type: heatmap
+  notes: "Month labels are the first day of the month (a date). accept-survivor:drop_predicate (dropping this predicate cannot change the answer on this data (the bound lies beyond the data, which ends on 14 June 2026, or the predicate is redundant)); accept-survivor:flip_comparison (no row sits exactly on this boundary, or the comparison is between aggregates that cannot tie)"
+  reviewed_by: null
+
+- id: time-013
+  question: "Which single day in 2025 had the most orders, and how many?"
+  tags: [time_bucket]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT (ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS day, count(*) FROM shop.orders WHERE ordered_at >= TIMESTAMPTZ '2025-01-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-01-01 00:00:00+05:30' GROUP BY 1 ORDER BY 2 DESC LIMIT 1
+    output_type: narrative
+    order_matters: true
+  notes: "IST day. 28 December 2025 with 88 orders; the runner-up has fewer. accept-survivor:flip_comparison (no row sits exactly on this boundary, or the comparison is between aggregates that cannot tie)"
+  reviewed_by: null
+
+- id: time-014
+  question: "How many customers signed up in each month of 2025?"
+  tags: [time_bucket]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT date_trunc('month', signup_at AT TIME ZONE 'Asia/Kolkata')::date AS month, count(*) FROM shop.customers WHERE signup_at >= TIMESTAMPTZ '2025-01-01 00:00:00+05:30' AND signup_at < TIMESTAMPTZ '2026-01-01 00:00:00+05:30' GROUP BY 1 ORDER BY 1
+    output_type: line
+    order_matters: true
+  notes: "Month labels are the first day of the month (a date)."
+  reviewed_by: null
+
+- id: time-015
+  question: "How many refunds were issued in each month of 2026 so far?"
+  tags: [time_bucket, tz_boundary]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT date_trunc('month', refunded_at)::date AS month, count(*) FROM shop.refunds
+      WHERE refunded_at >= TIMESTAMP '2026-01-01 00:00:00' GROUP BY 1 ORDER BY 1
+    output_type: line
+    order_matters: true
+  notes: "refunds.refunded_at is timestamp WITHOUT time zone and already IST wall-clock. Do not convert it again."
+  reviewed_by: null

@@ -1,0 +1,146 @@
+- id: win-001
+  question: "Show the running total of paid order value by month for 2025."
+  tags: [window]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      WITH m AS (SELECT date_trunc('month', ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS month, sum(total_amount) AS v FROM shop.orders WHERE status = 'PAID' AND ordered_at >= TIMESTAMPTZ '2025-01-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-01-01 00:00:00+05:30' GROUP BY 1)
+      SELECT month, sum(v) OVER (ORDER BY month) AS running_total FROM m ORDER BY month
+    output_type: area
+    order_matters: true
+  notes: "Month labels are the first day of the month (a date)."
+  reviewed_by: null
+
+- id: win-002
+  question: "Rank the product categories by units sold."
+  tags: [window]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT p.category, sum(i.quantity) AS units, rank() OVER (ORDER BY sum(i.quantity) DESC) AS rank
+      FROM shop.order_items i JOIN shop.products p ON p.id = i.product_id GROUP BY p.category ORDER BY units DESC
+    output_type: takeaways
+    order_matters: true
+  reviewed_by: null
+
+- id: win-003
+  question: "For each month of 2025, how did the order count change compared with the previous month?"
+  tags: [window]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT month, n, change FROM (
+        SELECT month, n, n - lag(n) OVER (ORDER BY month) AS change FROM (SELECT date_trunc('month', ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS month, count(*) AS n FROM shop.orders GROUP BY 1) m) t
+      WHERE month >= DATE '2025-01-01' AND month < DATE '2026-01-01' ORDER BY month
+    output_type: multi_line
+    order_matters: true
+  notes: "January 2025 is compared with December 2024, so earlier data must be read before filtering to 2025. Month labels are the first day of the month (a date)."
+  reviewed_by: null
+
+- id: win-004
+  question: "Within each zone, who are the top 3 customers by paid order value?"
+  tags: [window, join_3plus]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT zone, full_name, spend, rn FROM (
+        SELECT r.zone, c.id, c.full_name, sum(o.total_amount) AS spend,
+               row_number() OVER (PARTITION BY r.zone ORDER BY sum(o.total_amount) DESC) AS rn
+        FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id JOIN shop.regions r ON r.id = c.region_id WHERE o.status = 'PAID' GROUP BY r.zone, c.id, c.full_name) t
+      WHERE rn <= 3
+    output_type: heatmap
+  notes: "accept-survivor:join_flip (a later INNER JOIN or a WHERE on the joined table removes the rows a LEFT JOIN would add)"
+  reviewed_by: null
+
+- id: win-005
+  question: "Rank the top 10 customers by total paid order value and show each one's rank."
+  tags: [window]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT c.full_name, sum(o.total_amount) AS spend, rank() OVER (ORDER BY sum(o.total_amount) DESC) AS rank
+      FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id WHERE o.status = 'PAID'
+      GROUP BY c.id, c.full_name ORDER BY spend DESC LIMIT 10
+    output_type: ranked_list
+    order_matters: true
+  reviewed_by: null
+
+- id: win-006
+  question: "What percentage of total paid order value does each channel contribute?"
+  tags: [window]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT channel, sum(total_amount) AS value, 100.0 * sum(total_amount) / sum(sum(total_amount)) OVER () AS pct
+      FROM shop.orders WHERE status = 'PAID' GROUP BY channel
+    output_type: pie
+    numeric_tolerance:
+      abs: "0.05"
+  reviewed_by: null
+
+- id: win-007
+  question: "Show the cumulative number of customers signed up by the end of each month, up to May 2026."
+  tags: [window]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT month, sum(n) OVER (ORDER BY month) AS cumulative_customers FROM (
+        SELECT date_trunc('month', signup_at AT TIME ZONE 'Asia/Kolkata')::date AS month, count(*) AS n FROM shop.customers GROUP BY 1) m
+      WHERE month < DATE '2026-06-01' ORDER BY month
+    output_type: area
+    order_matters: true
+  notes: "Month labels are the first day of the month (a date)."
+  reviewed_by: null
+
+- id: win-008
+  question: "In each month of 2025, how many customers placed their very first order?"
+  tags: [window]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT date_trunc('month', ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS month, count(*) FROM (
+        SELECT ordered_at, row_number() OVER (PARTITION BY customer_id ORDER BY ordered_at, id) AS rn FROM shop.orders WHERE customer_id IS NOT NULL) f
+      WHERE rn = 1 AND ordered_at >= TIMESTAMPTZ '2025-01-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-01-01 00:00:00+05:30' GROUP BY 1 ORDER BY 1
+    output_type: line
+    order_matters: true
+  notes: "First order across all time, then bucketed by month. Guests are excluded. accept-survivor:flip_comparison (no row sits exactly on this boundary, or the comparison is between aggregates that cannot tie)"
+  reviewed_by: null
+
+- id: win-009
+  question: "Compare each month's order count in 2026 with the same month in 2025."
+  tags: [window]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT month, n, same_month_last_year FROM (
+        SELECT month, n, lag(n, 12) OVER (ORDER BY month) AS same_month_last_year FROM (SELECT date_trunc('month', ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS month, count(*) AS n FROM shop.orders GROUP BY 1) m) t
+      WHERE month >= DATE '2026-01-01' AND month < DATE '2026-06-01'
+    output_type: multi_line
+  notes: "January to May 2026; June is incomplete. Month labels are the first day of the month (a date)."
+  reviewed_by: null
+
+- id: win-010
+  question: "What is the 3-month moving average of paid order value for each month of 2025?"
+  tags: [window]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT month, avg_v FROM (
+        SELECT month, avg(v) OVER (ORDER BY month ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS avg_v FROM (SELECT date_trunc('month', ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS month, sum(total_amount) AS v FROM shop.orders WHERE status = 'PAID' GROUP BY 1) m) t
+      WHERE month >= DATE '2025-01-01' AND month < DATE '2026-01-01' ORDER BY month
+    output_type: line
+    order_matters: true
+    numeric_tolerance:
+      abs: "0.01"
+  notes: "Trailing window of the month and the two before it, so Nov-Dec 2024 feed January-February 2025."
+  reviewed_by: null

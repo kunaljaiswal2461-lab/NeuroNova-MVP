@@ -414,6 +414,12 @@ def _session_timeout_sql(setting: str, milliseconds: int) -> str:
     return f"SET LOCAL {setting} TO '{milliseconds}ms'"
 
 
+def _relation_kind(row: Any) -> str:
+    """pg_class.relkind is type "char"; asyncpg returns it as bytes (b'r')."""
+    value = _row_value(row, "relation_kind")
+    return value.decode("ascii") if isinstance(value, bytes) else str(value)
+
+
 def _validate_restricted_relation(row: Any, expectation: LiveRelationExpectation) -> int:
     oid = _relation_oid(row)
     if (
@@ -425,7 +431,7 @@ def _validate_restricted_relation(row: Any, expectation: LiveRelationExpectation
     # foreign tables, partition roots/leaves, and inheritance may have extra
     # execution/side-effect or schema semantics and need a later contract.
     if (
-        _row_value(row, "relation_kind") != "r"
+        _relation_kind(row) != "r"
         or _as_bool(row, "is_partition")
         or _as_bool(row, "has_inheritance_children")
         or _as_bool(row, "has_inheritance_membership")

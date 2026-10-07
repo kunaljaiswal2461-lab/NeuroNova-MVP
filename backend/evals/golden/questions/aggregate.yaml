@@ -1,0 +1,195 @@
+- id: agg-001
+  question: "How many orders have we received in total?"
+  tags: [aggregate]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.orders
+    output_type: kpi
+  notes: "All statuses, guests included."
+  reviewed_by: null
+
+- id: agg-002
+  question: "How many orders were placed by a registered customer, not as a guest?"
+  tags: [aggregate, null_semantics]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(customer_id) FROM shop.orders
+    output_type: kpi
+  notes: "Guest orders have NULL customer_id. count(*) would include them; count(customer_id) does not."
+  reviewed_by: null
+
+- id: agg-003
+  question: "What is the total value of all paid orders?"
+  tags: [aggregate]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT sum(total_amount) FROM shop.orders WHERE status = 'PAID'
+    output_type: kpi
+  notes: "Gross value (total_amount, including GST) of orders with status PAID. The word 'revenue' is avoided on purpose: net-of-refunds revenue is a separate, ambiguous question."
+  reviewed_by: null
+
+- id: agg-004
+  question: "What is the average value of a paid order?"
+  tags: [aggregate]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT avg(total_amount) FROM shop.orders WHERE status = 'PAID'
+    output_type: kpi
+    numeric_tolerance:
+      abs: "0.01"
+  notes: "Rounding to paise is acceptable."
+  reviewed_by: null
+
+- id: agg-005
+  question: "What are the highest and lowest values among paid orders?"
+  tags: [aggregate]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT max(total_amount) AS highest, min(total_amount) AS lowest
+      FROM shop.orders
+      WHERE status = 'PAID'
+    output_type: kpi_comparison
+  reviewed_by: null
+
+- id: agg-006
+  question: "How many different customers have placed at least one order?"
+  tags: [aggregate, null_semantics]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(DISTINCT customer_id) FROM shop.orders
+    output_type: kpi
+  notes: "Distinct, and NULL (guest) is not a customer. count(DISTINCT customer_id) ignores NULL."
+  reviewed_by: null
+
+- id: agg-007
+  question: "How many products are currently active?"
+  tags: [aggregate]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.products WHERE is_active
+    output_type: kpi
+  reviewed_by: null
+
+- id: agg-008
+  question: "How much money have we refunded in total?"
+  tags: [aggregate]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT sum(amount) FROM shop.refunds
+    output_type: kpi
+  reviewed_by: null
+
+- id: agg-009
+  question: "How many order lines are there, and how many units were sold across them?"
+  tags: [aggregate]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) AS order_lines, sum(quantity) AS units
+      FROM shop.order_items
+    output_type: table
+  notes: "All orders regardless of status."
+  reviewed_by: null
+
+- id: agg-010
+  question: "How many orders have been delivered?"
+  tags: [aggregate, null_semantics]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(delivered_on) FROM shop.orders
+    output_type: kpi
+  notes: "Delivered means delivered_on is not NULL. count(delivered_on) ignores the NULL (undelivered) rows."
+  reviewed_by: null
+
+- id: agg-011
+  question: "What percentage of orders are paid?"
+  tags: [aggregate]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT 100.0 * count(*) FILTER (WHERE status = 'PAID') / count(*) AS pct_paid
+      FROM shop.orders
+    output_type: kpi
+    numeric_tolerance:
+      abs: "0.05"
+  notes: "Percent on a 0-100 scale, over all orders. Rounding to one decimal is acceptable."
+  reviewed_by: null
+
+- id: agg-012
+  question: "On average, how many line items does an order have?"
+  tags: [aggregate]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*)::numeric / count(DISTINCT order_id) AS avg_lines_per_order
+      FROM shop.order_items
+    output_type: kpi
+    numeric_tolerance:
+      abs: "0.01"
+  notes: "Lines per order, not units per order. Every order has at least one line."
+  reviewed_by: null
+
+- id: agg-013
+  question: "What is the median value of a paid order?"
+  tags: [aggregate]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY total_amount)
+      FROM shop.orders
+      WHERE status = 'PAID'
+    output_type: kpi
+    numeric_tolerance:
+      abs: "0.01"
+  reviewed_by: null
+
+- id: agg-014
+  question: "How many page views did the site get in 2025?"
+  tags: [aggregate, tz_boundary]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*)
+      FROM shop.page_views
+      WHERE viewed_at >= TIMESTAMPTZ '2025-01-01 00:00:00+05:30'
+        AND viewed_at <  TIMESTAMPTZ '2026-01-01 00:00:00+05:30'
+    output_type: kpi
+  notes: "Calendar year in IST. This table has 2,000,000 rows, so the query is a real scan."
+  reviewed_by: null
+
+- id: agg-015
+  question: "How many customers signed up during 2025?"
+  tags: [aggregate]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*)
+      FROM shop.customers
+      WHERE signup_at >= TIMESTAMPTZ '2025-01-01 00:00:00+05:30'
+        AND signup_at <  TIMESTAMPTZ '2026-01-01 00:00:00+05:30'
+    output_type: kpi
+  reviewed_by: null

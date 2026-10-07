@@ -1,0 +1,13 @@
+# Minimal config for the customer-like fixture DB (used as config_file).
+listen_addresses = '*'
+hba_file = '/etc/postgresql/pg_hba.conf'
+ssl = on
+ssl_cert_file = '/certs/server.crt'
+ssl_key_file = '/certs/server.key'
+ssl_min_protocol_version = 'TLSv1.2'
+password_encryption = scram-sha-256
+timezone = 'UTC'
+log_timezone = 'UTC'
+shared_buffers = 256MB
+# §9.3 rule 5: deterministic seeding, no parallel plans.
+max_parallel_workers_per_gather = 0

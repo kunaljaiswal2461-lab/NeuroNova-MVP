@@ -1,0 +1,124 @@
+- id: sub-001
+  question: "Which customers have placed more than 30 orders?"
+  tags: [subquery_having]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT c.id, c.full_name, count(*) AS orders FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id GROUP BY c.id, c.full_name HAVING count(*) > 30
+    output_type: table
+  notes: "All statuses. accept-survivor:agg_swap (the column has no NULLs in the rows being counted)"
+  reviewed_by: null
+
+- id: sub-002
+  question: "Which products have sold more than 1,000 units in total?"
+  tags: [subquery_having]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT p.sku, p.name, sum(i.quantity) AS units FROM shop.order_items i JOIN shop.products p ON p.id = i.product_id GROUP BY p.id, p.sku, p.name HAVING sum(i.quantity) > 1000
+    output_type: table
+  notes: "accept-survivor:flip_comparison (no row sits exactly on this boundary, or the comparison is between aggregates that cannot tie)"
+  reviewed_by: null
+
+- id: sub-003
+  question: "Which cities have more than 85 customers?"
+  tags: [subquery_having]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT city, count(*) FROM shop.customers GROUP BY city HAVING count(*) > 85
+    output_type: table
+  reviewed_by: null
+
+- id: sub-004
+  question: "How many customers have spent more than the average customer on paid orders?"
+  tags: [subquery_having]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      WITH s AS (SELECT customer_id, sum(total_amount) AS spend FROM shop.orders WHERE status = 'PAID' AND customer_id IS NOT NULL GROUP BY customer_id)
+      SELECT count(*) FROM s WHERE spend > (SELECT avg(spend) FROM s)
+    output_type: narrative
+  notes: "Average over customers who have at least one paid order. accept-survivor:flip_comparison (no row sits exactly on this boundary, or the comparison is between aggregates that cannot tie)"
+  reviewed_by: null
+
+- id: sub-005
+  question: "Which orders from 14 June 2026 are worth more than the average paid order?"
+  tags: [subquery_having, tz_boundary]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT id, status, total_amount FROM shop.orders
+      WHERE ordered_at >= TIMESTAMPTZ '2026-06-14 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-06-15 00:00:00+05:30'
+        AND total_amount > (SELECT avg(total_amount) FROM shop.orders WHERE status = 'PAID')
+    output_type: table
+  notes: "Orders of any status on that IST day, compared with the all-time average paid order value. accept-survivor:drop_predicate (dropping this predicate cannot change the answer on this data (the bound lies beyond the data, which ends on 14 June 2026, or the predicate is redundant)); accept-survivor:flip_comparison (no row sits exactly on this boundary, or the comparison is between aggregates that cannot tie)"
+  reviewed_by: null
+
+- id: sub-006
+  question: "Which customers have placed orders but never a paid one?"
+  tags: [subquery_having]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT c.id, c.full_name FROM shop.customers c
+      WHERE EXISTS (SELECT 1 FROM shop.orders o WHERE o.customer_id = c.id)
+        AND NOT EXISTS (SELECT 1 FROM shop.orders o WHERE o.customer_id = c.id AND o.status = 'PAID')
+    output_type: table
+  reviewed_by: null
+
+- id: sub-007
+  question: "How many customers have ordered through all four sales channels?"
+  tags: [subquery_having]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM (SELECT customer_id FROM shop.orders WHERE customer_id IS NOT NULL GROUP BY customer_id HAVING count(DISTINCT channel) = 4) t
+    output_type: kpi
+  reviewed_by: null
+
+- id: sub-008
+  question: "How many products have sold more units than the average product?"
+  tags: [subquery_having]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      WITH s AS (SELECT product_id, sum(quantity) AS units FROM shop.order_items GROUP BY product_id)
+      SELECT count(*) FROM s WHERE units > (SELECT avg(units) FROM s)
+    output_type: kpi
+  notes: "Every product has been sold, so the average is over all 400. accept-survivor:flip_comparison (no row sits exactly on this boundary, or the comparison is between aggregates that cannot tie)"
+  reviewed_by: null
+
+- id: sub-009
+  question: "Which month of 2025 had the highest paid order value?"
+  tags: [subquery_having]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT date_trunc('month', ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS month, sum(total_amount) AS v FROM shop.orders WHERE status = 'PAID' AND ordered_at >= TIMESTAMPTZ '2025-01-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-01-01 00:00:00+05:30' GROUP BY 1 ORDER BY v DESC LIMIT 1
+    output_type: narrative
+    order_matters: true
+  notes: "Month labels are the first day of the month (a date). accept-survivor:drop_predicate (dropping this predicate cannot change the answer on this data (the bound lies beyond the data, which ends on 14 June 2026, or the predicate is redundant)); accept-survivor:flip_comparison (no row sits exactly on this boundary, or the comparison is between aggregates that cannot tie)"
+  reviewed_by: null
+
+- id: sub-010
+  question: "Which regions have an average paid order value above the overall average?"
+  tags: [subquery_having, join_3plus]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT r.name FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id JOIN shop.regions r ON r.id = c.region_id WHERE o.status = 'PAID' GROUP BY r.id, r.name
+      HAVING avg(o.total_amount) > (SELECT avg(total_amount) FROM shop.orders WHERE status = 'PAID')
+    output_type: table
+  notes: "Overall average over all paid orders including guests; regional averages only cover orders with a customer. accept-survivor:flip_comparison (no row sits exactly on this boundary, or the comparison is between aggregates that cannot tie); accept-survivor:join_flip (a later INNER JOIN or a WHERE on the joined table removes the rows a LEFT JOIN would add)"
+  reviewed_by: null

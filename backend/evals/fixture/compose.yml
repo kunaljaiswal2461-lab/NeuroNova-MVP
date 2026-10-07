@@ -1,0 +1,116 @@
+# SPEC-03 §8: the isolated eval topology. Nothing here publishes a port to the host.
+# Run from the repo root:  docker compose -f backend/evals/fixture/compose.yml up -d --build
+name: nn-eval
+
+x-secrets-mount: &secrets_ro
+  - nn_eval_secrets:/secrets:ro
+
+services:
+  # One-shot: test CA + server cert (SAN client-postgres.nn-eval.test) and every per-run secret.
+  # Created once per volume set (`down -v` gives a fresh one); the CA private key is deleted as soon as
+  # the server cert is signed.
+  certs:
+    image: alpine:3.20
+    command: ["sh", "-c", "apk add --no-cache openssl >/dev/null && sh /scripts/gen.sh"]
+    volumes:
+      - ./certs:/scripts:ro
+      - nn_eval_certs:/certs
+      - nn_eval_secrets:/secrets
+    networks: [nn_eval]
+
+  # One-shot: deterministic COPY files from the stdlib-only generator.
+  generate:
+    image: python:3.11-slim
+    working_dir: /backend
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    command: ["python", "-m", "evals.generator.generate", "--out", "/seed"]
+    volumes:
+      - ../..:/backend:ro
+      - nn_eval_seed:/seed
+    networks: [nn_eval]
+
+  client-postgres:
+    image: postgres:16
+    depends_on:
+      certs: {condition: service_completed_successfully}
+      generate: {condition: service_completed_successfully}
+    environment:
+      POSTGRES_DB: nn_client
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /secrets/client_superuser_password
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    volumes:
+      - ./client/postgresql.conf.override:/etc/postgresql/postgresql.conf:ro
+      - ./client/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./client/00_roles.sql:/docker-entrypoint-initdb.d/00_roles.sql:ro
+      - ./client/05_passwords.sh:/docker-entrypoint-initdb.d/05_passwords.sh:ro
+      - ./client/10_schema.sql:/docker-entrypoint-initdb.d/10_schema.sql:ro
+      - ./client/15_load.sql:/docker-entrypoint-initdb.d/15_load.sql:ro
+      - ./client/16_derived.sql:/docker-entrypoint-initdb.d/16_derived.sql:ro
+      - ./client/20_grants.sql:/docker-entrypoint-initdb.d/20_grants.sql:ro
+      - ./client/30_page_views.sql:/docker-entrypoint-initdb.d/30_page_views.sql:ro
+      - nn_eval_certs:/certs:ro
+      - nn_eval_secrets:/secrets:ro
+      - nn_eval_seed:/seed:ro
+    networks:
+      nn_eval:
+        aliases:
+          - client-postgres.nn-eval.test
+          - client-postgres-alt.nn-eval.test   # resolvable name the certificate does NOT cover (test F2)
+    healthcheck:
+      # TCP on loopback: the temporary init-phase server listens on the socket only.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -d nn_client"]
+      interval: 3s
+      timeout: 3s
+      retries: 100
+
+  # Disposable NeuroNova application DB; pgvector because migration 0003 needs it.
+  app-postgres:
+    image: pgvector/pgvector:pg16
+    depends_on:
+      certs: {condition: service_completed_successfully}
+    environment:
+      POSTGRES_DB: nn_app
+      POSTGRES_USER: nn_app
+      POSTGRES_PASSWORD_FILE: /secrets/app_db_password
+    volumes: *secrets_ro
+    networks:
+      nn_eval:
+        aliases: [app-postgres.nn-eval.test]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -d nn_app"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+
+  # Runs pytest and the eval runner INSIDE the network (port 5432, DNS names, cert SAN all line up).
+  runner:
+    build:
+      context: ../..
+      dockerfile: evals/fixture/runner/Dockerfile
+    depends_on:
+      client-postgres: {condition: service_healthy}
+      app-postgres: {condition: service_healthy}
+    working_dir: /app
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      # Pass-through only when set on the host; needed solely by the model-eval candidates.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      STAGE4C_EVALUATION_ACK: ${STAGE4C_EVALUATION_ACK:-}
+    volumes:
+      - ../..:/app
+      # Mask the developer's real backend/.env: it must never be read by the harness.
+      - /dev/null:/app/.env:ro
+      - nn_eval_certs:/certs:ro
+      - nn_eval_secrets:/secrets:ro
+    command: ["true"]
+    networks: [nn_eval]
+
+networks:
+  nn_eval: {}
+
+volumes:
+  nn_eval_certs: {}
+  nn_eval_secrets: {}
+  nn_eval_seed: {}

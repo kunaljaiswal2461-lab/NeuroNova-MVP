@@ -1,0 +1,60 @@
+- id: ident-001
+  question: "How many events are logged in the Order Events table?"
+  tags: [awkward_identifiers]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop."Order Events"
+    output_type: kpi
+  reviewed_by: null
+
+- id: ident-002
+  question: "How many events of each event type are there?"
+  tags: [awkward_identifiers]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT "Event Type", count(*) FROM shop."Order Events" GROUP BY "Event Type"
+    output_type: bar
+  reviewed_by: null
+
+- id: ident-003
+  question: "Show the events logged for order number 2, in id order."
+  tags: [awkward_identifiers]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT id, "Event Type", occurred_at FROM shop."Order Events" WHERE "order" = 2 ORDER BY id
+    output_type: table
+    order_matters: true
+  notes: "The column is literally named \"order\" (a reserved word) and must be quoted."
+  reviewed_by: null
+
+- id: ident-004
+  question: "How many orders have a shipped event?"
+  tags: [awkward_identifiers]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(DISTINCT "order") FROM shop."Order Events" WHERE "Event Type" = 'shipped'
+    output_type: kpi
+  reviewed_by: null
+
+- id: ident-005
+  question: "How many shipped events happened in each month of 2025?"
+  tags: [awkward_identifiers, time_bucket]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT date_trunc('month', occurred_at AT TIME ZONE 'Asia/Kolkata')::date AS month, count(*) FROM shop."Order Events"
+      WHERE "Event Type" = 'shipped' AND occurred_at >= TIMESTAMPTZ '2025-01-01 00:00:00+05:30' AND occurred_at < TIMESTAMPTZ '2026-01-01 00:00:00+05:30'
+      GROUP BY 1 ORDER BY 1
+    output_type: line
+    order_matters: true
+  notes: "Month labels are the first day of the month (a date)."
+  reviewed_by: null

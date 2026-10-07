@@ -1,0 +1,247 @@
+- id: join2-001
+  question: "How many customers do we have in each zone?"
+  tags: [join_2]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT r.zone, count(*) FROM shop.customers c JOIN shop.regions r ON r.id = c.region_id GROUP BY r.zone
+    output_type: bar
+  reviewed_by: null
+
+- id: join2-002
+  question: "For the North zone, how many customers does each region have?"
+  tags: [join_2]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT r.name, count(*) FROM shop.customers c JOIN shop.regions r ON r.id = c.region_id WHERE r.zone = 'North' GROUP BY r.id, r.name
+    output_type: table
+  reviewed_by: null
+
+- id: join2-003
+  question: "Which 10 cities have the highest total value of paid orders?"
+  tags: [join_2]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT c.city, sum(o.total_amount) FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id WHERE o.status = 'PAID' GROUP BY c.city ORDER BY 2 DESC LIMIT 10
+    output_type: ranked_list
+    order_matters: true
+  notes: "Guest orders have no customer and drop out of the inner join."
+  reviewed_by: null
+
+- id: join2-004
+  question: "Who are the 5 customers with the highest total value of paid orders?"
+  tags: [join_2]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT c.full_name, sum(o.total_amount) AS spend FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id WHERE o.status = 'PAID' GROUP BY c.id, c.full_name ORDER BY spend DESC LIMIT 5
+    output_type: ranked_list
+    order_matters: true
+  notes: "Group by customer id, not by name (two customers can share a name)."
+  reviewed_by: null
+
+- id: join2-005
+  question: "How much has each customer named Aarav Bhatt spent on paid orders?"
+  tags: [join_2]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT c.id, c.city, sum(o.total_amount) FROM shop.customers c JOIN shop.orders o ON o.customer_id = c.id WHERE c.full_name = 'Aarav Bhatt' AND o.status = 'PAID' GROUP BY c.id, c.city
+    output_type: table
+  notes: "Two different people share the name (Dibrugarh and Shimla): two rows, one per customer id. accept-survivor:join_flip (a later INNER JOIN or a WHERE on the joined table removes the rows a LEFT JOIN would add)"
+  reviewed_by: null
+
+- id: join2-006
+  question: "For each order status, what is the total order value and the total number of units?"
+  tags: [join_2, join_fanout]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT o.status, sum(o.total_amount) AS total_value, sum(l.units) AS units
+      FROM shop.orders o
+      JOIN (SELECT order_id, sum(quantity) AS units FROM shop.order_items GROUP BY order_id) l ON l.order_id = o.id
+      GROUP BY o.status
+    output_type: grouped_bar
+  notes: "Fan-out trap: joining order_items directly and summing orders.total_amount counts each order once per line."
+  reviewed_by: null
+
+- id: join2-007
+  question: "What is the total value of orders that have at least one event logged?"
+  tags: [join_2, join_fanout, awkward_identifiers]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT sum(o.total_amount) FROM shop.orders o
+      WHERE EXISTS (SELECT 1 FROM shop."Order Events" e WHERE e."order" = o.id)
+    output_type: kpi
+  notes: "Orders can have 1 or 2 events: a plain join double counts."
+  reviewed_by: null
+
+- id: join2-008
+  question: "Group orders by how many line items they have: for each count, how many orders are there and what is their total value?"
+  tags: [join_2, join_fanout]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT l.n AS lines, count(*) AS orders, sum(o.total_amount) AS total_value
+      FROM shop.orders o
+      JOIN (SELECT order_id, count(*) AS n FROM shop.order_items GROUP BY order_id) l ON l.order_id = o.id
+      GROUP BY l.n
+    output_type: scatter
+  reviewed_by: null
+
+- id: join2-009
+  question: "What is the total value of paid orders that have more than two line items?"
+  tags: [join_2, join_fanout, subquery_having]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT sum(total_amount) FROM shop.orders
+      WHERE status = 'PAID' AND id IN (SELECT order_id FROM shop.order_items GROUP BY order_id HAVING count(*) > 2)
+    output_type: kpi
+  reviewed_by: null
+
+- id: join2-010
+  question: "Which customers have never placed an order?"
+  tags: [join_2, null_semantics]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT c.id, c.full_name FROM shop.customers c LEFT JOIN shop.orders o ON o.customer_id = c.id WHERE o.id IS NULL
+    output_type: table
+  reviewed_by: null
+
+- id: join2-011
+  question: "How many inactive products have been sold at least once?"
+  tags: [join_2]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(DISTINCT i.product_id) FROM shop.order_items i JOIN shop.products p ON p.id = i.product_id WHERE NOT p.is_active
+    output_type: kpi
+  reviewed_by: null
+
+- id: join2-012
+  question: "How many units were sold in each product category?"
+  tags: [join_2]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT p.category, sum(i.quantity) FROM shop.order_items i JOIN shop.products p ON p.id = i.product_id GROUP BY p.category
+    output_type: bar
+  notes: "All order statuses."
+  reviewed_by: null
+
+- id: join2-013
+  question: "Which 5 products have sold the most units?"
+  tags: [join_2]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT p.sku, p.name, sum(i.quantity) AS units FROM shop.order_items i JOIN shop.products p ON p.id = i.product_id GROUP BY p.id, p.sku, p.name ORDER BY units DESC LIMIT 5
+    output_type: ranked_list
+    order_matters: true
+  reviewed_by: null
+
+- id: join2-014
+  question: "How much was refunded for orders in each order status?"
+  tags: [join_2]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT o.status, sum(r.amount) FROM shop.refunds r JOIN shop.orders o ON o.id = r.order_id GROUP BY o.status
+    output_type: bar
+  reviewed_by: null
+
+- id: join2-015
+  question: "Which customers placed an order on 14 June 2026?"
+  tags: [join_2, tz_boundary]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT DISTINCT c.id, c.full_name FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id
+      WHERE o.ordered_at >= TIMESTAMPTZ '2026-06-14 00:00:00+05:30' AND o.ordered_at < TIMESTAMPTZ '2026-06-15 00:00:00+05:30'
+    output_type: table
+  notes: "IST day; each customer once. accept-survivor:drop_predicate (dropping this predicate cannot change the answer on this data (the bound lies beyond the data, which ends on 14 June 2026, or the predicate is redundant)); accept-survivor:flip_comparison (no row sits exactly on this boundary, or the comparison is between aggregates that cannot tie)"
+  reviewed_by: null
+
+- id: join2-016
+  question: "How many units were sold through each sales channel?"
+  tags: [join_2]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT o.channel, sum(i.quantity) FROM shop.order_items i JOIN shop.orders o ON o.id = i.order_id GROUP BY o.channel
+    output_type: bar
+  reviewed_by: null
+
+- id: join2-017
+  question: "For each product category, compare the average list price with the average price actually charged on order lines."
+  tags: [join_2]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT p.category, avg(p.unit_price) AS avg_list_price, avg(i.unit_price) AS avg_charged_price FROM shop.order_items i JOIN shop.products p ON p.id = i.product_id GROUP BY p.category
+    output_type: scatter
+    numeric_tolerance:
+      abs: "0.01"
+  notes: "Both averages are over order lines (the list price is taken per line, not per product)."
+  reviewed_by: null
+
+- id: join2-018
+  question: "On average, how many days after the order is a refund issued?"
+  tags: [join_2, tz_boundary]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT avg(extract(epoch FROM (r.refunded_at - (o.ordered_at AT TIME ZONE 'Asia/Kolkata'))) / 86400.0)
+      FROM shop.refunds r JOIN shop.orders o ON o.id = r.order_id
+    output_type: kpi
+    numeric_tolerance:
+      abs: "0.01"
+  notes: "Decimal days. refunded_at is IST wall-clock without a zone; ordered_at must be converted to IST before subtracting. Treating refunded_at as UTC shifts the answer by 0.23 days."
+  reviewed_by: null
+
+- id: join2-019
+  question: "How many 'shipped' events are there for each sales channel?"
+  tags: [join_2, awkward_identifiers]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT o.channel, count(*) FROM shop."Order Events" e JOIN shop.orders o ON o.id = e."order"
+      WHERE e."Event Type" = 'shipped' GROUP BY o.channel
+    output_type: bar
+  reviewed_by: null
+
+- id: join2-020
+  question: "Which 3 regions have the most customers?"
+  tags: [join_2]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT r.name, count(*) AS customers FROM shop.customers c JOIN shop.regions r ON r.id = c.region_id GROUP BY r.id, r.name ORDER BY customers DESC LIMIT 3
+    output_type: ranked_list
+    order_matters: true
+  reviewed_by: null
