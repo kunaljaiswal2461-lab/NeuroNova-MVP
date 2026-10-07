@@ -63,7 +63,7 @@ async def _resolve_bearer_user(
         raise UnauthorizedError("missing or malformed Authorization header")
     token = parts[1].strip()
     try:
-        payload = decode_access_token(token, settings.jwt_secret_key)
+        payload = decode_access_token(token, settings.jwt_signing_key)
     except JWTError:
         raise UnauthorizedError("invalid or expired access token")
     if payload.get("type") != "access":

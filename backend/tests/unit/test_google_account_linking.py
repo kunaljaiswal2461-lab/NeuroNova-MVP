@@ -303,7 +303,7 @@ async def test_wrong_password_gives_no_reset_hint(session, settings):
 async def test_reset_password_proves_password(session, settings):
     # M18
     row = await _seed(session, verified=True)
-    token = create_one_time_token(str(row.id), "password_reset", settings.jwt_secret_key, expire_hours=1)
+    token = create_one_time_token(str(row.id), "password_reset", settings.jwt_signing_key, expire_hours=1)
     user = await auth_service.reset_password(session, settings, token, "Brand!new1")
     assert user.password_proven_at is not None
     await auth_service.login_user(session, settings, EMAIL, "Brand!new1")
@@ -314,7 +314,7 @@ async def test_reset_password_proves_password(session, settings):
 async def test_verify_email_transition_proves_password(session, settings):
     # M19
     row = await _seed(session, verified=False)
-    token = create_one_time_token(str(row.id), "email_verification", settings.jwt_secret_key, expire_hours=24)
+    token = create_one_time_token(str(row.id), "email_verification", settings.jwt_signing_key, expire_hours=24)
     user = await auth_service.verify_email(session, settings, token)
     assert user.is_verified is True
     assert user.password_proven_at is not None
@@ -323,6 +323,6 @@ async def test_verify_email_transition_proves_password(session, settings):
 async def test_verify_email_cannot_bless_legacy_password(session, settings):
     # M20
     row = await _seed(session, verified=True)
-    token = create_one_time_token(str(row.id), "email_verification", settings.jwt_secret_key, expire_hours=24)
+    token = create_one_time_token(str(row.id), "email_verification", settings.jwt_signing_key, expire_hours=24)
     user = await auth_service.verify_email(session, settings, token)
     assert user.password_proven_at is None

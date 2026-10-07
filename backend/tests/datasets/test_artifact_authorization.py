@@ -123,7 +123,7 @@ class _Context:
             str(user.id),
             user.email,
             user.role.value,
-            self.settings.jwt_secret_key,
+            self.settings.jwt_signing_key,
             self.settings.access_token_expire_minutes,
         )
         return {"Authorization": f"Bearer {token}"}
@@ -318,7 +318,7 @@ def _signed_access_token(settings: Settings, **claims) -> str:
             "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
             **claims,
         },
-        settings.jwt_secret_key,
+        settings.jwt_signing_key,
         algorithm="HS256",
     )
 

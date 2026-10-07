@@ -79,7 +79,7 @@ async def register_user(
     await db.flush()  # assign user.id before sending email
 
     token = create_one_time_token(
-        str(user.id), "email_verification", settings.jwt_secret_key, expire_hours=24
+        str(user.id), "email_verification", settings.jwt_signing_key, expire_hours=24
     )
     if dev_auto_verify:
         verify_url = f"{settings.public_url.rstrip('/')}/api/v1/auth/verify-email?token={token}"
@@ -115,7 +115,7 @@ async def login_user(
 
     access_token = create_access_token(
         str(user.id), user.email, user.role.value,
-        settings.jwt_secret_key, settings.access_token_expire_minutes,
+        settings.jwt_signing_key, settings.access_token_expire_minutes,
     )
     raw_refresh, token_hash = create_refresh_token_pair()
     expires_at = datetime.now(timezone.utc) + timedelta(days=settings.refresh_token_expire_days)
@@ -148,14 +148,14 @@ async def refresh_access_token(
 
     return create_access_token(
         str(user.id), user.email, user.role.value,
-        settings.jwt_secret_key, settings.access_token_expire_minutes,
+        settings.jwt_signing_key, settings.access_token_expire_minutes,
     )
 
 
 async def verify_email(db: AsyncSession, settings: Settings, token: str) -> User:
     from jose import JWTError
     try:
-        user_id = decode_one_time_token(token, "email_verification", settings.jwt_secret_key)
+        user_id = decode_one_time_token(token, "email_verification", settings.jwt_signing_key)
     except JWTError:
         raise ValidationFailure("invalid or expired verification token")
 
@@ -179,7 +179,7 @@ async def forgot_password(
     if not user:
         return  # don't leak whether the email exists
     token = create_one_time_token(
-        str(user.id), "password_reset", settings.jwt_secret_key, expire_hours=1
+        str(user.id), "password_reset", settings.jwt_signing_key, expire_hours=1
     )
     await email_service.send_password_reset_email(
         settings, user.email, user.name, token, frontend_url=frontend_url
@@ -191,7 +191,7 @@ async def reset_password(
 ) -> User:
     from jose import JWTError
     try:
-        user_id = decode_one_time_token(token, "password_reset", settings.jwt_secret_key)
+        user_id = decode_one_time_token(token, "password_reset", settings.jwt_signing_key)
     except JWTError:
         raise ValidationFailure("invalid or expired reset token")
 
@@ -288,7 +288,7 @@ async def get_or_create_google_user(
 
     access_token = create_access_token(
         str(user.id), user.email, user.role.value,
-        settings.jwt_secret_key, settings.access_token_expire_minutes,
+        settings.jwt_signing_key, settings.access_token_expire_minutes,
     )
     raw_refresh, token_hash = create_refresh_token_pair()
     expires_at = datetime.now(timezone.utc) + timedelta(days=settings.refresh_token_expire_days)

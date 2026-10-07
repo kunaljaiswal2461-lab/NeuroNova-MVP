@@ -173,7 +173,7 @@ class _ChatTestContext:
             str(user.id),
             user.email,
             user.role.value,
-            self.settings.jwt_secret_key,
+            self.settings.jwt_signing_key,
             self.settings.access_token_expire_minutes,
         )
         return {"Authorization": f"Bearer {token}"}

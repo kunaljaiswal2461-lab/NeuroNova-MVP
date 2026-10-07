@@ -1,9 +1,10 @@
 import os
+import secrets
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from functools import lru_cache
 from typing import Literal
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, PrivateAttr, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
 
@@ -66,16 +67,23 @@ if ENV_TXT_FILE.exists() and not ENV_FILE.exists():
 if ENV_FILE.exists():
     load_dotenv(dotenv_path=ENV_FILE, override=False)
 
+_KNOWN_WEAK_JWT_SECRETS = frozenset({"change-me-in-production"})
+_JWT_MIN_BYTES_NON_DEV = 32
+_JWT_MIN_BYTES_DEV = 16
+_JWT_GENERATOR_HINT = 'python -c "import secrets; print(secrets.token_urlsafe(48))"'
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE) if ENV_FILE.exists() else None,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        hide_input_in_errors=True,  # validation errors must never echo secrets (SPEC-02 INV-16)
     )
 
     # --- CONFIG FIELDS ---
-    app_env: Literal["dev", "staging", "prod"] = "dev"
+    app_env: Literal["dev", "staging", "prod"]  # no default: SPEC-02 INV-14
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     log_level: str = "INFO"
@@ -102,7 +110,9 @@ class Settings(BaseSettings):
     health_grade_d: int = 45
 
     # --- JWT ---
-    jwt_secret_key: str = Field(default="change-me-in-production", min_length=16)
+    # None = not configured; _jwt_secret_is_safe decides what that means per environment.
+    jwt_secret_key: SecretStr | None = None
+    _jwt_secret_ephemeral: bool = PrivateAttr(default=False)
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
 
@@ -281,6 +291,51 @@ class Settings(BaseSettings):
         if self.auth_dev_auto_verify and self.app_env != "dev":
             raise ValueError("AUTH_DEV_AUTO_VERIFY is only allowed when APP_ENV=dev")
         return self
+
+    @model_validator(mode="after")
+    def _jwt_secret_is_safe(self) -> "Settings":
+        configured = self.jwt_secret_key.get_secret_value() if self.jwt_secret_key else ""
+
+        if configured in _KNOWN_WEAK_JWT_SECRETS:
+            raise ValueError(
+                "JWT_SECRET_KEY is set to a publicly known placeholder. Generate a new one: "
+                + _JWT_GENERATOR_HINT
+            )
+
+        if self.app_env == "dev":
+            if not configured:
+                # Still secure: nobody knows it. Tokens just don't survive a restart.
+                self.jwt_secret_key = SecretStr(secrets.token_urlsafe(48))
+                self._jwt_secret_ephemeral = True
+            elif len(configured.encode()) < _JWT_MIN_BYTES_DEV:
+                raise ValueError(f"JWT_SECRET_KEY must be at least {_JWT_MIN_BYTES_DEV} bytes.")
+            return self
+
+        if len(configured.encode()) < _JWT_MIN_BYTES_NON_DEV:
+            raise ValueError(
+                f"JWT_SECRET_KEY must be set to at least {_JWT_MIN_BYTES_NON_DEV} random bytes "
+                f"when APP_ENV={self.app_env}. Generate one: " + _JWT_GENERATOR_HINT
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _no_dev_on_hosted_platform(self) -> "Settings":
+        # Render sets RENDER=true on every service. Move hosts -> add that platform's marker.
+        if self.app_env == "dev" and os.environ.get("RENDER", "").lower() == "true":
+            raise ValueError(
+                "APP_ENV=dev is not allowed on Render. Set APP_ENV=prod (or staging) "
+                "in the service's environment settings."
+            )
+        return self
+
+    @property
+    def jwt_signing_key(self) -> str:
+        assert self.jwt_secret_key is not None  # guaranteed by _jwt_secret_is_safe
+        return self.jwt_secret_key.get_secret_value()
+
+    @property
+    def jwt_secret_ephemeral(self) -> bool:
+        return self._jwt_secret_ephemeral
 
     # --- Google OAuth ---
     google_client_id: str = ""

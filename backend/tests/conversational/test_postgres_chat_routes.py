@@ -144,7 +144,7 @@ def source_chat_context(monkeypatch):
 def _headers(settings, user):
     token = create_access_token(
         str(user.id), user.email, user.role.value,
-        settings.jwt_secret_key, settings.access_token_expire_minutes,
+        settings.jwt_signing_key, settings.access_token_expire_minutes,
     )
     return {"Authorization": f"Bearer {token}"}
 
