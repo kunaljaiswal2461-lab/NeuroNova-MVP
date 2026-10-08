@@ -28,3 +28,24 @@ def pytest_collection_modifyitems(config, items):
         for marker, (env_var, hint) in gates.items():
             if marker in item.keywords and os.environ.get(env_var) != "1":
                 item.add_marker(pytest.mark.skip(reason=f"{marker}: set {env_var}=1. {hint}"))
+
+
+# ── SQLite DDL fallback for Postgres-only column defaults (SPEC-05 B0) ───────
+# Models declare server_default=text("uuid_generate_v4()") / text("now()"). SQLite rejects an
+# unparenthesised function default, so rewrite them (as migration 0001's SQLite branch does).
+# Test-only: the production schema is unchanged.
+from sqlalchemy.ext.compiler import compiles  # noqa: E402
+from sqlalchemy.schema import CreateColumn  # noqa: E402
+
+_SQLITE_DEFAULT_REWRITES = {
+    "DEFAULT uuid_generate_v4()": "DEFAULT (lower(hex(randomblob(16))))",
+    "DEFAULT now()": "DEFAULT (CURRENT_TIMESTAMP)",
+}
+
+
+@compiles(CreateColumn, "sqlite")
+def _sqlite_create_column(element, compiler, **kw):
+    ddl = compiler.visit_create_column(element, **kw)
+    for pg_default, sqlite_default in _SQLITE_DEFAULT_REWRITES.items():
+        ddl = ddl.replace(pg_default, sqlite_default)
+    return ddl
