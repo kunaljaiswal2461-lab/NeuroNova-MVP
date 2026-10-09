@@ -51,6 +51,7 @@ class DataSource(Base, TimestampMixin):
         CheckConstraint("catalog_sync_sequence >= 0", name="catalog_sync_sequence_nonnegative"),
         CheckConstraint("profiling_generation >= 0", name="profiling_generation_nonnegative"),
         CheckConstraint("configuration_generation >= 0", name="configuration_generation_nonnegative"),
+        CheckConstraint("sample_values_generation >= 0", name="sample_values_generation_nonnegative"),
         # The catalog run composite FK uses this exact key to prove that the
         # recorded requester was the source owner when the run was created.
         Index("uq_data_sources_id_owner_user_id", "id", "owner_user_id", unique=True),
@@ -104,6 +105,15 @@ class DataSource(Base, TimestampMixin):
     # matches; disabling profiling therefore cannot leave a stale worker able
     # to persist fresh observations.
     profiling_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    # SPEC-07 D2: example values of text columns are collected on each catalog sync, on by default.
+    sample_values_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    # Advances when the switch or the exclusion list changes. A sync captures it before remote I/O and
+    # publishes samples only if it is unchanged (the profiling fence pattern).
+    sample_values_generation: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
     # Changes to credentials or the selected relation scope advance this
@@ -180,3 +190,24 @@ class SourceTableScope(Base):
     )
 
     source: Mapped[DataSource] = relationship(back_populates="table_scopes")
+
+
+class SourceSampleExclusion(Base):
+    """An owner's per-column opt-out from sample values (SPEC-07 D3). Stored by name so it survives re-syncs."""
+
+    __tablename__ = "source_sample_exclusions"
+
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("data_sources.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    schema_name: Mapped[str] = mapped_column(String(63), primary_key=True)
+    table_name: Mapped[str] = mapped_column(String(63), primary_key=True)
+    column_name: Mapped[str] = mapped_column(String(63), primary_key=True)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

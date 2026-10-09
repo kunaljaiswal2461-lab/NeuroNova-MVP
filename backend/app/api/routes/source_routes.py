@@ -68,6 +68,11 @@ from app.schemas.source_schemas import (
     SourceProfileRunRequest,
     SourceProfileRunResponse,
     SourceProfileTableObservationResponse,
+    SampleCollectedColumn,
+    SampleColumnName,
+    SampleSkippedColumn,
+    SampleValuesConfigurationRequest,
+    SampleValuesResponse,
     SourceProfilingConfigurationRequest,
     SourceProfilingConfigurationResponse,
     SourceScopeUpdateRequest,
@@ -79,6 +84,7 @@ from app.services import (
     source_profile_service,
     source_service,
 )
+from app.services.sample_values import store as sample_value_store
 
 
 router = APIRouter(prefix="/api/v1/sources", tags=["sources"])
@@ -724,6 +730,64 @@ async def configure_source_profiling(
         profiling_enabled=source.profiling_enabled,
         profiling_generation=source.profiling_generation,
     )
+
+
+# ── sample values for text columns (SPEC-07) ──────────────────────────────
+
+
+def _sample_values_response(state: sample_value_store.SampleValuesState) -> SampleValuesResponse:
+    return SampleValuesResponse(
+        enabled=state.enabled,
+        sample_values_generation=state.generation,
+        excluded_columns=[SampleColumnName(schema=s, table=t, column=c) for s, t, c in state.excluded_columns],
+        collected=[
+            SampleCollectedColumn(schema=s, table=t, column=c, method=m, value_count=n)
+            for s, t, c, m, n in state.collected
+        ],
+        skipped=[SampleSkippedColumn(schema=s, table=t, column=c, reason=r) for s, t, c, r in state.skipped],
+    )
+
+
+@router.get("/{source_id}/sample-values", response_model=SampleValuesResponse)
+async def get_source_sample_values(
+    source_id: uuid.UUID,
+    session: DBSession,
+    current_user: User = Depends(get_current_user),
+) -> SampleValuesResponse:
+    """Switch, exclusions, and per-column counts for the head snapshot. Never returns a value."""
+
+    state = await sample_value_store.get_sample_values_state(
+        session, source_id=source_id, owner_user_id=current_user.id
+    )
+    return _sample_values_response(state)
+
+
+@router.put("/{source_id}/sample-values", response_model=SampleValuesResponse)
+@limiter.limit(get_settings().rate_limit_source_profile_request)
+async def configure_source_sample_values(
+    source_id: uuid.UUID,
+    body: SampleValuesConfigurationRequest,
+    request: Request,
+    session: DBSession,
+    current_user: User = Depends(get_current_user),
+) -> SampleValuesResponse:
+    """Owner-only switch and exclusions. Never contacts the source; new values appear at the next sync."""
+
+    await sample_value_store.configure_sample_values_for_owner(
+        session,
+        source_id=source_id,
+        owner_user_id=current_user.id,
+        enabled=body.enabled,
+        excluded_columns=(
+            None
+            if body.excluded_columns is None
+            else [(c.schema_name, c.table, c.column) for c in body.excluded_columns]
+        ),
+    )
+    state = await sample_value_store.get_sample_values_state(
+        session, source_id=source_id, owner_user_id=current_user.id
+    )
+    return _sample_values_response(state)
 
 
 @router.post(

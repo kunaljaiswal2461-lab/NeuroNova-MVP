@@ -219,6 +219,12 @@ class Settings(BaseSettings):
     sql_guard_max_ast_nodes: int = Field(default=3_000, ge=100, le=50_000)
 
     # --- NL->SQL schema context (SPEC-06): o200k_base tokens for the whole schema block ---
+    # --- Sample values for text columns (SPEC-07) ---
+    sample_values_max_distinct: int = Field(default=50, ge=1, le=50)
+    sample_values_min_coverage: float = Field(default=0.95, gt=0, le=1)
+    sample_values_exact_max_bytes: int = Field(default=64 * 1024 * 1024, ge=0, le=1024 * 1024 * 1024)
+    # Hard ceiling for the whole collection step of one sync; a slow source never holds the publish longer.
+    sample_values_total_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     nl_sql_schema_budget_tokens: int = Field(default=8_000, ge=1_000, le=32_000)
 
     # --- optional bounded PostgreSQL profiling (Stage 6A; disabled per source) ---

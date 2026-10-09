@@ -13,10 +13,10 @@ import os
 import signal
 import socket
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, TypeVar
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -47,6 +47,7 @@ from app.connectors.postgres_profiling_adapter import (
     PostgresProfilingAdapter,
     PostgresProfilingRequestError,
 )
+from app.connectors.postgres_sample_adapter import PostgresSampleAdapter
 from app.connectors.postgres_query_executor import (
     PostgresExecutionAccessChangedError,
     PostgresExecutionAdapterError,
@@ -93,6 +94,9 @@ from app.services.catalog_service import (
     publish_catalog_snapshot,
     renew_catalog_sync_lease,
 )
+from app.services.sample_values.collector import collect_sample_values
+from app.services.sample_values.store import load_exclusions
+from app.services.sample_values.types import SampleCollection
 from app.services.source_profile_service import (
     ProfileColumnAggregate,
     ProfileExecutionContext,
@@ -111,6 +115,7 @@ from app.services.source_profile_service import (
 
 
 logger = get_logger(__name__)
+T = TypeVar("T")
 
 
 class CatalogWorkerConfigurationError(RuntimeError):
@@ -131,6 +136,10 @@ class DiscoveryContext:
     password: str
     custom_ca_pem: str | None
     selected_tables: tuple[InventoryTable, ...]
+    # SPEC-07: captured with the credentials, before any remote I/O (the generation fence).
+    sample_values_enabled: bool = False
+    sample_values_generation: int = 0
+    sample_exclusions: frozenset[tuple[str, str, str]] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -148,6 +157,7 @@ class ProfileConnectionContext:
 
 AdapterFactory = Callable[[Settings], PostgresOnboardingAdapter]
 ProfilingAdapterFactory = Callable[[Settings], PostgresProfilingAdapter]
+SampleAdapterFactory = Callable[[Settings], PostgresSampleAdapter]
 
 
 def _build_adapter(settings: Settings) -> PostgresOnboardingAdapter:
@@ -156,6 +166,10 @@ def _build_adapter(settings: Settings) -> PostgresOnboardingAdapter:
 
 def _build_profiling_adapter(settings: Settings) -> PostgresProfilingAdapter:
     return PostgresProfilingAdapter(settings=settings)
+
+
+def _build_sample_adapter(settings: Settings) -> PostgresSampleAdapter:
+    return PostgresSampleAdapter(settings=settings)
 
 
 def _worker_id() -> str:
@@ -253,12 +267,14 @@ class CatalogDiscoveryWorker:
         session_factory: async_sessionmaker[AsyncSession],
         adapter_factory: AdapterFactory | None = None,
         profiling_adapter_factory: ProfilingAdapterFactory | None = None,
+        sample_adapter_factory: SampleAdapterFactory | None = None,
         worker_id: str | None = None,
     ):
         self._settings = settings
         self._session_factory = session_factory
         self._adapter_factory = adapter_factory or _build_adapter
         self._profiling_adapter_factory = profiling_adapter_factory or _build_profiling_adapter
+        self._sample_adapter_factory = sample_adapter_factory or _build_sample_adapter
         self._worker_id = worker_id or _worker_id()
         self._protector = _require_worker_credentials(settings)
 
@@ -414,6 +430,7 @@ class CatalogDiscoveryWorker:
             context = await self._load_context(claim)
             discovered = await self._discover_with_lease(claim, context)
             snapshot_input = _to_catalog_snapshot(discovered)
+            samples = await self._collect_samples_with_lease(claim, context, discovered)
             async with self._session_factory() as session:
                 await publish_catalog_snapshot(
                     session,
@@ -421,6 +438,7 @@ class CatalogDiscoveryWorker:
                     run_id=claim.run_id,
                     snapshot_input=snapshot_input,
                     lease_token=claim.lease_token,
+                    sample_values=samples,
                 )
         except asyncio.CancelledError:
             # A graceful worker shutdown leaves the lease to expire. A later
@@ -771,6 +789,7 @@ class CatalogDiscoveryWorker:
                 )
             except (CredentialUnavailableError, InvalidCredentialBundleError):
                 raise CatalogWorkerConfigurationError("source credentials are unavailable") from None
+            exclusions = frozenset(await load_exclusions(session, source.id))
             return DiscoveryContext(
                 source_id=source.id,
                 host=source.host,
@@ -786,6 +805,9 @@ class CatalogDiscoveryWorker:
                         key=lambda scope: (scope.schema_name, scope.table_name),
                     )
                 ),
+                sample_values_enabled=bool(source.sample_values_enabled),
+                sample_values_generation=int(source.sample_values_generation),
+                sample_exclusions=exclusions,
             )
 
     async def _discover_with_lease(
@@ -793,7 +815,8 @@ class CatalogDiscoveryWorker:
         claim: CatalogSyncLease,
         context: DiscoveryContext,
     ) -> tuple[DiscoveredTable, ...]:
-        discovery = asyncio.create_task(
+        return await self._await_with_lease(
+            claim,
             self._adapter_factory(self._settings).discover_selected_tables(
                 host=context.host,
                 port=context.port,
@@ -805,6 +828,48 @@ class CatalogDiscoveryWorker:
             ),
             name=f"catalog-remote-discovery-{claim.run_id}",
         )
+
+    async def _collect_samples_with_lease(
+        self,
+        claim: CatalogSyncLease,
+        context: DiscoveryContext,
+        discovered: tuple[DiscoveredTable, ...],
+    ) -> SampleCollection | None:
+        """Best-effort sample values (SPEC-07 B2). Returns ``None`` instead of raising for any source problem;
+        only losing the lease propagates. The lease keeps renewing while this runs."""
+
+        if not context.sample_values_enabled:
+            return None
+        try:
+            return await self._await_with_lease(
+                claim,
+                collect_sample_values(
+                    reader=self._sample_adapter_factory(self._settings),
+                    connection={
+                        "host": context.host,
+                        "port": context.port,
+                        "database_name": context.database_name,
+                        "username": context.username,
+                        "password": context.password,
+                        "custom_ca_pem": context.custom_ca_pem,
+                    },
+                    tables=discovered,
+                    excluded=context.sample_exclusions,
+                    generation=context.sample_values_generation,
+                    settings=self._settings,
+                ),
+                name=f"catalog-sample-values-{claim.run_id}",
+            )
+        except (CatalogLeaseLost, asyncio.CancelledError):
+            raise
+        except Exception:                                        # noqa: BLE001 - a sample failure never fails the sync (I3)
+            logger.warning("catalog_sample_values_skipped", run_id=str(claim.run_id))
+            return None
+
+    async def _await_with_lease(self, claim: CatalogSyncLease, awaitable: Awaitable[T], *, name: str) -> T:
+        """Run ``awaitable`` as a task while renewing the sync lease; cancel it if the lease is lost."""
+
+        task = asyncio.create_task(awaitable, name=name)
         renewal_interval = min(
             self._settings.catalog_worker_lease_renewal_seconds,
             self._settings.catalog_worker_lease_seconds / 2,
@@ -812,12 +877,12 @@ class CatalogDiscoveryWorker:
         try:
             while True:
                 done, _pending = await asyncio.wait(
-                    {discovery},
+                    {task},
                     timeout=renewal_interval,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-                if discovery in done:
-                    return await discovery
+                if task in done:
+                    return await task
                 async with self._session_factory() as session:
                     renewed = await renew_catalog_sync_lease(
                         session,
@@ -829,9 +894,9 @@ class CatalogDiscoveryWorker:
                 if not renewed:
                     raise CatalogLeaseLost()
         finally:
-            if not discovery.done():
-                discovery.cancel()
-                await asyncio.gather(discovery, return_exceptions=True)
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
     async def _record_failure(
         self,

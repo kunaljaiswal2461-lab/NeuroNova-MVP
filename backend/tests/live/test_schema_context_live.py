@@ -38,6 +38,7 @@ async def _build(c, snapshot_id=None):
         return await build_schema_context(
             session, owner_user_id=c.user_id, source_id=c.source_id,
             snapshot_id=snapshot_id or c.snapshot_id, settings=c.settings,
+            sample_values=None,          # Part 3's golden is the text WITHOUT sample values (SPEC-07 B6)
         )
 
 

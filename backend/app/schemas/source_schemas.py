@@ -676,6 +676,46 @@ class SourceProfilingConfigurationResponse(BaseModel):
     historical_profiles_retained: Literal[True] = True
 
 
+class SampleColumnName(BaseModel):
+    """A column named by schema, table and column. Names only; never a value."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    schema_name: str = Field(min_length=1, max_length=63, alias="schema")
+    table: str = Field(min_length=1, max_length=63)
+    column: str = Field(min_length=1, max_length=63)
+
+
+class SampleValuesConfigurationRequest(BaseModel):
+    """Owner-only. ``excluded_columns`` REPLACES the exclusion list; omit a field to leave it unchanged."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    excluded_columns: list[SampleColumnName] | None = Field(default=None, max_length=2000)
+
+
+class SampleCollectedColumn(SampleColumnName):
+    method: Literal["pg_stats", "exact"]
+    value_count: int
+
+
+class SampleSkippedColumn(SampleColumnName):
+    reason: str
+
+
+class SampleValuesResponse(BaseModel):
+    """Counts and names only. The values go to the model, not to another API surface (SPEC-07 I7)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool
+    sample_values_generation: int
+    excluded_columns: list[SampleColumnName]
+    collected: list[SampleCollectedColumn]
+    skipped: list[SampleSkippedColumn]
+
+
 class SourceProfileTableSelectionRequest(BaseModel):
     """A narrower selection using only current catalog IDs, never names/SQL."""
 

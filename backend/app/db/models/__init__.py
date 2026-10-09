@@ -7,6 +7,7 @@ from app.db.models.conversation import (
 from app.db.models.catalog import (
     CatalogAsset,
     CatalogColumn,
+    CatalogColumnSample,
     CatalogDeclaredKey,
     CatalogDeclaredKeyColumn,
     CatalogForeignKey,
@@ -23,6 +24,7 @@ from app.db.models.finding_embedding import EMBEDDING_DIMENSION, FindingEmbeddin
 from app.db.models.source import (
     DataSource,
     SourceCredential,
+    SourceSampleExclusion,
     SourceStatus,
     SourceTableScope,
     SourceType,
@@ -60,6 +62,7 @@ from app.db.models.user import RefreshToken, User, UserRole
 __all__ = [
     "CatalogAsset",
     "CatalogColumn",
+    "CatalogColumnSample",
     "CatalogDeclaredKey",
     "CatalogDeclaredKeyColumn",
     "CatalogForeignKey",
@@ -81,6 +84,7 @@ __all__ = [
     "DataSource",
     "SourceCredential",
     "SourceCatalogHead",
+    "SourceSampleExclusion",
     "SourceStatus",
     "SourceTableScope",
     "SourceType",

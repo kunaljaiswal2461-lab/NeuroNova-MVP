@@ -21,7 +21,9 @@ from app.db.models.catalog import (
     CatalogForeignKeyColumn,
     CatalogForeignKeyTargetStatus,
 )
+from app.db.models.source import DataSource
 from app.services import metric_service
+from app.services.sample_values.store import SampleValuesPersistenceError, stored_sample_values
 from app.services.sql_guard.scope import load_catalog_scope
 
 from .render import render_schema
@@ -125,6 +127,36 @@ async def _attach_samples(
     return out
 
 
+class _StoredDefault:
+    """Marks "use the stored sample values when the source has them switched on" (SPEC-07 B6)."""
+
+    def __repr__(self) -> str:
+        return "STORED"
+
+
+STORED_SAMPLES = _StoredDefault()
+
+
+async def _resolve_samples(
+    session: AsyncSession,
+    sample_values: SampleValueProvider | None | _StoredDefault,
+    *,
+    source_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+) -> SampleValueProvider | None:
+    if sample_values is not STORED_SAMPLES:
+        return sample_values          # an explicit provider, or ``None`` = no samples (Part 5 A/B)
+    try:
+        enabled = (await session.execute(
+            select(DataSource.sample_values_enabled).where(DataSource.id == source_id)
+        )).scalar_one_or_none()
+        if not enabled:
+            return None
+        return await stored_sample_values(session, source_id=source_id, snapshot_id=snapshot_id)
+    except (SQLAlchemyError, SampleValuesPersistenceError):
+        return None                   # example values are optional; the rest of the context is still right
+
+
 async def build_schema_context(
     session: AsyncSession,
     *,
@@ -132,7 +164,7 @@ async def build_schema_context(
     source_id: uuid.UUID,
     snapshot_id: uuid.UUID,
     settings: Settings,
-    sample_values: SampleValueProvider | None = None,
+    sample_values: SampleValueProvider | None | _StoredDefault = STORED_SAMPLES,
     counter: TokenCounter | None = None,
 ) -> SchemaContext:
     # Raises the compiler's own errors unless the caller owns the source and ``snapshot_id`` is the head.
@@ -226,7 +258,9 @@ async def build_schema_context(
         for a in asset_ids
         if a in asset_by_id
     ]
-    tables = await _attach_samples(tables, sample_values)
+    tables = await _attach_samples(
+        tables, await _resolve_samples(session, sample_values, source_id=source_id, snapshot_id=snapshot_id)
+    )
 
     column_names = {cid: name for cid, (_, name) in col_by_id.items()}
     metrics, metric_skips = await _load_metrics(

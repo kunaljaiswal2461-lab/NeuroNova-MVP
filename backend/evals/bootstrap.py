@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.connectors.connection_policy import PostgresConnectionPolicy
 from app.connectors.postgres_adapter import PostgresOnboardingAdapter
 from app.connectors.postgres_query_executor import PostgresQueryExecutionAdapter
+from app.connectors.postgres_sample_adapter import PostgresSampleAdapter
 from app.core.config import Settings
 from app.db.models.catalog import CatalogSnapshot, CatalogSyncRun, CatalogSyncRunStatus
 from app.db.models.user import User, UserRole
@@ -125,6 +126,8 @@ async def bootstrap(
         settings=settings,
         session_factory=session_factory,
         adapter_factory=adapter_factory,
+        # SPEC-07: sample values are collected during the sync; the disposable-test policy is the only substitution.
+        sample_adapter_factory=lambda sample_settings: PostgresSampleAdapter(settings=sample_settings, policy=policy),
         worker_id=f"eval-bootstrap-{suffix}",
     )
     status = None

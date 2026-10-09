@@ -42,6 +42,8 @@ from app.db.models.catalog import (
 )
 from app.db.models.source import DataSource, SourceStatus, SourceTableScope, SourceType
 from app.exceptions.custom_exceptions import AppError, NotFoundError
+from app.services.sample_values.store import add_sample_rows, skips_payload
+from app.services.sample_values.types import SampleCollection
 
 
 class CatalogServiceError(AppError):
@@ -1200,8 +1202,13 @@ async def publish_catalog_snapshot(
     run_id: uuid.UUID,
     snapshot_input: CatalogSnapshotInput,
     lease_token: uuid.UUID | None = None,
+    sample_values: SampleCollection | None = None,
 ) -> CatalogSnapshot:
     """Atomically publish a complete structural snapshot for a running run.
+
+    ``sample_values`` (SPEC-07) is stored in this same transaction, keyed by the new column ids, only if the
+    source's switch is still on and ``sample_values_generation`` still equals the value the collection captured
+    before remote I/O. Otherwise the snapshot is published without samples (the profiling fence pattern).
 
     The caller must have already performed remote discovery. This function only
     validates and persists normalized metadata; it never decrypts a source,
@@ -1278,12 +1285,26 @@ async def publish_catalog_snapshot(
         # This remains inside the transaction, so it is never observable as a
         # partial current snapshot.
         await session.flush()
-        _persist_snapshot_children(
+        column_ids = _persist_snapshot_children(
             session,
             source_id=source.id,
             snapshot_id=snapshot.id,
             assets_by_identity=assets_by_identity,
         )
+        if (
+            sample_values is not None
+            and source.sample_values_enabled
+            and source.sample_values_generation == sample_values.generation
+        ):
+            snapshot.sample_skips = skips_payload(sample_values)
+            await session.flush()
+            add_sample_rows(
+                session,
+                source_id=source.id,
+                snapshot_id=snapshot.id,
+                column_ids={(schema, table, column): cid for ((schema, table), column), cid in column_ids.items()},
+                collection=sample_values,
+            )
 
         # Flush every immutable structural row before changing the current
         # pointer. A constraint error rolls back this whole transaction.
@@ -1313,7 +1334,8 @@ def _persist_snapshot_children(
     source_id: uuid.UUID,
     snapshot_id: uuid.UUID,
     assets_by_identity: dict[tuple[str, str], CatalogAssetInput],
-) -> None:
+) -> dict[tuple[tuple[str, str], str], uuid.UUID]:
+    """Add every structural child row; returns ``{((schema, table), column_name): column_id}``."""
     asset_ids = {identity: uuid.uuid4() for identity in assets_by_identity}
     column_ids: dict[tuple[tuple[str, str], str], uuid.UUID] = {}
 
@@ -1412,6 +1434,7 @@ def _persist_snapshot_children(
                         ],
                     )
                 )
+    return column_ids
 
 
 _CATALOG_INSPECTION_MAX_PAGE_SIZE = 100

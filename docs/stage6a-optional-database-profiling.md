@@ -94,6 +94,11 @@ values, text extrema, SQL text, credentials, driver messages, and raw sampled
 rows are not persisted or returned. Numeric summaries are retained only as
 aggregate values for supported numeric columns.
 
+> **Policy change (SPEC-07, 2026-10-09).** *Profiling* still persists and returns no text values, and nothing in this
+> document changes. A **separate** feature, [sample values](stage9e-sample-values.md), does store example values of
+> text columns, collected during the catalog sync (not by a profile run), for the model's schema context. It is on
+> by default, owner-switchable per source, and has its own exclusions and personal-data rules.
+
 ## Budgets and durable worker behavior
 
 The profile request is constrained before it enters the durable queue. Default
