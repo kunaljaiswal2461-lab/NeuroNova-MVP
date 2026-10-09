@@ -3,18 +3,22 @@
 ## 1. Why this exists
 
 Render's free-tier web services spin down after ~15 minutes with no inbound
-traffic. The next request then pays a cold start of roughly 50 seconds while
-the instance boots back up. An external HTTP check every 5 minutes keeps the
-instance from ever going idle long enough to spin down, so real users rarely
-see that delay.
+traffic. The next request can pay a cold start of roughly a minute while
+the instance boots back up. Successful external HTTP checks every 5 minutes
+reduce idle spin-downs, but do not prevent restarts or all cold starts.
 
 ## 2. The endpoint
 
-`GET /health` and `GET /api/v1/health` both return:
+Both `/health` and `/api/v1/health` support **GET and HEAD** without a redirect.
+GET returns HTTP 200 with the existing JSON payload:
 
 ```json
 { "success": true, "status": "ok", "timestamp": "2026-08-19T12:00:00Z" }
 ```
+
+HEAD returns HTTP 200 with no response body. A `Content-Length` header may
+describe the corresponding GET representation; it need not be zero for HEAD.
+Unsupported methods such as POST still return 405.
 
 - Public by design: no authentication, no API key required.
 - Does no database work.
@@ -33,6 +37,10 @@ see that delay.
    require a paid plan).
 6. **Location**: leave at `Default (auto-select)`.
 7. Click **Create monitor**.
+
+The default **HEAD** method is supported; changing to GET is not required.
+Consider a **60-second request timeout** instead of 30 seconds to reduce false
+alarms during startup. Some cold starts can still exceed that timeout.
 
 ## 4. `<RENDER_SERVICE_NAME>` is a placeholder
 
@@ -71,6 +79,11 @@ Vercel deployments.
 The free plan allows up to 50 monitors, with a minimum check interval of 5
 minutes — enough for this use case without upgrading.
 
+The configured interval applies while the monitor is up. During prolonged
+downtime, UptimeRobot spaces checks farther apart, so a monitor that has been
+down for a long time is not guaranteed to check every 5 minutes. See
+[UptimeRobot's monitoring-interval explanation](https://help.uptimerobot.com/en/articles/11360876-what-is-a-monitoring-interval-in-uptimerobot).
+
 ## 7. Caveats
 
 - **Instance-hours.** Keeping a free Render instance permanently awake burns
@@ -97,3 +110,34 @@ status, timeout) so it can never affect the UI or the user's session. If
 `VITE_API_BASE_URL` is relative, it logs a console warning explaining that the
 ping cannot reach the Render backend, but still fires the request (useful in
 local dev with a proxy).
+
+## 9. Recovering a monitor stuck Down with HTTP 405
+
+Previously, these health routes only accepted GET. UptimeRobot's default HEAD
+request therefore received **405 Method Not Allowed** even when the application
+was running. The resulting prolonged Down status can space checks far enough
+apart for Render to become idle. A response-time graph alone does not prove
+successful checks: error responses also have a response time.
+
+After deploying the GET/HEAD fix:
+
+1. Allow the backend to finish starting. Verify **GET and HEAD return 200** on
+   both `/health` and `/api/v1/health` at the actual Render origin. Confirm GET
+   still returns the health JSON and HEAD has no response body. Do not mark
+   405 as an acceptable status to hide the problem.
+2. Pause and resume the existing UptimeRobot monitor once. This triggers a
+   fresh check instead of waiting for the extended-downtime schedule. Keep its
+   HEAD method and 5-minute interval; consider a 60-second timeout.
+3. Verify the monitor becomes **Up** and observe several successful checks
+   approximately 5 minutes apart. Correlate them with HEAD requests returning
+   200 in Render's application logs.
+4. Observe more than 15 minutes of continued monitor traffic and check for
+   unexpected shutdowns. Continued idle shutdowns require checking the actual
+   request gaps and monitor availability, not just its configured interval.
+
+These are post-deployment operator steps; changing this repository does not
+update the running service or UptimeRobot settings. Monitoring cannot guarantee
+availability during deployments, restarts, or provider outages. An always-running
+compute instance addresses idle sleep more reliably. The public homepage should
+also render independently of session restoration so backend unavailability
+cannot leave it blank; that frontend change is separate from this health fix.

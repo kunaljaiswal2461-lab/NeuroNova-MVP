@@ -24,35 +24,73 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from app.api.routes.health_routes import router as health_router
 from app.core.limiter import limiter
+from app.db.session import get_session
 from app.middlewares.rate_limiter import rate_limit_exceeded_handler
 from main import create_app
 
 HEALTH_PATHS = ["/health", "/api/v1/health"]
 
 
-@pytest.mark.parametrize("path", HEALTH_PATHS)
-async def test_health_returns_ok_without_auth(path):
+@pytest.fixture
+def app():
     app = create_app()
+
+    async def unexpected_database_access():
+        raise AssertionError("Health checks must not access the database")
+
+    app.dependency_overrides[get_session] = unexpected_database_access
+    return app
+
+
+@pytest.mark.parametrize("path", HEALTH_PATHS)
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+async def test_health_returns_ok_without_auth(app, path, method):
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get(path)
+        response = await client.request(method, path)
 
         assert response.status_code == 200
-        body = response.json()
-        assert set(body.keys()) == {"success", "status", "timestamp"}
-        assert body["success"] is True
-        assert body["status"] == "ok"
+        assert response.headers["content-type"] == "application/json"
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["x-frame-options"] == "DENY"
+        assert response.headers["x-request-id"]
 
-        parsed = datetime.fromisoformat(body["timestamp"].replace("Z", "+00:00"))
-        assert parsed.utcoffset() == timedelta(0)
+        if method == "HEAD":
+            assert response.content == b""
+        else:
+            body = response.json()
+            assert set(body.keys()) == {"success", "status", "timestamp"}
+            assert body["success"] is True
+            assert body["status"] == "ok"
+
+            parsed = datetime.fromisoformat(body["timestamp"].replace("Z", "+00:00"))
+            assert parsed.utcoffset() == timedelta(0)
 
         # No auth dependency is attached: even a junk bearer token must
         # still succeed, proving the route never inspects credentials.
-        response = await client.get(path, headers={"Authorization": "Bearer not-a-token"})
+        response = await client.request(method, path, headers={"Authorization": "Bearer not-a-token"})
         assert response.status_code == 200
 
 
-async def test_health_is_exempt_from_rate_limit():
+@pytest.mark.parametrize("path", HEALTH_PATHS)
+async def test_health_rejects_unsupported_method(app, path):
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(path)
+    assert response.status_code == 405
+
+
+@pytest.fixture
+def reset_rate_limits():
+    limiter.reset()
+    yield
+    limiter.reset()
+
+
+@pytest.mark.parametrize("path", HEALTH_PATHS)
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+async def test_health_is_exempt_from_rate_limit(reset_rate_limits, path, method):
     """Prove both halves: the limiter was live, and health bypassed it.
 
     The real app never registers ``SlowAPIMiddleware`` (default limits are
@@ -76,7 +114,7 @@ async def test_health_is_exempt_from_rate_limit():
     transport = httpx.ASGITransport(app=throwaway)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         # 210 > the 200/hour default, so a non-exempt route must hit 429.
-        health_statuses = {(await client.get("/health")).status_code for _ in range(210)}
+        health_statuses = {(await client.request(method, path)).status_code for _ in range(210)}
         assert health_statuses == {200}
 
         control_statuses = {(await client.get("/control")).status_code for _ in range(210)}
