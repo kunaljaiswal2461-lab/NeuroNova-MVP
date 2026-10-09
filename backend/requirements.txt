@@ -44,3 +44,6 @@ aiosqlite==0.22.1  # test-only: in-memory SQLite for unit tests
 sqlglot==30.21.0
 PyYAML==6.0.3
 hypothesis==6.168.5  # test-only
+
+# NL->SQL schema context (SPEC-06): offline o200k_base token counting
+tiktoken==0.14.0

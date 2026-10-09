@@ -218,6 +218,9 @@ class Settings(BaseSettings):
     sql_guard_max_paren_depth: int = Field(default=32, ge=4, le=100)
     sql_guard_max_ast_nodes: int = Field(default=3_000, ge=100, le=50_000)
 
+    # --- NL->SQL schema context (SPEC-06): o200k_base tokens for the whole schema block ---
+    nl_sql_schema_budget_tokens: int = Field(default=8_000, ge=1_000, le=32_000)
+
     # --- optional bounded PostgreSQL profiling (Stage 6A; disabled per source) ---
     # These are intentionally separate from analytical query budgets. A
     # profile uses fixed internal aggregate operations over a bounded
