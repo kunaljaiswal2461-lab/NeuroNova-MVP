@@ -18,6 +18,7 @@ class RejectionCode(str, Enum):
     UNSUPPORTED_SYNTAX = "unsupported_syntax"
     TOO_COMPLEX = "too_complex"
     TABLE_NOT_IN_SCOPE = "table_not_in_scope"
+    NO_TABLE_REFERENCE = "no_table_reference"
     AMBIGUOUS_TABLE = "ambiguous_table"
     DATABASE_QUALIFIED_TABLE = "database_qualified_table"
     COLUMN_NOT_FOUND = "column_not_found"
@@ -34,6 +35,7 @@ class RejectionCode(str, Enum):
 class ScopeColumn:
     name: str            # exact catalog name (case preserved)
     native_type: str     # catalog native_type_name, e.g. "int8", "timestamptz"
+    column_id: UUID | None = None   # CatalogColumn.id; set by load_catalog_scope, needed to seal (SPEC-05)
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,7 @@ class ScopeTable:
     schema: str          # exact catalog schema name
     name: str            # exact catalog table name
     columns: tuple[ScopeColumn, ...]
+    asset_id: UUID | None = None    # CatalogAsset.id; set by load_catalog_scope, needed to seal (SPEC-05)
 
 
 @dataclass(frozen=True)

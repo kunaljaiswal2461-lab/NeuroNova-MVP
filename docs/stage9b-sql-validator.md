@@ -85,3 +85,16 @@ learning file for why.
 `sql_guard_max_chars` (20,000), `sql_guard_max_paren_depth` (32), `sql_guard_max_ast_nodes` (3,000), plus a
 constant limit of 30 catalog table references. The corpus maximum is 432 characters, depth 4, 95 nodes,
 4 tables.
+
+## Added in Part 2: `no_table_reference`
+
+A query must read at least one catalog table. `SELECT 1`, a bare `generate_series(...)`, or a CTE over
+literals is rejected with `no_table_reference` ("The query must read from at least one available table.").
+The check runs after the table, column, function and cast stages, so those keep their more specific codes.
+
+## Added in Part 2: `lpad` / `rpad` length limit
+
+The length argument of `lpad` and `rpad` must be a whole-number literal of at most 10,000. Anything else (a column, an
+expression, a cast, a subquery, a negative or decimal number) is `function_not_allowed` with "The length argument of lpad and
+rpad must be a whole-number literal of at most 10,000.". This only stops the cheapest way to build a huge value; the
+per-row size guard in Part 2 (`docs/stage9c-sql-execution.md`) is the real backstop.

@@ -53,6 +53,22 @@ Any change to the data or schema bumps `fixture_version` in `fixture/manifest.js
 `golden/meta.yaml`, then: regenerate the manifest (`python -m evals.checksums --write` inside the runner),
 re-run the linter, re-check reference answers, and regenerate baselines.
 
+### Planner statistics (SPEC-05 B7)
+
+`fixture/client/99_analyze.sql` runs `ANALYZE;` last in the init order. Part 2's cost guard compares
+`EXPLAIN` total cost with a ceiling, and the estimate is only meaningful with statistics on every table
+(without them the planner guesses 1,000-row defaults and the number says nothing). Any new init file that
+loads data must sort before `99_`.
+
+### The `drift` schema and `nn_drift` role (SPEC-05 L2 item 6)
+
+`fixture/client/40_drift.sql` creates a scratch schema `drift` owned by a login role `nn_drift` (no
+superuser, no rights outside `drift`; `pg_hba.conf` allows it over TLS like the other roles, its password is
+a per-run secret like theirs). The drift tests create a table there, build a throwaway source over it, then
+drop a column, revoke `SELECT`, enable RLS, swap in a view or change the owner, and expect the executor to
+refuse. Nothing in `shop` is touched, so the manifest checksums are unchanged. An existing fixture needs
+`docker compose ... down -v` and `up -d --build` once to pick the role up.
+
 ## Accepting a mutation survivor
 
 A wrong mutant that still grades PASS is a *survivor*. Either strengthen the data/question, or put

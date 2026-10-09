@@ -206,6 +206,13 @@ class Settings(BaseSettings):
     )
     postgres_execution_cursor_prefetch: int = Field(default=50, ge=1, le=1_000)
 
+    # --- SQL execution cost guard (SPEC-05): reject when EXPLAIN total cost exceeds this ---
+    # Planner cost units, not time: the 5 s statement timeout stays as the backstop.
+    # Corpus max is ~5.1e5; the pathological probes start at 1.25e7.
+    postgres_sql_max_plan_cost: float = Field(default=5_000_000.0, ge=1_000.0, le=1e10)
+    # Largest text form of one result row; the server refuses bigger rows before they are sent.
+    postgres_sql_max_row_bytes: int = Field(default=1_048_576, ge=1_024, le=64 * 1_048_576)
+
     # --- NL->SQL validator limits (SPEC-04); the caps sit far above real queries ---
     sql_guard_max_chars: int = Field(default=20_000, ge=100, le=200_000)
     sql_guard_max_paren_depth: int = Field(default=32, ge=4, le=100)

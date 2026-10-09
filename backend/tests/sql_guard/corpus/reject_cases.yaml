@@ -159,3 +159,26 @@
 - {id: hazard-current-role-column, sql: "SELECT current_role FROM shop.sessions", code: unsupported_syntax, scope: user_col}
 - {id: hazard-system-user-column, sql: "SELECT system_user FROM shop.sessions", code: unsupported_syntax, scope: user_col}
 - {id: hazard-user-in-where, sql: "SELECT id FROM shop.sessions WHERE user = 'x'", code: unsupported_syntax, scope: user_col}
+
+# ── SPEC-05: a query must read at least one catalog table ───────────────────
+- {id: notable-select-1, sql: "SELECT 1", code: no_table_reference}
+- {id: notable-literal-string, sql: "SELECT 'O''Brien' AS s", code: no_table_reference}
+- {id: notable-generate-series, sql: "SELECT count(*) FROM generate_series(1, 1000000000)", code: no_table_reference}
+- {id: notable-generate-series-select, sql: "SELECT g FROM generate_series(1, 10) AS g", code: no_table_reference}
+- {id: notable-cte-only, sql: "WITH x AS (SELECT 1 AS a) SELECT a FROM x", code: no_table_reference}
+- {id: notable-age, sql: "SELECT age(timestamp '2026-06-01', timestamp '2025-01-15') AS a", code: no_table_reference}
+- {id: notable-trailing-semicolon, sql: "SELECT 1;", code: no_table_reference}
+
+# ── lpad/rpad length must be a literal <= 10,000 (a tiny query can otherwise build a 200 MB value) ──
+- {id: pad-lpad-huge, sql: "SELECT lpad(status, 200000000) FROM shop.orders", code: function_not_allowed}
+- {id: pad-rpad-huge, sql: "SELECT rpad(status, 200000000, 'x') FROM shop.orders", code: function_not_allowed}
+- {id: pad-just-over, sql: "SELECT rpad(status, 10001) FROM shop.orders", code: function_not_allowed}
+- {id: pad-column-length, sql: "SELECT lpad(status, id) FROM shop.orders", code: function_not_allowed}
+- {id: pad-expression-length, sql: "SELECT lpad(status, 5 + 5) FROM shop.orders", code: function_not_allowed}
+- {id: pad-cast-length, sql: "SELECT lpad(status, 200000000::int) FROM shop.orders", code: function_not_allowed}
+- {id: pad-subquery-length, sql: "SELECT lpad(status, (SELECT 200000000)) FROM shop.orders", code: function_not_allowed}
+- {id: pad-negative, sql: "SELECT lpad(status, -5) FROM shop.orders", code: function_not_allowed}
+- {id: pad-decimal, sql: "SELECT lpad(status, 10.0) FROM shop.orders", code: function_not_allowed}
+- {id: pad-quoted-name, sql: 'SELECT "lpad"(status, 200000000) FROM shop.orders', code: function_not_allowed}
+- {id: pad-nested, sql: "SELECT count(*) FROM shop.orders WHERE length(lpad(status, 200000000)) > 3", code: function_not_allowed}
+- {id: pad-two-args-spaced, sql: "SELECT LPAD (status, 200000000) FROM shop.orders", code: function_not_allowed}

@@ -28,7 +28,7 @@ from app.db.models.source import (
     SourceType,
     TLSMode,
 )
-from app.db.models.postgres_query_run import PostgresQueryRun, PostgresQueryRunStatus
+from app.db.models.postgres_query_run import PostgresQueryRun, PostgresQueryRunAsset, PostgresQueryRunStatus
 from app.db.models.metric_definition import (
     MetricAggregateOperation,
     MetricDefinition,

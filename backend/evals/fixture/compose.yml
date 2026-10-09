@@ -50,6 +50,8 @@ services:
       - ./client/16_derived.sql:/docker-entrypoint-initdb.d/16_derived.sql:ro
       - ./client/20_grants.sql:/docker-entrypoint-initdb.d/20_grants.sql:ro
       - ./client/30_page_views.sql:/docker-entrypoint-initdb.d/30_page_views.sql:ro
+      - ./client/40_drift.sql:/docker-entrypoint-initdb.d/40_drift.sql:ro
+      - ./client/99_analyze.sql:/docker-entrypoint-initdb.d/99_analyze.sql:ro
       - nn_eval_certs:/certs:ro
       - nn_eval_secrets:/secrets:ro
       - nn_eval_seed:/seed:ro

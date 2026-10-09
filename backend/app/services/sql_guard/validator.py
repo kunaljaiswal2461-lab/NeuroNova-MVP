@@ -37,6 +37,7 @@ from .types import CatalogScope, GuardLimits, Rejection, RejectionCode, Validate
 logger = logging.getLogger(__name__)
 
 _DIALECT = "postgres"
+MAX_PAD_LENGTH = 10_000
 
 
 class _SqlglotQuiet(logging.Filter):
@@ -135,6 +136,11 @@ def _check(sql: str, scope: CatalogScope, row_cap: int, limits: GuardLimits) -> 
     tables, referenced = _check_tables(tree, scope, limits)
     columns = _check_columns(tree, scope, referenced)
     _check_cast_types(tree)
+    if not tables:
+        # SPEC-05 decision: a query that reads no catalog table (``SELECT 1``, bare ``generate_series``)
+        # has nothing to authorize or lock and is not an answer about the user's data. Checked after the
+        # column and function stages so those keep their more specific codes.
+        raise _stop(RejectionCode.NO_TABLE_REFERENCE)
     model_limit, applied_limit = _apply_row_cap(tree, row_cap)
     return _Checked(tree, tables, columns, functions, model_limit, applied_limit)
 
@@ -246,6 +252,23 @@ def _check_nodes(tree: exp.Expression) -> None:
                     RejectionCode.UNSUPPORTED_SYNTAX,
                     detail="Use LIMIT n or FETCH FIRST n ROWS ONLY with a plain number.",
                 )
+        if isinstance(node, exp.Pad) and not (
+            _is_plain_int(node.expression) and int(node.expression.name) <= MAX_PAD_LENGTH
+        ):
+            # lpad/rpad can build a huge string from a tiny query; its plan cost is small, so the cost
+            # gate cannot see it, and the whole value would be pulled into memory by the driver.
+            raise _stop(
+                RejectionCode.FUNCTION_NOT_ALLOWED,
+                identifier="rpad" if node.args.get("is_left") is not True else "lpad",
+                detail=f"The length argument of lpad and rpad must be a whole-number literal of at most {MAX_PAD_LENGTH:,}.",
+            )
+        if isinstance(node, exp.Anonymous) and str(node.name).lower() in {"lpad", "rpad"}:
+            # A shape sqlglot did not map to Pad (e.g. a different argument count): never trust its length.
+            raise _stop(
+                RejectionCode.FUNCTION_NOT_ALLOWED,
+                identifier=node.name,
+                detail=f"The length argument of lpad and rpad must be a whole-number literal of at most {MAX_PAD_LENGTH:,}.",
+            )
         if isinstance(node, exp.Anonymous) and str(node.name).lower() not in ALLOWED_FUNCTIONS:
             raise _stop(RejectionCode.FUNCTION_NOT_ALLOWED, identifier=node.name)
 

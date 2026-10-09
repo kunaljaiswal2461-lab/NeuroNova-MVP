@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Awaitable, Callable
+import json
+import math
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -18,6 +20,7 @@ import asyncpg
 
 from app.connectors.connection_policy import ConnectionPolicyError, PostgresConnectionPolicy
 from app.core.config import Settings
+from app.services.sql_guard.seal import SealedValidatedQuery, is_sealed
 from app.services.postgres_query_compiler import (
     CompiledPostgresQuery,
     ExpectedPostgresOutputColumn,
@@ -61,6 +64,30 @@ class PostgresExecutionTimeoutError(PostgresExecutionAdapterError):
 
 class PostgresExecutionCancelledError(PostgresExecutionAdapterError):
     code = "execution_cancelled"
+
+
+class PostgresExecutionUnsupportedOutputError(PostgresExecutionAdapterError):
+    """A result column has a type the serializer cannot represent faithfully (SPEC-05 B3.5).
+
+    Carries only the 1-based column position and a hint category; never the database's type text.
+    """
+
+    code = "unsupported_output_type"
+
+    def __init__(self, column_index: int = 0, hint: str = "other") -> None:
+        super().__init__()
+        self.column_index = column_index
+        self.hint = hint
+
+
+class PostgresExecutionCostExceededError(PostgresExecutionAdapterError):
+    code = "query_too_expensive"
+
+
+class PostgresExecutionRowTooLargeError(PostgresExecutionAdapterError):
+    """One result row exceeded the per-row byte limit; refused by the server before it was sent."""
+
+    code = "result_row_too_large"
 
 
 @dataclass(frozen=True)
@@ -151,6 +178,23 @@ class RemotePostgresExecution:
     """Metadata about a streamed execution; values stay with the caller's collector."""
 
     actual_output_columns: tuple[ActualPostgresOutputColumn, ...]
+    safety_row_truncated: bool
+    collector_stopped: bool
+
+
+@dataclass(frozen=True)
+class LiveSqlExpectation:
+    """Trusted facts for a validated-SQL run: 1..30 ordinary tables and the referenced columns of each."""
+
+    relations: tuple[LiveRelationExpectation, ...]
+
+
+@dataclass(frozen=True)
+class RemoteSqlExecution:
+    """Metadata about a streamed validated-SQL execution; values stay with the caller's collector."""
+
+    actual_output_columns: tuple[ActualPostgresOutputColumn, ...]   # labels already de-duplicated
+    plan_cost: float
     safety_row_truncated: bool
     collector_stopped: bool
 
@@ -268,6 +312,10 @@ ORDER BY key_columns.ordinality
 
 _SESSION_SEARCH_PATH_SQL = "SET LOCAL search_path TO pg_catalog"
 _SESSION_TIME_ZONE_SQL = "SET LOCAL TimeZone TO 'UTC'"
+_SESSION_CLIENT_CHECK_SQL = (
+    "SELECT pg_catalog.set_config('client_connection_check_interval', '250ms', true) "
+    "FROM pg_catalog.pg_settings WHERE name = 'client_connection_check_interval'"
+)
 _SESSION_ASSERTIONS_SQL = """
 SELECT current_setting('transaction_read_only') AS transaction_read_only,
        current_setting('search_path') AS search_path,
@@ -628,6 +676,118 @@ def _relation_expectations_for_compiled(
     return relations
 
 
+# Output types _serialize_value can represent exactly (SPEC-05 F5/B3.5).
+SUPPORTED_OUTPUT_TYPES = frozenset(
+    {
+        "int2", "int4", "int8", "numeric", "float4", "float8",
+        "text", "varchar", "bpchar", "bool", "uuid", "date", "timestamp", "timestamptz",
+    }
+)
+MAX_SQL_RELATIONS = 30
+
+
+def dedupe_output_labels(names: Sequence[str]) -> tuple[str, ...]:
+    """Keep Postgres's names in order; ``count, count`` -> ``count, count_2``; empty/``?column?`` -> ``col_<n>``."""
+    used: set[str] = set()
+    labels: list[str] = []
+    for index, raw in enumerate(names, start=1):
+        base = raw if isinstance(raw, str) and raw and raw != "?column?" else f"col_{index}"
+        label = base
+        suffix = 2
+        while label in used:
+            label = f"{base}_{suffix}"
+            suffix += 1
+        used.add(label)
+        labels.append(label)
+    return tuple(labels)
+
+
+def _unsupported_output_hint(type_name: str, kind: str | None) -> str:
+    if type_name == "interval":
+        return "interval"
+    if type_name == "money":
+        return "money"
+    if type_name == "record" or kind == "composite":
+        return "composite"
+    return "other"
+
+
+def _sql_output_columns(statement: Any) -> tuple[ActualPostgresOutputColumn, ...]:
+    """Read prepared attributes and apply the type gate, before any cursor opens."""
+    attributes_getter = getattr(statement, "get_attributes", None)
+    if not callable(attributes_getter):
+        raise PostgresExecutionSchemaChangedError()
+    attributes = tuple(attributes_getter())
+    if not attributes:
+        raise PostgresExecutionConfigurationError()
+    labels = dedupe_output_labels([getattr(attribute, "name", "") for attribute in attributes])
+    columns: list[ActualPostgresOutputColumn] = []
+    for index, (attribute, label) in enumerate(zip(attributes, labels, strict=True), start=1):
+        type_info = getattr(attribute, "type", None)
+        type_name = getattr(type_info, "name", None)
+        type_schema = getattr(type_info, "schema", None)
+        if (
+            not isinstance(type_name, str)
+            or type_name not in SUPPORTED_OUTPUT_TYPES
+            or type_schema not in {None, "pg_catalog"}
+        ):
+            raise PostgresExecutionUnsupportedOutputError(
+                index, _unsupported_output_hint(str(type_name), getattr(type_info, "kind", None))
+            )
+        columns.append(
+            ActualPostgresOutputColumn(alias=label, postgres_type=type_name, postgres_type_schema=type_schema)
+        )
+    return tuple(columns)
+
+
+_ROW_TOO_LARGE_PREFIX = "nn_row_too_large:"
+
+
+def _wrap_row_size_guard(sql: str, limit_bytes: int) -> str:
+    """Wrap a sealed SELECT so the *server* refuses any row whose text form exceeds ``limit_bytes``.
+
+    The CAST makes the failing branch depend on the row, so the planner cannot fold it away (a constant
+    ``CASE`` would be evaluated at plan time and fail every query). ``ROW(q.*)`` names the whole row: a bare
+    ``q::text`` resolves to a *column* called ``q`` when the query outputs one, which would bypass the guard. The refusal is SQLSTATE 22P02 with
+    ``_ROW_TOO_LARGE_PREFIX``. ``limit_bytes`` is an application integer, never model text.
+    """
+    limit = int(limit_bytes)
+    return (
+        f"SELECT q.* FROM ({sql}) AS q WHERE CASE WHEN octet_length(ROW(q.*)::text) > {limit} "
+        f"THEN CAST('{_ROW_TOO_LARGE_PREFIX}' || octet_length(ROW(q.*)::text) AS int) = 0 ELSE true END"
+    )
+
+
+def _is_row_too_large(exc: BaseException) -> bool:
+    return (
+        isinstance(exc, asyncpg.InvalidTextRepresentationError)
+        and _ROW_TOO_LARGE_PREFIX in (getattr(exc, "message", None) or str(exc))
+    )
+
+
+async def _install_text_temporal_codecs(connection: Any) -> None:
+    """Receive date/timestamp/timestamptz as PostgreSQL's own text (``DateStyle`` is pinned to ISO).
+
+    asyncpg's binary decoding turns ``infinity`` into ``date.max`` etc., which is indistinguishable from a
+    real ``9999-12-31``. The text form keeps them apart.
+    """
+    for type_name in ("date", "timestamp", "timestamptz"):
+        await connection.set_type_codec(
+            type_name, schema="pg_catalog", encoder=str, decoder=str, format="text"
+        )
+
+
+def _plan_total_cost(explain_json: Any) -> float:
+    try:
+        payload = json.loads(explain_json) if isinstance(explain_json, (str, bytes)) else explain_json
+        cost = payload[0]["Plan"]["Total Cost"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise PostgresExecutionConfigurationError() from None
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)) or not math.isfinite(cost):
+        raise PostgresExecutionConfigurationError()
+    return float(cost)
+
+
 class PostgresQueryExecutionAdapter:
     """Open one constrained client connection and stream one compiled query."""
 
@@ -669,18 +829,257 @@ class PostgresQueryExecutionAdapter:
         if cancellation is not None and cancellation.cancelled:
             raise PostgresExecutionCancelledError()
 
+        relations = tuple(
+            sorted(
+                _relation_expectations_for_compiled(compiled, expectation),
+                key=lambda relation: (relation.schema_name, relation.table_name),
+            )
+        )
+        if not 1 <= len(relations) <= 2:
+            raise PostgresExecutionSchemaChangedError()
+
+        async def body(connection: Any) -> RemotePostgresExecution:
+            async def check_unique_key(relation: LiveRelationExpectation, oid: int) -> None:
+                if relation.unique_key is not None:
+                    live_key = await connection.fetch(
+                        _LIVE_UNIQUE_KEY_SQL,
+                        oid,
+                        relation.unique_key.constraint_name,
+                    )
+                    _validate_live_unique_key(live_key, relation.unique_key)
+
+            before_oids = await self._verify_and_lock_relations(
+                connection, relations, after_columns=check_unique_key
+            )
+
+            if expectation.foreign_key is not None:
+                lookup_relation = expectation.lookup_relation
+                if lookup_relation is None:
+                    raise PostgresExecutionSchemaChangedError()
+                live_foreign_key = await connection.fetch(
+                    _LIVE_FOREIGN_KEY_SQL,
+                    before_oids[(expectation.schema_name, expectation.table_name)],
+                    before_oids[(lookup_relation.schema_name, lookup_relation.table_name)],
+                    expectation.foreign_key.constraint_name,
+                )
+                _validate_live_foreign_key(live_foreign_key, expectation.foreign_key)
+
+            statement = await _maybe_await(connection.prepare(compiled.sql))
+            actual_columns = _prepared_attributes(statement, expectation.expected_output_columns)
+            aliases = tuple(column.alias for column in actual_columns)
+            cursor = statement.cursor(
+                *compiled.parameters,
+                prefetch=self._settings.postgres_execution_cursor_prefetch,
+            )
+            safety_row_truncated = False
+            collector_stopped = False
+            accepted_rows = 0
+            async for record in cursor:
+                if cancellation is not None and cancellation.cancelled:
+                    raise PostgresExecutionCancelledError()
+                # This is bounded lookahead.  The compiler's LIMIT is
+                # untouched, so aggregates retain their answer meaning.
+                if accepted_rows >= max_rows:
+                    safety_row_truncated = True
+                    break
+                should_continue = await _maybe_await(row_consumer(_record_values(record, aliases)))
+                if should_continue is not True:
+                    collector_stopped = True
+                    break
+                accepted_rows += 1
+            return RemotePostgresExecution(
+                actual_output_columns=actual_columns,
+                safety_row_truncated=safety_row_truncated,
+                collector_stopped=collector_stopped,
+            )
+
+        return await self._run_in_session(
+            host=host,
+            port=port,
+            database_name=database_name,
+            username=username,
+            password=password,
+            custom_ca_pem=custom_ca_pem,
+            cancellation=cancellation,
+            body=body,
+        )
+
+    async def execute_sql(
+        self,
+        *,
+        host: str,
+        port: int,
+        database_name: str,
+        username: str,
+        password: str,
+        custom_ca_pem: str | None,
+        sealed: SealedValidatedQuery,
+        expectation: LiveSqlExpectation,
+        max_rows: int,
+        row_consumer: RowConsumer,
+        on_columns: Callable[[tuple[ActualPostgresOutputColumn, ...]], None] | None = None,
+        max_plan_cost: float | None = None,
+        cancellation: PostgresExecutionCancellation | None = None,
+    ) -> RemoteSqlExecution:
+        """Run one validated, sealed SELECT (SPEC-05 B3).
+
+        Order of checks, all in one read-only transaction: lock every relation (canonical order) ->
+        live relation + column checks -> prepare -> output-type gate -> EXPLAIN cost gate -> cursor.
+        Nothing reaches the cursor if a gate refuses. ``row_consumer`` receives positional values.
+        """
+
+        if not is_sealed(sealed) or max_rows < 1:
+            raise PostgresExecutionConfigurationError()
+        if not isinstance(expectation, LiveSqlExpectation):
+            raise PostgresExecutionConfigurationError()
+        if cancellation is not None and cancellation.cancelled:
+            raise PostgresExecutionCancelledError()
+        ceiling = self._settings.postgres_sql_max_plan_cost if max_plan_cost is None else max_plan_cost
+
+        relations = tuple(
+            sorted(expectation.relations, key=lambda relation: (relation.schema_name, relation.table_name))
+        )
+        identities = {(relation.schema_name, relation.table_name) for relation in relations}
+        # The facts must describe exactly the tables the sealed query reads: no more, no fewer.
+        # At least one: the validator rejects table-less SQL (``no_table_reference``), so none is a bug.
+        if (
+            not 1 <= len(relations) <= MAX_SQL_RELATIONS
+            or len(identities) != len(relations)
+            or identities != {(table.schema, table.name) for table in sealed.tables}
+        ):
+            raise PostgresExecutionConfigurationError()
+        sql = sealed.sql   # I2: the only text sent is the regenerated text.
+
+        async def body(connection: Any) -> RemoteSqlExecution:
+            await self._verify_and_lock_relations(connection, relations)
+
+            # The size guard wraps the sealed text; the gates below see what will actually run.
+            run_sql = _wrap_row_size_guard(sql, self._settings.postgres_sql_max_row_bytes)
+            try:
+                statement = await _maybe_await(connection.prepare(run_sql))
+            except asyncpg.exceptions.UnsupportedClientFeatureError:
+                # With text codecs installed asyncpg cannot build a decoder for a composite output
+                # (whole-row `SELECT o FROM t o`) while preparing. Same refusal as the type gate, without
+                # a column position: asyncpg never got as far as reading the attributes.
+                raise PostgresExecutionUnsupportedOutputError(0, "composite") from None
+            columns = _sql_output_columns(statement)
+            plan_cost = _plan_total_cost(await connection.fetchval(f"EXPLAIN (FORMAT JSON) {run_sql}"))
+            if plan_cost > ceiling:
+                raise PostgresExecutionCostExceededError()
+            if on_columns is not None:
+                on_columns(columns)
+
+            cursor = statement.cursor(prefetch=self._settings.postgres_execution_cursor_prefetch)
+            safety_row_truncated = False
+            collector_stopped = False
+            accepted_rows = 0
+            async for record in cursor:
+                if cancellation is not None and cancellation.cancelled:
+                    raise PostgresExecutionCancelledError()
+                if accepted_rows >= max_rows:
+                    # Only the "no LIMIT / LIMIT above the cap" shape (cap + 1) can overshoot; a model
+                    # LIMIT within the cap is the answer's own meaning, not a safety truncation.
+                    safety_row_truncated = sealed.applied_limit == sealed.row_cap + 1
+                    break
+                # By position, never by name: asyncpg returns the last of duplicate names (F4).
+                values = tuple(record)
+                if len(values) != len(columns):
+                    raise PostgresExecutionSchemaChangedError()
+                should_continue = await _maybe_await(row_consumer(values))
+                if should_continue is not True:
+                    collector_stopped = True
+                    break
+                accepted_rows += 1
+            return RemoteSqlExecution(
+                actual_output_columns=columns,
+                plan_cost=plan_cost,
+                safety_row_truncated=safety_row_truncated,
+                collector_stopped=collector_stopped,
+            )
+
+        return await self._run_in_session(
+            host=host,
+            port=port,
+            database_name=database_name,
+            username=username,
+            password=password,
+            custom_ca_pem=custom_ca_pem,
+            cancellation=cancellation,
+            body=body,
+        )
+
+    @staticmethod
+    async def _verify_and_lock_relations(
+        connection: Any,
+        relations: tuple[LiveRelationExpectation, ...],
+        after_columns: Callable[[LiveRelationExpectation, int], Awaitable[None]] | None = None,
+    ) -> dict[tuple[str, str], int]:
+        """Identity-check, lock in canonical order, then re-check each relation and its live columns."""
+
+        before_oids: dict[tuple[str, str], int] = {}
+        for relation in relations:
+            before = await connection.fetchrow(
+                _LIVE_RELATION_SQL,
+                relation.schema_name,
+                relation.table_name,
+            )
+            if before is None:
+                raise PostgresExecutionSchemaChangedError()
+            before_oids[(relation.schema_name, relation.table_name)] = _validate_restricted_relation(
+                before, relation
+            )
+
+        # Lock in a single canonical order. This prevents two allowed joins requested in
+        # opposite directions from creating an application-induced DDL lock cycle.
+        for relation in relations:
+            lock_sql = (
+                "LOCK TABLE "
+                f"{_quote_identifier(relation.schema_name)}."
+                f"{_quote_identifier(relation.table_name)} IN ACCESS SHARE MODE"
+            )
+            await connection.execute(lock_sql)
+
+        for relation in relations:
+            relation_key = (relation.schema_name, relation.table_name)
+            after = await connection.fetchrow(
+                _LIVE_RELATION_SQL,
+                relation.schema_name,
+                relation.table_name,
+            )
+            if after is None or _validate_restricted_relation(after, relation) != before_oids[relation_key]:
+                raise PostgresExecutionSchemaChangedError()
+            live_columns = (
+                await connection.fetch(
+                    _LIVE_COLUMNS_SQL,
+                    before_oids[relation_key],
+                    [column.name for column in relation.columns],
+                )
+                if relation.columns
+                else ()
+            )
+            _validate_live_columns(live_columns, relation)
+            if after_columns is not None:
+                await after_columns(relation, before_oids[relation_key])
+        return before_oids
+
+    async def _run_in_session(
+        self,
+        *,
+        host: str,
+        port: int,
+        database_name: str,
+        username: str,
+        password: str,
+        custom_ca_pem: str | None,
+        cancellation: PostgresExecutionCancellation | None,
+        body: Callable[[Any], Awaitable[Any]],
+    ) -> Any:
+        """Open one constrained connection and run ``body`` in its read-only transaction."""
+
         connection: Any | None = None
         abort_connection = False
         try:
             async with asyncio.timeout(self._settings.postgres_execution_operation_timeout_seconds):
-                relations = tuple(
-                    sorted(
-                        _relation_expectations_for_compiled(compiled, expectation),
-                        key=lambda relation: (relation.schema_name, relation.table_name),
-                    )
-                )
-                if not 1 <= len(relations) <= 2:
-                    raise PostgresExecutionSchemaChangedError()
                 normalized_host = await self._policy.validate(host=host, port=port)
                 ssl_context = self._policy.build_ssl_context(custom_ca_pem)
                 connection = await self._connect(
@@ -697,6 +1096,7 @@ class PostgresQueryExecutionAdapter:
                         "default_transaction_read_only": "on",
                         "search_path": "pg_catalog",
                         "TimeZone": "UTC",
+                        "DateStyle": "ISO, YMD",
                         "statement_timeout": str(
                             int(self._settings.postgres_execution_statement_timeout_seconds * 1000)
                         ),
@@ -710,6 +1110,7 @@ class PostgresQueryExecutionAdapter:
                 )
                 if cancellation is not None:
                     await cancellation.bind(connection)
+                await _install_text_temporal_codecs(connection)
                 async with connection.transaction(readonly=True, isolation="read_committed"):
                     # Fixed application-owned statements; no remote metadata is
                     # ever interpolated into these settings.
@@ -736,111 +1137,13 @@ class PostgresQueryExecutionAdapter:
                             ),
                         )
                     )
-                    _validate_session_assumptions(
-                        await connection.fetchrow(_SESSION_ASSERTIONS_SQL)
-                    )
-                    before_oids: dict[tuple[str, str], int] = {}
-                    for relation in relations:
-                        before = await connection.fetchrow(
-                            _LIVE_RELATION_SQL,
-                            relation.schema_name,
-                            relation.table_name,
-                        )
-                        if before is None:
-                            raise PostgresExecutionSchemaChangedError()
-                        before_oids[(relation.schema_name, relation.table_name)] = (
-                            _validate_restricted_relation(before, relation)
-                        )
-
-                    # Lock in a single canonical order. This prevents two
-                    # allowed joins requested in opposite directions from
-                    # creating an application-induced DDL lock cycle.
-                    for relation in relations:
-                        lock_sql = (
-                            "LOCK TABLE "
-                            f"{_quote_identifier(relation.schema_name)}."
-                            f"{_quote_identifier(relation.table_name)} IN ACCESS SHARE MODE"
-                        )
-                        await connection.execute(lock_sql)
-
-                    for relation in relations:
-                        relation_key = (relation.schema_name, relation.table_name)
-                        after = await connection.fetchrow(
-                            _LIVE_RELATION_SQL,
-                            relation.schema_name,
-                            relation.table_name,
-                        )
-                        if (
-                            after is None
-                            or _validate_restricted_relation(after, relation)
-                            != before_oids[relation_key]
-                        ):
-                            raise PostgresExecutionSchemaChangedError()
-                        live_columns = (
-                            await connection.fetch(
-                                _LIVE_COLUMNS_SQL,
-                                before_oids[relation_key],
-                                [column.name for column in relation.columns],
-                            )
-                            if relation.columns
-                            else ()
-                        )
-                        _validate_live_columns(live_columns, relation)
-                        if relation.unique_key is not None:
-                            live_key = await connection.fetch(
-                                _LIVE_UNIQUE_KEY_SQL,
-                                before_oids[relation_key],
-                                relation.unique_key.constraint_name,
-                            )
-                            _validate_live_unique_key(live_key, relation.unique_key)
-
-                    if expectation.foreign_key is not None:
-                        lookup_relation = expectation.lookup_relation
-                        if lookup_relation is None:
-                            raise PostgresExecutionSchemaChangedError()
-                        live_foreign_key = await connection.fetch(
-                            _LIVE_FOREIGN_KEY_SQL,
-                            before_oids[(expectation.schema_name, expectation.table_name)],
-                            before_oids[
-                                (lookup_relation.schema_name, lookup_relation.table_name)
-                            ],
-                            expectation.foreign_key.constraint_name,
-                        )
-                        _validate_live_foreign_key(live_foreign_key, expectation.foreign_key)
-
-                    statement = await _maybe_await(connection.prepare(compiled.sql))
-                    actual_columns = _prepared_attributes(
-                        statement, expectation.expected_output_columns
-                    )
-                    aliases = tuple(column.alias for column in actual_columns)
-                    cursor = statement.cursor(
-                        *compiled.parameters,
-                        prefetch=self._settings.postgres_execution_cursor_prefetch,
-                    )
-                    safety_row_truncated = False
-                    collector_stopped = False
-                    accepted_rows = 0
-                    async for record in cursor:
-                        if cancellation is not None and cancellation.cancelled:
-                            abort_connection = True
-                            raise PostgresExecutionCancelledError()
-                        # This is bounded lookahead.  The compiler's LIMIT is
-                        # untouched, so aggregates retain their answer meaning.
-                        if accepted_rows >= max_rows:
-                            safety_row_truncated = True
-                            break
-                        should_continue = await _maybe_await(
-                            row_consumer(_record_values(record, aliases))
-                        )
-                        if should_continue is not True:
-                            collector_stopped = True
-                            break
-                        accepted_rows += 1
-                    return RemotePostgresExecution(
-                        actual_output_columns=actual_columns,
-                        safety_row_truncated=safety_row_truncated,
-                        collector_stopped=collector_stopped,
-                    )
+                    _validate_session_assumptions(await connection.fetchrow(_SESSION_ASSERTIONS_SQL))
+                    # Terminating our socket does not stop a running query by itself. With this
+                    # (PostgreSQL 14+) the backend notices the dead client and aborts instead of running
+                    # to the statement timeout. Applies to both the compiled and the SQL path. On older
+                    # servers the setting does not exist and the statement is a no-op SELECT.
+                    await connection.execute(_SESSION_CLIENT_CHECK_SQL)
+                    return await body(connection)
         except asyncio.CancelledError:
             abort_connection = True
             raise
@@ -856,6 +1159,8 @@ class PostgresQueryExecutionAdapter:
             abort_connection = True
             if cancellation is not None and cancellation.cancelled:
                 raise PostgresExecutionCancelledError() from None
+            if _is_row_too_large(exc):
+                raise PostgresExecutionRowTooLargeError() from None
             if isinstance(exc, asyncpg.InsufficientPrivilegeError):
                 raise PostgresExecutionAccessChangedError() from None
             if isinstance(
@@ -904,11 +1209,18 @@ __all__ = [
     "PostgresExecutionCancellation",
     "PostgresExecutionCancelledError",
     "PostgresExecutionConfigurationError",
+    "PostgresExecutionCostExceededError",
     "PostgresExecutionCredentialError",
     "PostgresExecutionRestrictedRoleError",
+    "PostgresExecutionRowTooLargeError",
     "PostgresExecutionSchemaChangedError",
     "PostgresExecutionTLSFailureError",
     "PostgresExecutionTimeoutError",
+    "PostgresExecutionUnsupportedOutputError",
     "PostgresQueryExecutionAdapter",
+    "LiveSqlExpectation",
     "RemotePostgresExecution",
+    "RemoteSqlExecution",
+    "SUPPORTED_OUTPUT_TYPES",
+    "dedupe_output_labels",
 ]

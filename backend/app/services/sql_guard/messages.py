@@ -50,6 +50,7 @@ _FIXED: dict[RejectionCode, str] = {
     RejectionCode.PARSE_ERROR: "The SQL could not be parsed as PostgreSQL.",
     RejectionCode.MULTIPLE_STATEMENTS: "Exactly one SELECT statement is allowed.",
     RejectionCode.UNSUPPORTED_STATEMENT: "Only SELECT queries are allowed.",
+    RejectionCode.NO_TABLE_REFERENCE: "The query must read from at least one available table.",
     RejectionCode.TOO_COMPLEX: "The query is too deeply nested or too large.",
     RejectionCode.SCHEMA_QUALIFIED_FUNCTION: "Call functions without a schema prefix.",
     RejectionCode.TABLE_FUNCTION_NOT_ALLOWED: "Only generate_series is allowed in FROM.",
@@ -81,7 +82,7 @@ def reject(code: RejectionCode, *, identifier: object | None = None, detail: str
     elif code is RejectionCode.AMBIGUOUS_COLUMN:
         message = f"Column '{ident}' is ambiguous. Qualify it with a table alias."
     elif code is RejectionCode.FUNCTION_NOT_ALLOWED:
-        message = f"Function '{ident}' is not allowed."
+        message = detail or f"Function '{ident}' is not allowed."
     elif code is RejectionCode.CAST_TYPE_NOT_ALLOWED:
         message = f"Casting to '{ident}' is not allowed."
     else:

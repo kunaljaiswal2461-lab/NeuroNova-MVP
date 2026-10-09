@@ -65,13 +65,17 @@ async def load_catalog_scope(
     columns_by_asset: dict[uuid.UUID, list[ScopeColumn]] = {}
     for column in rows:
         columns_by_asset.setdefault(column.asset_id, []).append(
-            ScopeColumn(column.column_name, column.native_type_name or column.formatted_native_type)
+            ScopeColumn(
+                column.column_name, column.native_type_name or column.formatted_native_type, column.id
+            )
         )
     return CatalogScope(
         source_id=source_id,
         snapshot_id=snapshot_id,
         tables=tuple(
-            ScopeTable(asset.schema_name, asset.table_name, tuple(columns_by_asset.get(asset.id, ())))
+            ScopeTable(
+                asset.schema_name, asset.table_name, tuple(columns_by_asset.get(asset.id, ())), asset.id
+            )
             for asset in context.assets
         ),
     )

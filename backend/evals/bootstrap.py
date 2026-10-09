@@ -13,7 +13,7 @@ import os
 import socket
 import uuid
 from dataclasses import dataclass
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
@@ -63,7 +63,12 @@ def settings_from_env() -> Settings:
     return Settings(_env_file=None)       # the process environment only; never a developer's .env
 
 
-async def bootstrap(env: Mapping[str, str] | None = None) -> FixtureContext:
+async def bootstrap(
+    env: Mapping[str, str] | None = None,
+    *,
+    selected_tables: Sequence[tuple[str, str]] | None = None,
+) -> FixtureContext:
+    """``selected_tables`` (schema, table) defaults to the shop fixture's eight in-scope tables."""
     env = os.environ if env is None else env
     guards.assert_fixture_environment(env)              # INV-P0-01, before anything else
     settings = settings_from_env()
@@ -96,7 +101,10 @@ async def bootstrap(env: Mapping[str, str] | None = None) -> FixtureContext:
         database_name=pgrun.DATABASE,
         tls={"mode": "verify-full", "custom_ca_pem": pgrun.ca_pem()},
         credentials={"username": "nn_reader", "password": env["NN_READER_PASSWORD"]},
-        selected_tables=[{"schema_name": "shop", "table_name": t} for t in IN_SCOPE_TABLES],
+        selected_tables=[
+            {"schema_name": schema, "table_name": table}
+            for schema, table in (selected_tables or [("shop", t) for t in IN_SCOPE_TABLES])
+        ],
     )
     async with session_factory() as session:
         created = await source_service.create_postgresql_source(

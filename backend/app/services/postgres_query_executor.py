@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -83,6 +84,9 @@ _SAFE_FAILURE_CODES = frozenset(
         "execution_timeout",
         "invalid_query_plan",
         "metric_definition_changed",
+        "query_too_expensive",
+        "result_row_too_large",
+        "unsupported_output_type",
         "relationship_definition_changed",
         "query_not_authorized",
         "restricted_role_required",
@@ -608,9 +612,11 @@ async def _load_execution_source(
     *,
     owner_user_id: UUID,
     source_id: UUID,
-    expectation: LiveQueryExpectation,
+    expectation: LiveQueryExpectation | None = None,
     settings: Settings,
+    required_relations: frozenset[tuple[str, str]] | None = None,
 ) -> _ExecutionSource:
+    """``expectation`` (compiled path) or ``required_relations`` (validated-SQL path) names the tables read."""
     try:
         protector = require_credential_operations(settings)
     except (ConnectorDisabledError, ConnectorActivationError, CredentialKeyUnavailableError):
@@ -628,10 +634,14 @@ async def _load_execution_source(
                     .options(selectinload(DataSource.credential), selectinload(DataSource.table_scopes))
                 )
             ).scalar_one_or_none()
-            required_relations = {
-                (relation.schema_name, relation.table_name)
-                for relation in expectation.relation_expectations()
-            }
+            needed_relations = (
+                set(required_relations)
+                if required_relations is not None
+                else {
+                    (relation.schema_name, relation.table_name)
+                    for relation in expectation.relation_expectations()
+                }
+            )
             permitted_relations = {
                 (scope.schema_name, scope.table_name) for scope in source.table_scopes
             } if source is not None else set()
@@ -640,7 +650,7 @@ async def _load_execution_source(
                 or source.source_type is not SourceType.POSTGRESQL
                 or source.status is not SourceStatus.TESTED
                 or source.credential is None
-                or not required_relations.issubset(permitted_relations)
+                or not needed_relations.issubset(permitted_relations)
             ):
                 raise _ExecutionBoundaryError("source_unavailable")
             try:
@@ -1063,6 +1073,40 @@ def _ordering(compiled: CompiledPostgresQuery) -> tuple[PostgresQueryOrdering, .
     )
 
 
+# The adapter receives date/timestamp/timestamptz as PostgreSQL's ISO text (DateStyle pinned), so
+# ``infinity`` and a real ``9999-12-31`` stay distinct. ``datetime``/``date`` objects are still accepted
+# (they mean exactly what they say; there is no object spelling of infinity).
+_ISO_DATE = re.compile(r"-?\d{4,7}-\d\d-\d\d(?: BC)?")
+_ISO_TIMESTAMP = re.compile(r"\d{4,7}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d{1,6})?(?: BC)?")
+_ISO_TIMESTAMPTZ = re.compile(r"\d{4,7}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d{1,6})?(?:[+-]\d\d(?::\d\d)?)?(?: BC)?")
+_INFINITIES = frozenset({"infinity", "-infinity"})
+
+
+def _temporal_text(postgres_type: str, text: str) -> str:
+    """Normalise PostgreSQL ISO text to the API spelling; refuse anything not in the pinned ISO form."""
+    if text in _INFINITIES:
+        return text
+    if postgres_type == "date":
+        if not _ISO_DATE.fullmatch(text):
+            raise _ResultSerializationError()
+        return text
+    pattern = _ISO_TIMESTAMP if postgres_type == "timestamp" else _ISO_TIMESTAMPTZ
+    if not pattern.fullmatch(text):
+        raise _ResultSerializationError()
+    if text.endswith(" BC") or len(text.split("-")[0]) > 4:
+        # Outside Python's datetime range (year 1-9999): returned exactly as PostgreSQL writes it.
+        return text
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        raise _ResultSerializationError() from None
+    if postgres_type == "timestamp":
+        return parsed.isoformat()
+    if parsed.tzinfo is None:
+        raise _ResultSerializationError()
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _serialize_value(value: Any, expected: ExpectedPostgresOutputColumn) -> PostgresResultValue:
     if value is None:
         return PostgresResultValue(kind="null", value=None)
@@ -1074,8 +1118,14 @@ def _serialize_value(value: Any, expected: ExpectedPostgresOutputColumn) -> Post
         # unsafe integers without forcing a caller to detect precision loss.
         return PostgresResultValue(kind="integer", value=str(value))
     if postgres_type == "numeric":
-        if not isinstance(value, Decimal) or not value.is_finite():
+        if not isinstance(value, Decimal):
             raise _ResultSerializationError()
+        if not value.is_finite():
+            # Same spelling as floats below: numeric supports NaN (and Infinity from PostgreSQL 14).
+            return PostgresResultValue(
+                kind="non_finite_number",
+                value="NaN" if value.is_nan() else ("Infinity" if value > 0 else "-Infinity"),
+            )
         return PostgresResultValue(kind="decimal", value=format(value, "f"))
     if postgres_type in {"float4", "float8"}:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -1099,16 +1149,20 @@ def _serialize_value(value: Any, expected: ExpectedPostgresOutputColumn) -> Post
         if not isinstance(value, UUID):
             raise _ResultSerializationError()
         return PostgresResultValue(kind="uuid", value=str(value))
-    if postgres_type == "date":
-        if isinstance(value, datetime) or not isinstance(value, date):
+    if postgres_type in {"date", "timestamp", "timestamptz"}:
+        if isinstance(value, str):
+            return PostgresResultValue(kind=postgres_type, value=_temporal_text(postgres_type, value))
+        if postgres_type == "date":
+            if isinstance(value, datetime) or not isinstance(value, date):
+                raise _ResultSerializationError()
+            return PostgresResultValue(kind="date", value=value.isoformat())
+        if not isinstance(value, datetime):
             raise _ResultSerializationError()
-        return PostgresResultValue(kind="date", value=value.isoformat())
-    if postgres_type == "timestamp":
-        if not isinstance(value, datetime) or (value.tzinfo is not None and value.utcoffset() is not None):
-            raise _ResultSerializationError()
-        return PostgresResultValue(kind="timestamp", value=value.isoformat())
-    if postgres_type == "timestamptz":
-        if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        if postgres_type == "timestamp":
+            if value.tzinfo is not None and value.utcoffset() is not None:
+                raise _ResultSerializationError()
+            return PostgresResultValue(kind="timestamp", value=value.isoformat())
+        if value.tzinfo is None or value.utcoffset() is None:
             raise _ResultSerializationError()
         utc_value = value.astimezone(timezone.utc)
         return PostgresResultValue(kind="timestamptz", value=utc_value.isoformat().replace("+00:00", "Z"))

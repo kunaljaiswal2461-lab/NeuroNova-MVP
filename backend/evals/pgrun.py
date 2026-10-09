@@ -53,6 +53,12 @@ async def connect_grader() -> asyncpg.Connection:
     return await connect_as("nn_grader", os.environ["NN_GRADER_PASSWORD"])
 
 
+async def connect_drift() -> asyncpg.Connection:
+    """nn_drift: owns the scratch `drift` schema only (SPEC-05 drift tests)."""
+    guards.assert_fixture_environment()
+    return await connect_as("nn_drift", os.environ["NN_DRIFT_PASSWORD"])
+
+
 async def run_raw(conn: asyncpg.Connection, sql: str) -> tuple[list[str], list[tuple]]:
     stmt = await conn.prepare(sql)
     rows = await stmt.fetch()

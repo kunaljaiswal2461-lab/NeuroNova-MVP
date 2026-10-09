@@ -49,6 +49,7 @@ chmod 644 client_superuser_password app_db_password
   echo "NN_RUN_ID=$(date -u +%Y%m%d%H%M%S)-$(openssl rand -hex 3)"
   echo "NN_READER_PASSWORD=$(rand 32)"
   echo "NN_GRADER_PASSWORD=$(rand 32)"
+  echo "NN_DRIFT_PASSWORD=$(rand 32)"
   echo "NN_APP_DB_PASSWORD=$(cat /secrets/app_db_password)"
   echo "NN_API_KEY=$(rand 24)"
   # A Fernet key is 32 url-safe-base64 bytes, '=' padding included.

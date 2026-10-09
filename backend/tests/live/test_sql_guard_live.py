@@ -120,15 +120,15 @@ async def test_T_L1_regenerated_sql_returns_identical_results(cid, sql, live_sco
 # String-literal forms and risky functions measured in SPEC-04 F8, plus the forms found while probing.
 # Every one must be accepted and must return identical results.
 ROUND_TRIP_EXTRAS = {
-    "str-doubled-quote": "SELECT 'O''Brien' AS s",
-    "str-dollar": "SELECT $$it's$$ AS s",
-    "str-dollar-tagged": "SELECT $t$a''b$t$ AS s",
-    "str-backslash": "SELECT 'a\\b' AS s",
-    "str-trailing-backslash": "SELECT '\\' AS s",
-    "str-unicode-escape": "SELECT U&'d\\0061t\\+000061' AS s",
-    "str-dollar-with-sql": "SELECT $$x; DROP TABLE y; --$$ AS s",
-    "str-unicode": "SELECT 'héllo ✓ 日本' AS s",
-    "str-comment-markers": "SELECT '/* not a comment */ -- nor this' AS s",
+    "str-doubled-quote": "SELECT 'O''Brien' AS s FROM shop.regions ORDER BY id LIMIT 1",
+    "str-dollar": "SELECT $$it's$$ AS s FROM shop.regions ORDER BY id LIMIT 1",
+    "str-dollar-tagged": "SELECT $t$a''b$t$ AS s FROM shop.regions ORDER BY id LIMIT 1",
+    "str-backslash": "SELECT 'a\\b' AS s FROM shop.regions ORDER BY id LIMIT 1",
+    "str-trailing-backslash": "SELECT '\\' AS s FROM shop.regions ORDER BY id LIMIT 1",
+    "str-unicode-escape": "SELECT U&'d\\0061t\\+000061' AS s FROM shop.regions ORDER BY id LIMIT 1",
+    "str-dollar-with-sql": "SELECT $$x; DROP TABLE y; --$$ AS s FROM shop.regions ORDER BY id LIMIT 1",
+    "str-unicode": "SELECT 'héllo ✓ 日本' AS s FROM shop.regions ORDER BY id LIMIT 1",
+    "str-comment-markers": "SELECT '/* not a comment */ -- nor this' AS s FROM shop.regions ORDER BY id LIMIT 1",
     "fn-to-char-date": "SELECT to_char(ordered_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI') AS d FROM shop.orders ORDER BY id LIMIT 20",
     "fn-to-char-number": "SELECT to_char(total_amount, 'FM999,999,990.00') AS t FROM shop.orders ORDER BY id LIMIT 20",
     "fn-string-agg": "SELECT string_agg(name, ', ' ORDER BY name) AS n FROM shop.regions",
@@ -136,7 +136,7 @@ ROUND_TRIP_EXTRAS = {
     "fn-date-part": "SELECT date_part('dow', ordered_at AT TIME ZONE 'Asia/Kolkata') AS d, count(*) FROM shop.orders GROUP BY 1 ORDER BY 1",
     "fn-extract-dow": "SELECT extract(dow FROM ordered_at AT TIME ZONE 'Asia/Kolkata') AS d, count(*) FROM shop.orders GROUP BY 1 ORDER BY 1",
     "fn-extract-epoch": "SELECT extract(epoch FROM ordered_at) AS e FROM shop.orders ORDER BY id LIMIT 10",
-    "fn-age": "SELECT age(timestamp '2026-06-01', timestamp '2025-01-15') AS a",
+    "fn-age": "SELECT age(timestamp '2026-06-01', timestamp '2025-01-15') AS a FROM shop.regions ORDER BY id LIMIT 1",
     "fn-distinct-on": "SELECT DISTINCT ON (customer_id) customer_id, id FROM shop.orders WHERE customer_id IS NOT NULL ORDER BY customer_id, id LIMIT 50",
     "fn-regex-ci": "SELECT count(*) FROM shop.customers WHERE full_name ~* '^ra'",
     "fn-similar-to": "SELECT count(*) FROM shop.customers WHERE city SIMILAR TO '(Mum|Del)%'",
@@ -144,10 +144,10 @@ ROUND_TRIP_EXTRAS = {
     "fn-round-trunc": "SELECT round(total_amount, 1) AS r, trunc(total_amount) AS t FROM shop.orders ORDER BY id LIMIT 20",
     "fn-percentile-disc": "SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY total_amount) AS p FROM shop.orders",
     "fn-mode": "SELECT mode() WITHIN GROUP (ORDER BY status) AS m FROM shop.orders",
-    "fn-date-spine": "SELECT d::date AS d FROM generate_series(DATE '2026-01-01', DATE '2026-04-01', INTERVAL '1 month') AS g(d)",
+    "fn-date-spine": "SELECT d::date AS d FROM generate_series(DATE '2026-01-01', DATE '2026-04-01', INTERVAL '1 month') AS g(d) CROSS JOIN (SELECT 1 FROM shop.regions LIMIT 1) AS r",
     "fn-interval-arithmetic": "SELECT ordered_at + INTERVAL '3 days' AS later FROM shop.orders ORDER BY id LIMIT 10",
     "fn-rollup": "SELECT channel, status, count(*) FROM shop.orders GROUP BY ROLLUP (channel, status) ORDER BY 1, 2, 3",
-    "fn-to-date": "SELECT to_date('2026-03-05', 'YYYY-MM-DD') AS d",
+    "fn-to-date": "SELECT to_date('2026-03-05', 'YYYY-MM-DD') AS d FROM shop.regions ORDER BY id LIMIT 1",
     "fn-substring-from-for": "SELECT substring(full_name FROM 1 FOR 3) AS s FROM shop.customers ORDER BY id LIMIT 10",
     "fn-trim-both": "SELECT trim(BOTH ' ' FROM segment) AS s FROM shop.customers ORDER BY id LIMIT 10",
     "fn-coalesce-nullif": "SELECT coalesce(nullif(phone, ''), 'none') AS p FROM shop.customers ORDER BY id LIMIT 10",
@@ -204,10 +204,10 @@ async def test_T_L1_round_trip_extras(name, live_scope, grader_conn):
 
 async def test_adjacent_string_literals_differential_is_only_a_concatenation(live_scope, grader_conn):
     """SPEC-04 §15: Postgres rejects `'a' 'b'` on one line; sqlglot makes it CONCAT. Effect: concatenation only."""
-    result = validate_sql("SELECT 'a' 'b' AS s", live_scope, row_cap=ROW_CAP)
+    result = validate_sql("SELECT 'a' 'b' AS s FROM shop.regions ORDER BY id LIMIT 1", live_scope, row_cap=ROW_CAP)
     assert isinstance(result, ValidatedQuery)
     with pytest.raises(asyncpg.PostgresSyntaxError):
-        await run_exact(grader_conn, "SELECT 'a' 'b' AS s")
+        await run_exact(grader_conn, "SELECT 'a' 'b' AS s FROM shop.regions ORDER BY id LIMIT 1")
     _, rows = await run_exact(grader_conn, result.sql)
     assert rows == [("ab",)]
 
