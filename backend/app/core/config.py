@@ -227,6 +227,23 @@ class Settings(BaseSettings):
     sample_values_total_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     nl_sql_schema_budget_tokens: int = Field(default=8_000, ge=1_000, le=32_000)
 
+    # --- NL->SQL pass 1 (SPEC-08 B8) ---
+    nl_sql_max_question_chars: int = Field(default=4_000, ge=100, le=20_000)
+    nl_sql_seed: int = 7
+    nl_sql_max_output_tokens: int = Field(default=1_200, ge=200, le=8_000)
+    nl_sql_default_time_zone: str = "Asia/Kolkata"
+
+    # --- hybrid database chat (SPEC-09) ---
+    # "hybrid": a confirmed metric keeps the typed path, everything else is answered with model-written SQL.
+    # "typed_only": the Stage 4C typed path alone (kill switch; the old suites pin it).
+    nl_sql_route_mode: Literal["typed_only", "hybrid"] = "hybrid"
+    # Pass 2 (presentation): rows sent to the model, and the token budget of its whole input message.
+    nl_sql_pass2_max_rows: int = Field(default=50, ge=1, le=200)
+    nl_sql_pass2_budget_tokens: int = Field(default=6_000, ge=1_000, le=32_000)
+    nl_sql_pass2_max_output_tokens: int = Field(default=1_200, ge=200, le=8_000)
+    # Development and tests only: a JSONL script of model answers replaces the OpenAI client (see the stub LLM).
+    nl_sql_stub_llm_path: str = ""
+
     # --- optional bounded PostgreSQL profiling (Stage 6A; disabled per source) ---
     # These are intentionally separate from analytical query budgets. A
     # profile uses fixed internal aggregate operations over a bounded
@@ -282,6 +299,23 @@ class Settings(BaseSettings):
     # SMTP_TLS enables encrypted SMTP. Port 465 uses implicit TLS; other
     # standard submission ports (including Gmail's 587) use STARTTLS.
     smtp_tls: bool = True
+
+    @model_validator(mode="after")
+    def _stub_llm_only_in_dev(self) -> "Settings":
+        if self.nl_sql_stub_llm_path and self.app_env == "prod":
+            raise ValueError("NL_SQL_STUB_LLM_PATH is not allowed when APP_ENV=prod")
+        return self
+
+    @field_validator("nl_sql_default_time_zone")
+    @classmethod
+    def validate_nl_sql_time_zone(cls, value: str) -> str:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            raise ValueError("nl_sql_default_time_zone must be an IANA time zone name") from None
+        return value
 
     @field_validator("postgres_profile_sample_percent")
     @classmethod

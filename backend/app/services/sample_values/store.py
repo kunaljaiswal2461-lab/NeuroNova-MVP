@@ -124,7 +124,7 @@ async def stored_sample_values(
             await session.execute(
                 select(
                     CatalogAsset.schema_name, CatalogAsset.table_name, CatalogColumn.column_name,
-                    CatalogColumnSample.values,
+                    CatalogColumnSample.values, CatalogColumn.native_type_name,
                 )
                 .join(CatalogColumn, (CatalogColumn.source_id == CatalogColumnSample.source_id)
                       & (CatalogColumn.snapshot_id == CatalogColumnSample.snapshot_id)
@@ -136,12 +136,21 @@ async def stored_sample_values(
             )
         ).all()
         excluded = await load_exclusions(session, source_id)
+        # SPEC-09 W3.2: an owner's "personal" mark also hides a column's samples. The free-text name suggestion does NOT:
+        # it only drives pass-2 masking (imported here: that module imports this one).
+        from app.services.column_privacy import load_overrides
+
+        overrides = await load_overrides(session, source_id)
     except SQLAlchemyError:
         await _rollback(session)
         raise SampleValuesPersistenceError() from None
     by_table: dict[tuple[str, str], dict[str, tuple[str, ...]]] = {}
-    for schema, table, column, values in rows:
-        if (schema, table, column) in excluded or column_name_is_pii(table, column):
+    for schema, table, column, values, _native_type in rows:
+        if (
+            (schema, table, column) in excluded
+            or column_name_is_pii(table, column)
+            or overrides.get((schema, table, column)) == "personal"
+        ):
             continue
         items = [item["v"] for item in values if isinstance(item, dict) and isinstance(item.get("v"), str)]
         if items:

@@ -122,6 +122,31 @@ export const sourceApi = {
     )
   },
 
+  // AI and privacy settings (SPEC-09 W3). The sample-values endpoints return names and counts only, never a value.
+  getAiSettings(sourceId, options) {
+    return api.get(`/sources/${encodeURIComponent(sourceId)}/ai-settings`, jwtSourceOptions(options))
+  },
+
+  updateAiSettings(sourceId, body, options) {
+    return api.put(`/sources/${encodeURIComponent(sourceId)}/ai-settings`, body, jwtSourceOptions(options))
+  },
+
+  getSampleValues(sourceId, options) {
+    return api.get(`/sources/${encodeURIComponent(sourceId)}/sample-values`, jwtSourceOptions(options))
+  },
+
+  updateSampleValues(sourceId, body, options) {
+    return api.put(`/sources/${encodeURIComponent(sourceId)}/sample-values`, body, jwtSourceOptions(options))
+  },
+
+  getColumnPrivacy(sourceId, options) {
+    return api.get(`/sources/${encodeURIComponent(sourceId)}/column-privacy`, jwtSourceOptions(options))
+  },
+
+  updateColumnPrivacy(sourceId, body, options) {
+    return api.put(`/sources/${encodeURIComponent(sourceId)}/column-privacy`, body, jwtSourceOptions(options))
+  },
+
   requestProfileRun(sourceId, body, options) {
     return api.post(
       `/sources/${encodeURIComponent(sourceId)}/profile-runs`,

@@ -37,6 +37,9 @@ class ChatResult:
     model: str
     input_tokens: int
     output_tokens: int
+    # ``chat_structured`` only: anything but ``"stop"`` (``"length"``, ``"refusal"``) means ``content_json`` is
+    # empty and must not be trusted. ``chat_json`` leaves the default.
+    finish_reason: str = "stop"
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +93,29 @@ class LLMClient(Protocol):
         max_tokens: int = 1500,
         temperature: float = 0.2,
     ) -> ChatResult:
+        ...
+
+    async def chat_structured(
+        self,
+        *,
+        model: str,
+        system: str,
+        user: str,
+        json_schema: dict,
+        schema_name: str,
+        max_tokens: int = 1500,
+        temperature: float = 0.0,
+        seed: int | None = None,
+        run: int = 0,
+    ) -> ChatResult:
+        """One round-trip constrained by a strict JSON schema (SPEC-08 B4).
+
+        Never logs model content. A refusal or a cut-off answer comes back as a ``ChatResult`` with an empty
+        ``content_json`` and ``finish_reason`` ``"refusal"`` / ``"length"``; a transport failure raises
+        :class:`LLMUnavailable`.
+
+        ``run`` is a sample index for the record/replay cassette only (SPEC-09 W0.2); a real client ignores it.
+        """
         ...
 
     def chat_stream(

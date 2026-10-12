@@ -273,6 +273,18 @@ def intent_response(mode: str, confidence: float = 0.8, rationale: str = "(test)
     return {"mode": mode, "confidence": confidence, "rationale": rationale}
 
 
+# SPEC-09 W2.1 regression rule: the Stage 4C/5B/8 suites pin the typed path, so they run in ``typed_only`` mode.
+# Their assertions are untouched; the new hybrid routes are tested in tests/nl_sql_chat.
+@pytest.fixture(autouse=True)
+def _typed_only_route(monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("NL_SQL_ROUTE_MODE", "typed_only")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 __all__ = [
     "FakeRetrieverConfig",
     "FakeStreamingLLM",

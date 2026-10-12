@@ -1,0 +1,306 @@
+# SPEC-09 W6.6: 20 multi-turn chains. Only the FINAL turn is graded (``question`` + ``expect``); ``turns`` are the
+# earlier exchanges, fed to the model through the same history builder with the reference SQL as their SQL.
+# A turn is one of: {question, reference_sql} (answered), {question, clarification} (the assistant asked),
+# {question, failed: true} (the assistant could not answer).
+
+# ── refinements (6) ──────────────────────────────────────────────────────────
+- id: chain-001
+  question: "Only for orders placed through the app channel."
+  tags: [chain, refinement, group_by]
+  turns:
+    - question: "How many orders do we have in each status?"
+      reference_sql: "SELECT status, count(*) FROM shop.orders GROUP BY status"
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT status, count(*) FROM shop.orders WHERE channel = 'app' GROUP BY status
+    output_type: bar
+  reviewed_by: null
+
+- id: chain-002
+  question: "Only for the web channel."
+  tags: [chain, refinement, aggregate]
+  turns:
+    - question: "What is the total value of all paid orders?"
+      reference_sql: "SELECT sum(total_amount) FROM shop.orders WHERE status = 'PAID'"
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT sum(total_amount) FROM shop.orders WHERE status = 'PAID' AND channel = 'web'
+    output_type: kpi
+  reviewed_by: null
+
+- id: chain-003
+  question: "Only for Maharashtra."
+  tags: [chain, refinement, join_2]
+  turns:
+    - question: "How many customers do we have in each city?"
+      reference_sql: "SELECT city, count(*) FROM shop.customers GROUP BY city"
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT c.city, count(*)
+      FROM shop.customers c JOIN shop.regions r ON r.id = c.region_id
+      WHERE r.name = 'Maharashtra'
+      GROUP BY c.city
+    output_type: bar
+  reviewed_by: null
+
+- id: chain-004
+  question: "Only the active products."
+  tags: [chain, refinement, group_by]
+  turns:
+    - question: "What is the average list price in each product category?"
+      reference_sql: "SELECT category, avg(unit_price) FROM shop.products GROUP BY category"
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT category, avg(unit_price) FROM shop.products WHERE is_active GROUP BY category
+    output_type: bar
+    numeric_tolerance:
+      abs: "0.01"
+  reviewed_by: null
+
+- id: chain-005
+  question: "Only the refunds above 500 rupees."
+  tags: [chain, refinement, group_by]
+  turns:
+    - question: "How many refunds were issued for each reason?"
+      reference_sql: "SELECT reason, count(*) FROM shop.refunds GROUP BY reason"
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT reason, count(*) FROM shop.refunds WHERE amount > 500 GROUP BY reason
+    output_type: bar
+  reviewed_by: null
+
+- id: chain-006
+  question: "And only those placed in 2026."
+  tags: [chain, refinement, group_by, time_bucket]
+  turns:
+    - question: "How many orders are there in each channel?"
+      reference_sql: "SELECT channel, count(*) FROM shop.orders GROUP BY channel"
+    - question: "Only the paid ones."
+      reference_sql: "SELECT channel, count(*) FROM shop.orders WHERE status = 'PAID' GROUP BY channel"
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT channel, count(*) FROM shop.orders
+      WHERE status = 'PAID'
+        AND ordered_at >= TIMESTAMPTZ '2026-01-01 00:00:00+05:30'
+        AND ordered_at <  TIMESTAMPTZ '2027-01-01 00:00:00+05:30'
+      GROUP BY channel
+    output_type: bar
+  reviewed_by: null
+
+# ── regroupings (4) ──────────────────────────────────────────────────────────
+- id: chain-007
+  question: "Now by channel."
+  tags: [chain, regrouping, group_by, time_bucket]
+  turns:
+    - question: "How many orders did we get in March 2026?"
+      reference_sql: |
+        SELECT count(*) FROM shop.orders
+        WHERE ordered_at >= TIMESTAMPTZ '2026-03-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-04-01 00:00:00+05:30'
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT channel, count(*) FROM shop.orders
+      WHERE ordered_at >= TIMESTAMPTZ '2026-03-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-04-01 00:00:00+05:30'
+      GROUP BY channel
+    output_type: bar
+  reviewed_by: null
+
+- id: chain-008
+  question: "Now by month."
+  tags: [chain, regrouping, time_bucket, tz_boundary]
+  turns:
+    - question: "What is the total value of paid orders for each channel?"
+      reference_sql: "SELECT channel, sum(total_amount) FROM shop.orders WHERE status = 'PAID' GROUP BY channel"
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT date_trunc('month', ordered_at AT TIME ZONE 'Asia/Kolkata') AS month, sum(total_amount)
+      FROM shop.orders WHERE status = 'PAID'
+      GROUP BY 1 ORDER BY 1
+    output_type: line
+  reviewed_by: null
+
+- id: chain-009
+  question: "Now by city instead."
+  tags: [chain, regrouping, group_by]
+  turns:
+    - question: "How many customers do we have in each segment?"
+      reference_sql: "SELECT segment, count(*) FROM shop.customers GROUP BY segment"
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT city, count(*) FROM shop.customers GROUP BY city
+    output_type: bar
+  reviewed_by: null
+
+- id: chain-010
+  question: "Break that down by channel as well."
+  tags: [chain, regrouping, group_by]
+  turns:
+    - question: "What is the average order value for each status?"
+      reference_sql: "SELECT status, avg(total_amount) FROM shop.orders GROUP BY status"
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT status, channel, avg(total_amount) FROM shop.orders GROUP BY status, channel
+    output_type: grouped_bar
+    numeric_tolerance:
+      abs: "0.01"
+  reviewed_by: null
+
+# ── period shifts (3) ────────────────────────────────────────────────────────
+- id: chain-011
+  question: "Same, but for February 2026."
+  tags: [chain, period_shift, time_bucket]
+  turns:
+    - question: "How many orders did we get in March 2026?"
+      reference_sql: |
+        SELECT count(*) FROM shop.orders
+        WHERE ordered_at >= TIMESTAMPTZ '2026-03-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-04-01 00:00:00+05:30'
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.orders
+      WHERE ordered_at >= TIMESTAMPTZ '2026-02-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-03-01 00:00:00+05:30'
+    output_type: kpi
+  reviewed_by: null
+
+- id: chain-012
+  question: "Same, but last year."
+  tags: [chain, period_shift, time_bucket]
+  turns:
+    - question: "How many orders were placed in April 2026?"
+      reference_sql: |
+        SELECT count(*) FROM shop.orders
+        WHERE ordered_at >= TIMESTAMPTZ '2026-04-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-05-01 00:00:00+05:30'
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.orders
+      WHERE ordered_at >= TIMESTAMPTZ '2025-04-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2025-05-01 00:00:00+05:30'
+    output_type: kpi
+  reviewed_by: null
+
+- id: chain-013
+  question: "What about 2024?"
+  tags: [chain, period_shift, time_bucket]
+  turns:
+    - question: "How many customers signed up in 2025?"
+      reference_sql: |
+        SELECT count(*) FROM shop.customers
+        WHERE signup_at >= TIMESTAMPTZ '2025-01-01 00:00:00+05:30' AND signup_at < TIMESTAMPTZ '2026-01-01 00:00:00+05:30'
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.customers
+      WHERE signup_at >= TIMESTAMPTZ '2024-01-01 00:00:00+05:30' AND signup_at < TIMESTAMPTZ '2025-01-01 00:00:00+05:30'
+    output_type: kpi
+  reviewed_by: null
+
+# ── topic switches: the old filter must NOT carry over (3) ───────────────────
+- id: chain-014
+  question: "How many customers do we have in total?"
+  tags: [chain, topic_switch, aggregate]
+  turns:
+    - question: "How many orders did customers place through the web channel?"
+      reference_sql: "SELECT count(*) FROM shop.orders WHERE channel = 'web'"
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.customers
+    output_type: kpi
+  reviewed_by: null
+
+- id: chain-015
+  question: "How many products are active?"
+  tags: [chain, topic_switch, aggregate]
+  turns:
+    - question: "What is the total value of paid orders?"
+      reference_sql: "SELECT sum(total_amount) FROM shop.orders WHERE status = 'PAID'"
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.products WHERE is_active
+    output_type: kpi
+  reviewed_by: null
+
+- id: chain-016
+  question: "Now, how many refunds have been issued in total?"
+  tags: [chain, topic_switch, aggregate]
+  turns:
+    - question: "How many orders do we have in each status?"
+      reference_sql: "SELECT status, count(*) FROM shop.orders GROUP BY status"
+    - question: "Only for the phone channel."
+      reference_sql: "SELECT status, count(*) FROM shop.orders WHERE channel = 'phone' GROUP BY status"
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.refunds
+    output_type: kpi
+  reviewed_by: null
+
+# ── follow-ups to a clarification (2) ────────────────────────────────────────
+- id: chain-017
+  question: "Gross order value, please. Paid orders only."
+  tags: [chain, clarification_followup, join_3plus]
+  turns:
+    - question: "Show me revenue by region."
+      clarification: "Do you mean gross order value, or order value after refunds?"
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT r.name, sum(o.total_amount)
+      FROM shop.orders o
+      JOIN shop.customers c ON c.id = o.customer_id
+      JOIN shop.regions r ON r.id = c.region_id
+      WHERE o.status = 'PAID'
+      GROUP BY r.name
+    output_type: bar
+  reviewed_by: null
+
+- id: chain-018
+  question: "The calendar month."
+  tags: [chain, clarification_followup, time_bucket]
+  turns:
+    - question: "How many orders did we get last month?"
+      clarification: "Do you mean the previous calendar month, or the last 30 days?"
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.orders
+      WHERE ordered_at >= TIMESTAMPTZ '2026-05-01 00:00:00+05:30' AND ordered_at < TIMESTAMPTZ '2026-06-01 00:00:00+05:30'
+    output_type: kpi
+  reviewed_by: null
+
+# ── follow-ups to a failed turn (2) ──────────────────────────────────────────
+- id: chain-019
+  question: "Then just show the number of customers per segment."
+  tags: [chain, failed_followup, group_by]
+  turns:
+    - question: "Show the median basket size per customer segment."
+      failed: true
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT segment, count(*) FROM shop.customers GROUP BY segment
+    output_type: bar
+  reviewed_by: null
+
+- id: chain-020
+  question: "OK, how many refunds were issued for each reason?"
+  tags: [chain, failed_followup, group_by]
+  turns:
+    - question: "What is the odd distribution of refund times?"
+      failed: true
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT reason, count(*) FROM shop.refunds GROUP BY reason
+    output_type: bar
+  reviewed_by: null

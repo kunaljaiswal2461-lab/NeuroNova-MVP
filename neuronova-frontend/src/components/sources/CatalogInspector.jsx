@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { sourceApi, sourceErrorCode } from '../../api/sources'
 import MetricDefinitionsPanel from './MetricDefinitionsPanel'
 import RelationshipDefinitionsPanel from './RelationshipDefinitionsPanel'
+import AiPrivacyPanel from './AiPrivacyPanel'
 import SourceProfilingPanel from './SourceProfilingPanel'
 
 const PAGE_SIZE = 50
@@ -780,6 +781,7 @@ export default function CatalogInspector({ source, onClose, onSourceUpdated }) {
             scopeMatchesCurrentSelection={assetResult?.scope_matches_current_selection !== false}
             onProfilingChanged={onSourceUpdated}
           />
+          <AiPrivacyPanel key={`ai-privacy:${sourceId}:${snapshotId ?? 'none'}`} sourceId={sourceId} />
         </>
       )}
     </section>

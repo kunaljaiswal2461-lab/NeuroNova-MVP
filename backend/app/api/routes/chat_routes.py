@@ -17,12 +17,14 @@ each :class:`ChatStreamEvent` from the chat agent is encoded as one
 """
 import asyncio
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Query, Request, status
 from fastapi.responses import Response, StreamingResponse
+from starlette.background import BackgroundTask
 
 from fastapi import Depends
 from app.core.config import get_settings
@@ -35,7 +37,7 @@ from app.core.dependencies import (
 )
 from app.connectors.postgres_query_executor import PostgresExecutionCancellation
 from app.db.models.user import User
-from app.exceptions.custom_exceptions import NotFoundError
+from app.exceptions.custom_exceptions import AppError, NotFoundError
 from app.middlewares.rate_limiter import limiter
 from app.core.logging import get_logger
 from app.schemas.chat_schemas import (
@@ -54,6 +56,21 @@ from agentic_engine.conversational.models import ChatStreamEvent, ConversationMo
 logger = get_logger("chat_routes")
 
 
+class TurnInProgressError(AppError):
+    """A second database turn was posted on a session that already has one in flight (SPEC-09 W2.2 step 5)."""
+
+    status_code = 409
+    code = "turn_in_progress"
+
+    def __init__(self) -> None:
+        super().__init__("A database turn is already in progress for this conversation.")
+
+
+# A registered turn older than this is treated as abandoned (a stream that never started cannot clean up after
+# itself); no real turn lives this long because every statement and model call is time-bounded.
+STALE_TURN_SECONDS = 15 * 60
+
+
 @dataclass(frozen=True)
 class _ActiveDatabaseTurn:
     """A process-local cancellation handle for one already-authorized turn."""
@@ -61,6 +78,7 @@ class _ActiveDatabaseTurn:
     session_id: uuid.UUID
     owner_user_id: uuid.UUID
     cancellation: PostgresExecutionCancellation
+    registered_at: float = 0.0
 
 
 _active_database_turns: dict[uuid.UUID, _ActiveDatabaseTurn] = {}
@@ -75,10 +93,19 @@ async def _register_database_turn(
     cancellation: PostgresExecutionCancellation,
 ) -> None:
     async with _active_database_turns_lock:
+        now = time.monotonic()
+        for other_id, other in list(_active_database_turns.items()):
+            if other.session_id != session_id:
+                continue
+            if now - other.registered_at > STALE_TURN_SECONDS:
+                _active_database_turns.pop(other_id, None)
+                continue
+            raise TurnInProgressError()
         _active_database_turns[turn_id] = _ActiveDatabaseTurn(
             session_id=session_id,
             owner_user_id=owner_user_id,
             cancellation=cancellation,
+            registered_at=now,
         )
 
 
@@ -365,6 +392,12 @@ async def send_message(
     # and the source-bound session before it touches the handle.
     turn_id = uuid.uuid4() if is_database_chat else None
     stream_finished = asyncio.Event()
+    if is_database_chat and access.user_id is not None and turn_id is not None and cancellation is not None:
+        # Claim the session before anything is written: a second tab gets 409 and leaves no message behind.
+        await _register_database_turn(
+            turn_id=turn_id, session_id=session_id, owner_user_id=access.user_id, cancellation=cancellation
+        )
+    claimed_turn = is_database_chat and access.user_id is not None
 
     async def watch_disconnect() -> None:
         """Terminate the dedicated client DB connection on a dropped SSE stream."""
@@ -385,7 +418,7 @@ async def send_message(
 
     async def event_stream() -> AsyncIterator[bytes]:
         watcher = asyncio.create_task(watch_disconnect()) if is_database_chat else None
-        registered_turn = False
+        registered_turn = claimed_turn
         try:
             if is_database_chat:
                 # A source session can only have a JWT-derived owner. The
@@ -396,13 +429,6 @@ async def send_message(
                     return
                 if turn_id is None:  # Defensive narrowing for the registry.
                     return
-                await _register_database_turn(
-                    turn_id=turn_id,
-                    session_id=session_id,
-                    owner_user_id=access.user_id,
-                    cancellation=cancellation,
-                )
-                registered_turn = True
                 stream = stream_postgres_chat_turn(
                     session_id=session_id,
                     user_message=body.message,
@@ -466,6 +492,8 @@ async def send_message(
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
+        # Safety net for a stream that is never iterated (the client vanished first): free the session's slot.
+        background=BackgroundTask(_unregister_database_turn, turn_id) if claimed_turn else None,
         headers={
             # Tell reverse proxies (nginx) not to buffer the stream so
             # the client sees tokens as they are produced.

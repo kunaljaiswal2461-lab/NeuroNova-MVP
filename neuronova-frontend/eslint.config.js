@@ -18,4 +18,10 @@ export default defineConfig([
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
   },
+  {
+    // SPEC-09 W5.3: each renderer file exports its own ``eligible(result, spec)`` next to its component. Fast
+    // refresh then reloads that file fully instead of hot-swapping it, which costs nothing in production.
+    files: ['src/components/answers/renderers/**/*.{js,jsx}'],
+    rules: { 'react-refresh/only-export-components': 'off' },
+  },
 ])

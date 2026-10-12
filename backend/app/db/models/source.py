@@ -52,6 +52,9 @@ class DataSource(Base, TimestampMixin):
         CheckConstraint("profiling_generation >= 0", name="profiling_generation_nonnegative"),
         CheckConstraint("configuration_generation >= 0", name="configuration_generation_nonnegative"),
         CheckConstraint("sample_values_generation >= 0", name="sample_values_generation_nonnegative"),
+        CheckConstraint(
+            "result_rows_to_model_generation >= 0", name="result_rows_to_model_generation_nonnegative"
+        ),
         # The catalog run composite FK uses this exact key to prove that the
         # recorded requester was the source owner when the run was created.
         Index("uq_data_sources_id_owner_user_id", "id", "owner_user_id", unique=True),
@@ -114,6 +117,14 @@ class DataSource(Base, TimestampMixin):
     # Advances when the switch or the exclusion list changes. A sync captures it before remote I/O and
     # publishes samples only if it is unchanged (the profiling fence pattern).
     sample_values_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    # SPEC-09 W3.1 / owner decision 2: result rows may go to the answer-writing model only when the owner
+    # switched this on for the source (off by default). The generation advances on every change.
+    result_rows_to_model_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    result_rows_to_model_generation: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
     # Changes to credentials or the selected relation scope advance this
@@ -209,5 +220,28 @@ class SourceSampleExclusion(Base):
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class SourceColumnPrivacy(Base):
+    """An owner's override of the personal-data suggestion for one text column (SPEC-09 W3.2). Stored by name."""
+
+    __tablename__ = "source_column_privacy"
+    __table_args__ = (CheckConstraint("state IN ('personal','not_personal')", name="state_valid"),)
+
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("data_sources.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    schema_name: Mapped[str] = mapped_column(String(63), primary_key=True)
+    table_name: Mapped[str] = mapped_column(String(63), primary_key=True)
+    column_name: Mapped[str] = mapped_column(String(63), primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    updated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -26,6 +26,17 @@ ACK_ENV = "STAGE4C_EVALUATION_ACK"
 ACK_VALUE = "disposable-synthetic-only"
 
 _KEY_FIELDS = ("method", "model", "system", "user", "history", "max_tokens", "temperature")
+# ``chat_structured`` also keys on the schema and the seed (SPEC-08 F2). ``chat_json`` / ``chat_stream`` keys must
+# never change, or every committed cassette stops replaying (SPEC-08 I8).
+_STRUCTURED_KEY_FIELDS = _KEY_FIELDS + ("json_schema_sha256", "seed")
+
+
+def _key_fields(request: Mapping[str, Any]) -> tuple[str, ...]:
+    if request["method"] != "chat_structured":
+        return _KEY_FIELDS
+    # ``run`` (the repeat index, SPEC-09 W0.2) joins the key only when it is not 0, so every existing key stays
+    # byte-identical.
+    return _STRUCTURED_KEY_FIELDS + (("run",) if request.get("run", 0) != 0 else ())
 
 
 class CassetteError(RuntimeError):
@@ -48,9 +59,23 @@ def _request(method: str, *, model, system, user, history, max_tokens, temperatu
     }
 
 
+def _structured_request(*, model, system, user, json_schema, max_tokens, temperature, seed, run=0) -> dict[str, Any]:
+    request = _request(
+        "chat_structured", model=model, system=system, user=user, history=None,
+        max_tokens=max_tokens, temperature=temperature,
+    )
+    request["json_schema_sha256"] = hashlib.sha256(
+        json.dumps(json_schema, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    request["seed"] = seed
+    if run != 0:
+        request["run"] = run
+    return request
+
+
 def request_key(request: Mapping[str, Any]) -> str:
     canonical = json.dumps(
-        {k: request[k] for k in _KEY_FIELDS}, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        {k: request[k] for k in _key_fields(request)}, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -111,7 +136,10 @@ class CassetteLLM:
                 pass
             raise
 
-    def _store(self, request: dict, response: Any, model: str, input_tokens: int, output_tokens: int) -> None:
+    def _store(
+        self, request: dict, response: Any, model: str, input_tokens: int, output_tokens: int,
+        *, finish_reason: str | None = None,
+    ) -> None:
         key = request_key(request)
         entries = dict(self._entries)
         entries[key] = {
@@ -122,6 +150,8 @@ class CassetteLLM:
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
         }
+        if finish_reason is not None and finish_reason != "stop":
+            entries[key]["finish_reason"] = finish_reason
         self._write_atomic(entries)       # only adopt the new state once it is on disk
         self._entries = entries
 
@@ -138,7 +168,7 @@ class CassetteLLM:
             self._entries.values(),
             key=lambda e: difflib.SequenceMatcher(None, e["request"]["system"], request["system"]).ratio(),
         )
-        changed = [k for k in _KEY_FIELDS if nearest["request"].get(k) != request.get(k)]
+        changed = [k for k in _key_fields(request) if nearest["request"].get(k) != request.get(k)]
         diff = ""
         if "system" in changed:
             lines = difflib.unified_diff(
@@ -171,6 +201,39 @@ class CassetteLLM:
             model=model, system=system, user=user, max_tokens=max_tokens, temperature=temperature
         )
         self._store(request, result.content_json, result.model, result.input_tokens, result.output_tokens)
+        return result
+
+    async def chat_structured(
+        self,
+        *,
+        model: str,
+        system: str,
+        user: str,
+        json_schema: dict,
+        schema_name: str,
+        max_tokens: int = 1500,
+        temperature: float = 0.0,
+        seed: int | None = None,
+        run: int = 0,
+    ) -> ChatResult:
+        request = _structured_request(
+            model=model, system=system, user=user, json_schema=json_schema,
+            max_tokens=max_tokens, temperature=temperature, seed=seed, run=run,
+        )
+        if self.mode == "replay":
+            e = self._lookup(request)
+            return ChatResult(
+                content_json=e["response"], model=e["model"], input_tokens=e["input_tokens"],
+                output_tokens=e["output_tokens"], finish_reason=e.get("finish_reason", "stop"),
+            )
+        result = await self._inner.chat_structured(
+            model=model, system=system, user=user, json_schema=json_schema, schema_name=schema_name,
+            max_tokens=max_tokens, temperature=temperature, seed=seed,
+        )
+        self._store(
+            request, result.content_json, result.model, result.input_tokens, result.output_tokens,
+            finish_reason=result.finish_reason,
+        )
         return result
 
     async def chat_stream(

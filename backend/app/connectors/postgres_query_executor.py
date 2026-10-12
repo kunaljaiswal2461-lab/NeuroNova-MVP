@@ -84,10 +84,42 @@ class PostgresExecutionCostExceededError(PostgresExecutionAdapterError):
     code = "query_too_expensive"
 
 
+# SQLSTATEs a model-written query can plausibly cause and that a corrected query can fix (SPEC-09 C5).
+# Everything else stays an opaque ``execution_failed``.
+REPAIRABLE_SQLSTATES: frozenset[str] = frozenset(
+    {"42601", "42703", "42P01", "42883", "42702", "42804", "22P02", "42803", "22012", "22003", "22008"}
+)
+
+
+class PostgresExecutionQueryError(PostgresExecutionAdapterError):
+    """The server refused a model-written statement for a reason a rewrite can fix (SPEC-09 W1.9).
+
+    Carries the five-character SQLSTATE only. The server's message, DETAIL, CONTEXT and HINT are never kept.
+    """
+
+    code = "query_error"
+
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__()
+        self.sqlstate = sqlstate
+
+
 class PostgresExecutionRowTooLargeError(PostgresExecutionAdapterError):
     """One result row exceeded the per-row byte limit; refused by the server before it was sent."""
 
     code = "result_row_too_large"
+
+
+def _query_error(exc: BaseException, cancellation: "PostgresExecutionCancellation | None") -> PostgresExecutionQueryError | None:
+    """Map a server error from the SQL path to a ``query_error`` when its SQLSTATE is repairable."""
+    if cancellation is not None and cancellation.cancelled:
+        return None
+    if _is_row_too_large(exc):
+        return None                       # the size guard reuses 22P02; it has its own code
+    sqlstate = getattr(exc, "sqlstate", None)
+    if isinstance(sqlstate, str) and sqlstate in REPAIRABLE_SQLSTATES:
+        return PostgresExecutionQueryError(sqlstate)
+    return None
 
 
 @dataclass(frozen=True)
@@ -369,6 +401,10 @@ class PostgresExecutionCancellation:
     @property
     def cancelled(self) -> bool:
         return self._cancelled.is_set()
+
+    async def wait_cancelled(self) -> None:
+        """Return once ``cancel`` has been requested (lets a model call be dropped with the turn)."""
+        await self._cancelled.wait()
 
     async def bind(self, connection: Any) -> None:
         abort = False
@@ -952,7 +988,19 @@ class PostgresQueryExecutionAdapter:
 
         async def body(connection: Any) -> RemoteSqlExecution:
             await self._verify_and_lock_relations(connection, relations)
+            try:
+                return await statements(connection)
+            except (PostgresExecutionAdapterError, asyncio.CancelledError):
+                raise
+            except Exception as exc:
+                # A rewritable server refusal becomes a SQLSTATE-only ``query_error`` (SPEC-09 W1.9). The live
+                # relation checks above stay untouched, so a real schema change is still ``schema_changed``.
+                mapped = _query_error(exc, cancellation)
+                if mapped is None:
+                    raise
+                raise mapped from None
 
+        async def statements(connection: Any) -> RemoteSqlExecution:
             # The size guard wraps the sealed text; the gates below see what will actually run.
             run_sql = _wrap_row_size_guard(sql, self._settings.postgres_sql_max_row_bytes)
             try:
@@ -1212,6 +1260,7 @@ __all__ = [
     "PostgresExecutionCostExceededError",
     "PostgresExecutionCredentialError",
     "PostgresExecutionRestrictedRoleError",
+    "PostgresExecutionQueryError",
     "PostgresExecutionRowTooLargeError",
     "PostgresExecutionSchemaChangedError",
     "PostgresExecutionTLSFailureError",
@@ -1221,6 +1270,7 @@ __all__ = [
     "LiveSqlExpectation",
     "RemotePostgresExecution",
     "RemoteSqlExecution",
+    "REPAIRABLE_SQLSTATES",
     "SUPPORTED_OUTPUT_TYPES",
     "dedupe_output_labels",
 ]

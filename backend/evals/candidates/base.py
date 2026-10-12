@@ -26,6 +26,16 @@ class CandidateOutcome:
     error_code: str | None = None   # safe code only, never a raw driver message
     latency_ms: float = 0.0
     llm_calls: tuple[LLMCall, ...] = ()
+    # SPEC-08 B9. Optional, so the candidates that predate them keep working.
+    output_intent: dict | None = None
+    notes: tuple[str, ...] = ()     # rewrites applied and intent warnings, as fixed codes
+    # SPEC-09 W7. Optional, so every earlier candidate keeps working.
+    presentation: dict | None = None        # the resolved pass-2 spec (answer text, display, caveats ...)
+    repair_reason: str | None = None        # set when the one repair (or regenerate) happened
+    pass2_fallback: str | None = None       # why pass 2 fell back to the templated summary, if it did
+    pass2_ran: bool = False
+    pass2_dropped: int = 0                  # sentences the number check removed
+    first_attempt: "CandidateOutcome | None" = None     # what the turn would have been without the repair
 
 
 @dataclass(frozen=True)

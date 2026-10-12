@@ -101,7 +101,7 @@ def lint_static(
 
     # L1: schema-valid, unique ids
     seen: Counter[str] = Counter()
-    for sub in ("questions", "adversarial"):
+    for sub in ("questions", "adversarial", "chains"):
         directory = golden_dir / sub
         if not directory.is_dir():
             continue

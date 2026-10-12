@@ -85,26 +85,20 @@ async def _load_metrics(
     skipped: list[tuple[str, str, str]] = []
     metrics: list[SchemaMetric] = []
     try:
-        views = await metric_service.list_metric_definitions_for_owner(
-            session, source_id=source_id, owner_user_id=owner_user_id, include_retired=False, settings=settings
+        # Read-only on purpose (SPEC-08 B7): building a prompt must not mark metrics NEEDS_REVIEW or commit.
+        resolved_all = await metric_service.list_active_metric_definitions_readonly(
+            session, source_id=source_id, owner_user_id=owner_user_id, settings=settings
         )
     except metric_service.MetricServiceError:
         return [], [("metric", "*", "metrics_unavailable")]
-    for view in views:
-        if view.state != "valid":           # NEEDS_REVIEW (and RETIRED) are never shown
-            continue
+    for resolved in resolved_all:
         try:
-            resolved = await metric_service.resolve_metric_definition_for_owner(
-                session, source_id=source_id, metric_id=view.metric_id, owner_user_id=owner_user_id, settings=settings
-            )
             if resolved.snapshot_id != snapshot_id:
-                skipped.append(("metric", view.name, "stale_snapshot"))
+                skipped.append(("metric", resolved.display_name, "stale_snapshot"))
                 continue
             metrics.append(metric_from_resolved(resolved, column_names))
-        except metric_service.MetricServiceError as exc:
-            skipped.append(("metric", view.name, f"resolve_failed:{type(exc).__name__}"))
         except KeyError:
-            skipped.append(("metric", view.name, "column_not_in_context"))
+            skipped.append(("metric", resolved.display_name, "column_not_in_context"))
     return metrics, skipped
 
 

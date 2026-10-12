@@ -67,6 +67,50 @@ class RunRecord(_Model):
     output_tokens: int = 0
     models: list[str] = Field(default_factory=list)
     examples: list[tuple[str, str]] = Field(default_factory=list)      # synthetic fixture rows only
+    # SPEC-08 B9; all optional so reports written before Part 5 still load.
+    error_code: str | None = None
+    intent_type: str | None = None
+    notes: list[str] = Field(default_factory=list)
+    # SPEC-09 W7. All optional so reports written before Part 9 still load.
+    repair_reason: str | None = None
+    pass2_ran: bool = False
+    pass2_fallback: str | None = None
+    pass2_display: str | None = None
+    pass2_dropped: int = 0
+    first_verdict: Verdict | None = None      # the verdict of the first attempt, before any repair
+    chain: bool = False
+    llm_calls: int = 0
+
+
+class RepairReasonStats(_Model):
+    attempted: int
+    succeeded: int
+
+
+class PipelineStats(_Model):
+    """The SPEC-09 W7 report sections. Present only for runs that carry pipeline fields."""
+
+    accuracy_without_repair: Accuracy | None = None
+    repair_rate: float | None = None
+    repair_success_rate: float | None = None
+    repair_by_reason: dict[str, RepairReasonStats] = Field(default_factory=dict)
+    display_accuracy: Accuracy | None = None
+    pass2_runs: int = 0
+    pass2_fallback_rate: float | None = None
+    pass2_fallbacks: dict[str, int] = Field(default_factory=dict)
+    number_check_drop_rate: float | None = None
+    chain_accuracy: Accuracy | None = None
+    single_turn_accuracy: Accuracy | None = None
+    calls_per_answer: float | None = None
+    input_tokens_per_answer: float | None = None
+    output_tokens_per_answer: float | None = None
+    cost_per_answer_usd: float | None = None
+    personal_value_leaks: int = 0         # pass-2 prompts (consent on) that contained a personal fixture value
+
+
+class IntentAccuracy(_Model):
+    correct: int
+    runs: int
 
 
 class Aggregates(_Model):
@@ -82,6 +126,12 @@ class Aggregates(_Model):
     input_tokens: int
     output_tokens: int
     estimated_cost_usd: float | None
+    # SPEC-08 B9. Empty / zero for candidates that do not produce them.
+    intent_accuracy: dict[str, IntentAccuracy] = Field(default_factory=dict)
+    error_code_counts: dict[str, int] = Field(default_factory=dict)
+    answers_lost_to_rejection: float | None = None
+    clock_rewrites: int = 0
+    pipeline: PipelineStats | None = None
 
 
 class RunMeta(_Model):
@@ -135,6 +185,75 @@ def estimate_cost(records: list[RunRecord], pricing: dict[str, dict[str, float]]
     return round(total, 6) if seen else None
 
 
+def _rejection_codes() -> frozenset[str]:
+    from app.services.sql_guard import RejectionCode
+
+    return frozenset(c.value for c in RejectionCode)
+
+
+def _intent_accuracy(records: list[RunRecord]) -> dict[str, IntentAccuracy]:
+    """Share of answer-expected runs whose envelope ``output_intent.type`` equals ``expect.output_type``."""
+    if not any(r.intent_type for r in records):         # a candidate that does not produce an intent
+        return {}
+    by_type: dict[str, list[RunRecord]] = defaultdict(list)
+    for r in records:
+        if r.expected_kind == "answer" and r.output_type:
+            by_type[r.output_type].append(r)
+    return {
+        t: IntentAccuracy(correct=sum(r.intent_type == t for r in rs), runs=len(rs))
+        for t, rs in sorted(by_type.items())
+    }
+
+
+def _pipeline_stats(records: list[RunRecord], pricing: dict[str, dict[str, float]]) -> PipelineStats | None:
+    if not any(r.pass2_ran or r.repair_reason or r.first_verdict or r.chain for r in records):
+        return None
+    answers = [r for r in records if r.expected_kind == "answer"]
+    stats = PipelineStats()
+    with_first = [r for r in answers if r.first_verdict is not None]
+    if with_first:
+        stats.accuracy_without_repair = accuracy_of([r.model_copy(update={"verdict": r.first_verdict}) for r in with_first])
+    repaired = [r for r in records if r.repair_reason]
+    if records:
+        stats.repair_rate = len(repaired) / len(records)
+    if repaired:
+        stats.repair_success_rate = sum(r.verdict in PASSING for r in repaired) / len(repaired)
+        by_reason: dict[str, list[RunRecord]] = defaultdict(list)
+        for r in repaired:
+            by_reason[r.repair_reason or "?"].append(r)
+        stats.repair_by_reason = {
+            reason: RepairReasonStats(attempted=len(rs), succeeded=sum(r.verdict in PASSING for r in rs))
+            for reason, rs in sorted(by_reason.items())
+        }
+    ran = [r for r in records if r.pass2_ran]
+    stats.pass2_runs = len(ran)
+    stats.personal_value_leaks = sum("pass2_personal_value_in_prompt" in r.notes for r in records)
+    typed = [r for r in ran if r.output_type and r.expected_kind == "answer"]
+    if typed:
+        correct = sum(r.pass2_display == r.output_type for r in typed)
+        stats.display_accuracy = Accuracy(
+            p=correct / len(typed), n=len({r.question_id for r in typed}), runs=len(typed),
+            half_interval=interval_half_width(correct / len(typed), len({r.question_id for r in typed})),
+        )
+    if ran:
+        fallbacks = Counter(r.pass2_fallback for r in ran if r.pass2_fallback and not r.pass2_fallback.startswith("display_downgraded"))
+        stats.pass2_fallbacks = dict(sorted(fallbacks.items()))
+        stats.pass2_fallback_rate = sum(fallbacks.values()) / len(ran)
+        stats.number_check_drop_rate = sum(r.pass2_dropped > 0 for r in ran) / len(ran)
+    chains = [r for r in records if r.chain]
+    singles = [r for r in records if not r.chain]
+    if chains:
+        stats.chain_accuracy = accuracy_of(chains)
+        stats.single_turn_accuracy = accuracy_of(singles) if singles else None
+    if answers:
+        stats.calls_per_answer = sum(r.llm_calls for r in answers) / len(answers)
+        stats.input_tokens_per_answer = sum(r.input_tokens for r in answers) / len(answers)
+        stats.output_tokens_per_answer = sum(r.output_tokens for r in answers) / len(answers)
+        cost = estimate_cost(answers, pricing)
+        stats.cost_per_answer_usd = None if cost is None else cost / len(answers)
+    return stats
+
+
 def aggregate(records: list[RunRecord], pricing: dict[str, dict[str, float]] | None = None) -> Aggregates:
     by_tag_records: dict[str, list[RunRecord]] = defaultdict(list)
     by_type_records: dict[str, list[RunRecord]] = defaultdict(list)
@@ -155,6 +274,13 @@ def aggregate(records: list[RunRecord], pricing: dict[str, dict[str, float]] | N
         sum(r.verdict is Verdict.ANSWERED_AMBIGUOUS_REASONABLE for r in clarif) / len(clarif) if clarif else None
     )
     latencies = [r.latency_ms for r in records if r.latency_ms]
+    codes = Counter(r.error_code for r in records if r.error_code)
+    expected_answers = [r for r in records if r.expected_kind == "answer"]
+    rejections = _rejection_codes()
+    lost = (
+        sum(r.error_code in rejections for r in expected_answers) / len(expected_answers)
+        if expected_answers and codes else None
+    )
     return Aggregates(
         accuracy=accuracy_of(records),
         by_tag={t: accuracy_of(rs) for t, rs in sorted(by_tag_records.items())},
@@ -168,6 +294,11 @@ def aggregate(records: list[RunRecord], pricing: dict[str, dict[str, float]] | N
         input_tokens=sum(r.input_tokens for r in records),
         output_tokens=sum(r.output_tokens for r in records),
         estimated_cost_usd=estimate_cost(records, pricing if pricing is not None else load_pricing()),
+        intent_accuracy=_intent_accuracy(records),
+        error_code_counts=dict(sorted(codes.items())),
+        answers_lost_to_rejection=lost,
+        clock_rewrites=sum("clock_literal" in r.notes for r in records),
+        pipeline=_pipeline_stats(records, pricing if pricing is not None else load_pricing()),
     )
 
 
@@ -175,6 +306,40 @@ def aggregate(records: list[RunRecord], pricing: dict[str, dict[str, float]] | N
 
 def _pct(x: float | None) -> str:
     return "n/a" if x is None else f"{x * 100:.1f}%"
+
+
+def _pipeline_markdown(p: PipelineStats, final: Accuracy) -> list[str]:
+    out = ["", "**Pipeline (SPEC-09)**", ""]
+    if p.accuracy_without_repair is not None:
+        out.append(
+            f"- **Execution accuracy without repair → with repair:** {_pct(p.accuracy_without_repair.p)} → {_pct(final.p)}"
+        )
+    if p.repair_rate is not None:
+        out.append(f"- **Repair rate:** {_pct(p.repair_rate)}; **repair success rate:** {_pct(p.repair_success_rate)}")
+    if p.repair_by_reason:
+        out += ["", "| Repair reason | Attempted | Succeeded |", "|---|---|---|"]
+        out += [f"| `{r}` | {v.attempted} | {v.succeeded} |" for r, v in p.repair_by_reason.items()]
+        out.append("")
+    if p.display_accuracy is not None:
+        out.append(f"- **Pass-2 display matches the expected output type:** {_pct(p.display_accuracy.p)} ({p.display_accuracy.runs} runs)")
+    if p.pass2_runs:
+        histogram = ", ".join(f"`{r}` {n}" for r, n in p.pass2_fallbacks.items()) or "none"
+        out.append(f"- **Pass-2 fallback rate:** {_pct(p.pass2_fallback_rate)} of {p.pass2_runs} ({histogram})")
+        out.append(f"- **Number-check drop rate (runs with a sentence removed):** {_pct(p.number_check_drop_rate)}")
+    if p.pass2_runs:
+        out.append(f"- **Personal values found in pass-2 prompts (consent on):** {p.personal_value_leaks}")
+    if p.chain_accuracy is not None:
+        out.append(
+            f"- **Multi-turn accuracy:** {_pct(p.chain_accuracy.p)} ({p.chain_accuracy.n} chains) "
+            f"vs single-turn {_pct(p.single_turn_accuracy.p if p.single_turn_accuracy else None)}"
+        )
+    if p.calls_per_answer is not None:
+        cost = "" if p.cost_per_answer_usd is None else f", ≈ ${p.cost_per_answer_usd:.4f}"
+        out.append(
+            f"- **Per answer-expected run:** {p.calls_per_answer:.2f} model calls, "
+            f"{p.input_tokens_per_answer:.0f} in / {p.output_tokens_per_answer:.0f} out tokens{cost}"
+        )
+    return out
 
 
 def render_markdown(report: Report, *, worst_tags: int = 5) -> str:
@@ -196,6 +361,19 @@ def render_markdown(report: Report, *, worst_tags: int = 5) -> str:
     if a.input_tokens or a.output_tokens:
         cost = "" if a.estimated_cost_usd is None else f", ≈ ${a.estimated_cost_usd:.4f}"
         lines.append(f"- **Tokens:** {a.input_tokens} in / {a.output_tokens} out{cost}")
+    if a.error_code_counts:
+        histogram = ", ".join(f"`{c}` {n}" for c, n in sorted(a.error_code_counts.items(), key=lambda kv: (-kv[1], kv[0])))
+        lines.append(f"- **Error / rejection codes:** {histogram}")
+        lines.append(f"- **Answers lost to validator rejections:** {_pct(a.answers_lost_to_rejection)}")
+    if a.clock_rewrites:
+        lines.append(f"- **Clock rewrites (now()/current_date made literal):** {a.clock_rewrites} runs")
+    if a.intent_accuracy:
+        lines += ["", "| Output type | Intent correct | Runs |", "|---|---|---|"]
+        lines += [
+            f"| {t} | {_pct(v.correct / v.runs if v.runs else None)} | {v.runs} |" for t, v in a.intent_accuracy.items()
+        ]
+    if a.pipeline is not None:
+        lines += _pipeline_markdown(a.pipeline, acc)
     worst = sorted(
         (t for t in a.by_tag.items() if t[1].p is not None), key=lambda kv: (kv[1].p, kv[0])
     )[:worst_tags]

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import monotonic
@@ -28,6 +29,7 @@ from app.connectors.postgres_query_executor import (
     PostgresExecutionCancellation,
     PostgresExecutionCancelledError,
     PostgresExecutionCostExceededError,
+    PostgresExecutionQueryError,
     PostgresExecutionUnsupportedOutputError,
 )
 from app.core.config import Settings
@@ -80,6 +82,7 @@ _FAILURE_MESSAGES = {
     "query_too_expensive": "The query is too expensive to run. Filter earlier, avoid cross joins, "
     "and aggregate before joining large tables.",
     "result_row_too_large": "A result row is too large to return. Select fewer or shorter columns.",
+    "query_error": "The database rejected the query.",
     "query_not_authorized": "The source is not available for this request.",
     "source_unavailable": "The source is not available for this request.",
 }
@@ -113,9 +116,13 @@ class SqlExecutionResult(BaseModel):
     safety_row_truncated: bool = False
     byte_truncated: bool = False
     plan_cost: float | None = None
+    # The LIMIT of the validated text: the model's own when it was within the row cap, else cap + 1 (SPEC-09 W2.3).
+    applied_limit: int | None = None
     elapsed_ms: float = Field(default=0.0, ge=0.0)
     tables: tuple[tuple[str, str], ...] = ()
     failure_code: str | None = None
+    # The SQLSTATE of a ``query_error`` (five characters), never server text. Part 6 reads it to choose a repair hint.
+    error_class: str | None = None
     message: str | None = None
     source_id: UUID
     snapshot_id: UUID | None = None
@@ -327,9 +334,11 @@ def _failure(
         # The failed SQL is still the validator's text; a repair step (Part 6) needs it.
         sql=sealed.sql if sealed is not None else None,
         tables=tuple((t.schema, t.name) for t in sealed.tables) if sealed is not None else (),
+        applied_limit=sealed.applied_limit if sealed is not None else None,
         plan_cost=plan_cost,
         elapsed_ms=max(0.0, (monotonic() - started_monotonic) * 1000),
         failure_code=safe_code,
+        error_class=exc.sqlstate if isinstance(exc, PostgresExecutionQueryError) else None,
         message=_safe_message(safe_code, exc),
         source_id=source_id,
         snapshot_id=snapshot_id,
@@ -347,6 +356,7 @@ async def execute_validated_sql(
     cancellation: PostgresExecutionCancellation | None = None,
     adapter_factory: AdapterFactory | None = None,
     limiter: PostgresExecutionLimiter | None = None,
+    on_validated: Callable[[], Awaitable[None]] | None = None,
 ) -> SqlExecutionResult | Rejection:
     """Validate, seal, and run one model-written SELECT. See the module docstring and B2 in the spec."""
     run_id = uuid.uuid4()
@@ -379,6 +389,8 @@ async def execute_validated_sql(
         if isinstance(prepared, Rejection):
             return prepared
         sealed = prepared.sealed
+        if on_validated is not None:
+            await on_validated()      # the chat turn's "executing" signal: only a query that passed the validator
         row_cap = settings.postgres_execution_max_result_rows
         byte_limit = settings.postgres_execution_max_result_bytes
 
@@ -475,6 +487,7 @@ async def execute_validated_sql(
                     safety_row_truncated=remote.safety_row_truncated,
                     byte_truncated=collector.byte_truncated or remote.collector_stopped,
                     plan_cost=remote.plan_cost,
+                    applied_limit=sealed.applied_limit,
                     elapsed_ms=max(0.0, (monotonic() - started_monotonic) * 1000),
                     tables=tuple((t.schema, t.name) for t in sealed.tables),
                     source_id=source_id,

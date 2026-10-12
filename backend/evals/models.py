@@ -55,7 +55,8 @@ class GoldenQuestion(_Strict):
     expect: Expectation
     notes: str | None = None
     reviewed_by: str | None = None
-    # Reserved for Part 11 (multi-turn chains). Accepted, unused in Part 0.
+    # SPEC-09 W6.6: the earlier exchanges of a chain. Each is {question, reference_sql} | {question, clarification} |
+    # {question, failed: true}. Only this question (the final turn) is graded.
     turns: tuple[dict, ...] | None = None
 
 
@@ -86,6 +87,7 @@ def load_questions(suite: str = "golden", golden_dir: Path = GOLDEN_DIR) -> list
     dirs = {
         "golden": ["questions"],
         "adversarial": ["adversarial"],
+        "chains": ["chains"],                       # SPEC-09 W6.6: multi-turn, the final turn is graded
         "all": ["questions", "adversarial"],
     }[suite]
     questions: list[GoldenQuestion] = []

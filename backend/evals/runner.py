@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -60,10 +61,18 @@ def load_candidate(spec: str) -> Candidate:
         from evals.candidates.stage4c import Stage4cCandidate
 
         return Stage4cCandidate()
+    if spec == "nl_sql":
+        from evals.candidates.nl_sql import NlSqlCandidate
+
+        return NlSqlCandidate()
+    if spec == "nl_sql_full":
+        from evals.candidates.nl_sql_full import NlSqlFullCandidate
+
+        return NlSqlFullCandidate()
     if ":" in spec:
         module_name, _, class_name = spec.partition(":")
         return getattr(importlib.import_module(module_name), class_name)()
-    raise RunnerRefusal(f"unknown candidate {spec!r}: use reference | mutants | stage4c | <dotted.path:Class>")
+    raise RunnerRefusal(f"unknown candidate {spec!r}: use reference | mutants | stage4c | nl_sql | nl_sql_full | <dotted.path:Class>")
 
 
 # ── running ──────────────────────────────────────────────────────────────────
@@ -96,8 +105,19 @@ async def reference_results(
     return refs, alts
 
 
-def _record(q: GoldenQuestion, run_index: int, outcome: CandidateOutcome, g) -> rpt.RunRecord:
+def _record(
+    q: GoldenQuestion, run_index: int, outcome: CandidateOutcome, g, first_verdict=None
+) -> rpt.RunRecord:
+    presentation = outcome.presentation or {}
     return rpt.RunRecord(
+        repair_reason=outcome.repair_reason,
+        pass2_ran=outcome.pass2_ran,
+        pass2_fallback=outcome.pass2_fallback,
+        pass2_display=presentation.get("display"),
+        pass2_dropped=outcome.pass2_dropped,
+        first_verdict=first_verdict,
+        chain=bool(q.turns),
+        llm_calls=len(outcome.llm_calls),
         question_id=q.id,
         tags=list(q.tags),
         output_type=q.expect.output_type,
@@ -107,6 +127,9 @@ def _record(q: GoldenQuestion, run_index: int, outcome: CandidateOutcome, g) -> 
         reason=g.reason,
         sql=outcome.sql,
         latency_ms=outcome.latency_ms,
+        error_code=outcome.error_code,
+        intent_type=(outcome.output_intent or {}).get("type"),
+        notes=list(outcome.notes),
         input_tokens=sum(c.input_tokens for c in outcome.llm_calls),
         output_tokens=sum(c.output_tokens for c in outcome.llm_calls),
         models=[c.model for c in outcome.llm_calls],
@@ -129,11 +152,14 @@ async def evaluate(
     async def one(q: GoldenQuestion, i: int) -> rpt.RunRecord:
         async with semaphore:
             try:
-                outcome = await candidate.answer(q, ctx)
+                outcome = await candidate.answer(q, replace(ctx, extras={**ctx.extras, "run": i}))
             except Exception as exc:  # noqa: BLE001 - a crashing candidate is a failed run, not a crashed harness
                 outcome = CandidateOutcome(kind="error", error_code=f"candidate_exception:{type(exc).__name__}")
         g = grade(q.expect, refs.get(q.id), outcome, alts.get(q.id, ()))
-        return _record(q, i, outcome, g)
+        first = None
+        if outcome.first_attempt is not None:
+            first = grade(q.expect, refs.get(q.id), outcome.first_attempt, alts.get(q.id, ())).verdict
+        return _record(q, i, outcome, g, first)
 
     jobs = [one(q, i) for q in questions for i in range(repeat)]
     return list(await asyncio.gather(*jobs))
@@ -221,8 +247,15 @@ async def run_cli(args: argparse.Namespace) -> int:
     started = _now()
     is_mutants = args.candidate == "mutants"
     candidate = None if is_mutants else load_candidate(args.candidate)
-    cassette_mode = args.cassette or ("replay" if args.candidate in MODEL_CANDIDATES else "off")
-    repeat = args.repeat or (3 if args.candidate in MODEL_CANDIDATES else 1)
+    uses_model = args.candidate in MODEL_CANDIDATES or getattr(candidate, "uses_model", False)
+    cassette_mode = args.cassette or ("replay" if uses_model else "off")
+    repeat = args.repeat or (3 if uses_model else 1)
+    candidate_name = "mutants" if is_mutants else getattr(candidate, "name", args.candidate)
+    try:
+        extras_in = dict(item.split("=", 1) for item in (args.extra or []))
+    except ValueError:
+        print("--extra needs key=value", file=sys.stderr)
+        return 2
 
     refs, alts = await reference_results(questions, pgrun.connect_grader)
     extras: dict = {}
@@ -237,12 +270,14 @@ async def run_cli(args: argparse.Namespace) -> int:
                 from evals.bootstrap import bootstrap
 
                 fixture = await bootstrap()
+            extras = dict(extras_in)            # recorded in the report so "samples=off" is visible in the JSON
             ctx = EvalContext(
                 fixture=fixture,
                 grader_connect=pgrun.connect_grader,
                 reference_clock=meta.reference_clock,
                 reference_time_zone=meta.reference_time_zone,
                 cassette_mode=cassette_mode,
+                extras=extras_in,
             )
             records = await evaluate(
                 questions, candidate, ctx, repeat=repeat, concurrency=args.concurrency, refs=refs, alts=alts
@@ -255,7 +290,7 @@ async def run_cli(args: argparse.Namespace) -> int:
         meta=rpt.RunMeta(
             git_commit=_git_commit(),
             fixture_version=meta.fixture_version,
-            candidate=args.candidate,
+            candidate=candidate_name,
             suite=args.suite,
             models=sorted({m for r in records for m in r.models}),
             repeat=repeat,
@@ -274,7 +309,7 @@ async def run_cli(args: argparse.Namespace) -> int:
 
     code = 0
     if args.compare_baseline:
-        code, messages = rpt.compare_baseline(run_report, rpt.load_baseline(args.candidate))
+        code, messages = rpt.compare_baseline(run_report, rpt.load_baseline(candidate_name))
         print()
         for m in messages:
             print(m)
@@ -286,11 +321,12 @@ async def run_cli(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="python -m evals.runner")
-    ap.add_argument("--suite", choices=["golden", "adversarial", "all"], default="golden")
-    ap.add_argument("--candidate", default="reference", help="reference | mutants | stage4c | <dotted.path:Class>")
+    ap.add_argument("--suite", choices=["golden", "adversarial", "chains", "all"], default="golden")
+    ap.add_argument("--candidate", default="reference", help="reference | mutants | stage4c | nl_sql | nl_sql_full | <dotted.path:Class>")
     ap.add_argument("--tags", help="comma-separated tag filter")
     ap.add_argument("--repeat", type=int, help="runs per question (default 1; 3 for model candidates)")
     ap.add_argument("--cassette", choices=["off", "record", "replay"])
+    ap.add_argument("--extra", action="append", metavar="KEY=VALUE", help="candidate variant, e.g. samples=off")
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--compare-baseline", action="store_true")
     ap.add_argument("--write-baseline", action="store_true")

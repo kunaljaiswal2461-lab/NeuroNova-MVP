@@ -26,6 +26,7 @@ from app.services.catalog_service import (
     get_postgres_chat_catalog_context_for_owner,
 )
 from app.services import metric_service, relationship_service
+from app.services.nl_sql.write_guard import is_write_or_ddl_request as _is_write_or_ddl_request
 from app.services.postgres_query_plan import (
     PostgresApprovedJoin,
     PostgresFilter,
@@ -69,20 +70,6 @@ _EXCLUDE_UNMATCHED_BASE_ROWS_RE = re.compile(
     r"\b(?:exclude|excluding|omit|omitting|drop|dropping|remove|removing)\s+"
     r"(?:all\s+)?(?:unmatched|non[-\s]?matching)\s+"
     r"(?:(?:base\s+)?(?:rows?|records?)|[\w-]+)\b",
-    re.IGNORECASE,
-)
-_MUTATION_COMMAND_RE = re.compile(
-    r"^\s*(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)?"
-    r"(?:delete|remove|update|insert|upsert|drop|truncate|create|alter|rename|"
-    r"replace|grant|revoke|vacuum|analy[sz]e|reindex|cluster|copy|call|execute)\b",
-    re.IGNORECASE,
-)
-_SQL_MUTATION_RE = re.compile(
-    r"\b(?:delete\s+from|update\s+(?:only\s+)?[^\n;]{1,240}?\s+set|"
-    r"insert\s+into|upsert\s+into|drop\s+(?:table|schema|database|view)|"
-    r"truncate\s+(?:table\s+)?|create\s+(?:table|schema|database|view)|"
-    r"alter\s+(?:table|schema|database|view)|grant\s+.+?\s+on|"
-    r"revoke\s+.+?\s+on)\b",
     re.IGNORECASE,
 )
 _CATALOG_QUESTION_RE = re.compile(
@@ -291,18 +278,6 @@ def _is_catalog_question(question: str) -> bool:
     """
 
     return bool(_CATALOG_QUESTION_RE.search(question))
-
-
-def _is_write_or_ddl_request(question: str) -> bool:
-    """Recognize mutation command shapes without rejecting analytical prose.
-
-    Words such as ``updated``, ``removed``, and ``deleted`` commonly describe
-    a perfectly valid row filter.  The structured plan/compiler remain the
-    actual read-only execution boundary; this early check only produces a
-    clearer response for recognizable DDL/DML requests.
-    """
-
-    return bool(_MUTATION_COMMAND_RE.search(question) or _SQL_MUTATION_RE.search(question))
 
 
 async def _choose_asset(

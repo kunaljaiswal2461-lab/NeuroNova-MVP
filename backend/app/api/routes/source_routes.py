@@ -68,6 +68,10 @@ from app.schemas.source_schemas import (
     SourceProfileRunRequest,
     SourceProfileRunResponse,
     SourceProfileTableObservationResponse,
+    AiSettingsRequest,
+    AiSettingsResponse,
+    ColumnPrivacyEntry,
+    ColumnPrivacyUpdateRequest,
     SampleCollectedColumn,
     SampleColumnName,
     SampleSkippedColumn,
@@ -84,6 +88,7 @@ from app.services import (
     source_profile_service,
     source_service,
 )
+from app.services import column_privacy
 from app.services.sample_values import store as sample_value_store
 
 
@@ -788,6 +793,79 @@ async def configure_source_sample_values(
         session, source_id=source_id, owner_user_id=current_user.id
     )
     return _sample_values_response(state)
+
+
+# ── AI and privacy settings (SPEC-09 W3) ─────────────────────────────────
+
+
+def _ai_settings_response(state: column_privacy.AiSettings) -> AiSettingsResponse:
+    return AiSettingsResponse(
+        result_rows_to_model=state.result_rows_to_model,
+        sample_values_enabled=state.sample_values_enabled,
+        result_rows_to_model_generation=state.result_rows_to_model_generation,
+    )
+
+
+@router.get("/{source_id}/ai-settings", response_model=AiSettingsResponse)
+async def get_source_ai_settings(
+    source_id: uuid.UUID,
+    session: DBSession,
+    current_user: User = Depends(get_current_user),
+) -> AiSettingsResponse:
+    state = await column_privacy.get_ai_settings(session, source_id=source_id, owner_user_id=current_user.id)
+    return _ai_settings_response(state)
+
+
+@router.put("/{source_id}/ai-settings", response_model=AiSettingsResponse)
+@limiter.limit(get_settings().rate_limit_source_profile_request)
+async def update_source_ai_settings(
+    source_id: uuid.UUID,
+    body: AiSettingsRequest,
+    request: Request,
+    session: DBSession,
+    current_user: User = Depends(get_current_user),
+) -> AiSettingsResponse:
+    """Owner-only. With ``result_rows_to_model`` off (the default) the answer-writing model never sees a row."""
+
+    state = await column_privacy.update_ai_settings(
+        session, source_id=source_id, owner_user_id=current_user.id,
+        result_rows_to_model=body.result_rows_to_model,
+    )
+    return _ai_settings_response(state)
+
+
+@router.get("/{source_id}/column-privacy", response_model=list[ColumnPrivacyEntry])
+async def get_source_column_privacy(
+    source_id: uuid.UUID,
+    session: DBSession,
+    current_user: User = Depends(get_current_user),
+) -> list[ColumnPrivacyEntry]:
+    """Text columns of the head snapshot with the personal-data suggestion and the owner's override."""
+
+    rows = await column_privacy.list_column_privacy(session, source_id=source_id, owner_user_id=current_user.id)
+    return [
+        ColumnPrivacyEntry(
+            schema=r.schema, table=r.table, column=r.column, type=r.type,
+            suggested_personal=r.suggested_personal, state=r.state, effective_personal=r.effective_personal,
+        )
+        for r in rows
+    ]
+
+
+@router.put("/{source_id}/column-privacy", response_model=list[ColumnPrivacyEntry])
+@limiter.limit(get_settings().rate_limit_source_profile_request)
+async def update_source_column_privacy(
+    source_id: uuid.UUID,
+    body: ColumnPrivacyUpdateRequest,
+    request: Request,
+    session: DBSession,
+    current_user: User = Depends(get_current_user),
+) -> list[ColumnPrivacyEntry]:
+    await column_privacy.update_column_privacy(
+        session, source_id=source_id, owner_user_id=current_user.id,
+        changes=[((c.schema_name, c.table, c.column), c.state) for c in body.changes],
+    )
+    return await get_source_column_privacy(source_id, session, current_user)
 
 
 @router.post(

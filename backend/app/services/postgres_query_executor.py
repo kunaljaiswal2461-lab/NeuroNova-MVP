@@ -84,6 +84,7 @@ _SAFE_FAILURE_CODES = frozenset(
         "execution_timeout",
         "invalid_query_plan",
         "metric_definition_changed",
+        "query_error",
         "query_too_expensive",
         "result_row_too_large",
         "unsupported_output_type",

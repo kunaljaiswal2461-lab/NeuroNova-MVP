@@ -56,6 +56,7 @@ _TABLES = [
     Base.metadata.tables["catalog_foreign_key_columns"],
     Base.metadata.tables["catalog_column_samples"],
     Base.metadata.tables["source_sample_exclusions"],
+    Base.metadata.tables["source_column_privacy"],
 ]
 
 

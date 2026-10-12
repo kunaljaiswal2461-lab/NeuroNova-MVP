@@ -47,7 +47,7 @@ function cellText(cell) {
   return cell && typeof cell === 'object' && typeof cell.value === 'string' ? cell.value : null
 }
 
-function canonicalDecimal(value) {
+export function canonicalDecimal(value) {
   const text = String(value).trim()
   if (!DECIMAL_PATTERN.test(text)) return null
   const match = text.match(/^(-?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/)
@@ -64,13 +64,13 @@ function canonicalDecimal(value) {
   return `${sign === '-' ? '-' : ''}${digits}e${exponent}`
 }
 
-function significantDigits(value) {
+export function significantDigits(value) {
   const canonical = canonicalDecimal(value)
   if (!canonical || canonical === '0') return 1
   return canonical.replace(/^-/, '').split('e', 1)[0].length
 }
 
-function plotNumber(cell) {
+export function plotNumber(cell) {
   if (!cell || typeof cell !== 'object') return unavailable('unsupported_value_column')
   if (cell.kind === 'null' || cell.value == null) return unavailable('missing_value')
   if (!NUMERIC_KINDS.has(cell.kind)) return unavailable('unsupported_value_column')

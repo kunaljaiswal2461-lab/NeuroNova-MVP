@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic import StrictBool, BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from app.db.models.source import SourceStatus, SourceType, TLSMode
 from app.db.models.catalog import (
@@ -714,6 +714,51 @@ class SampleValuesResponse(BaseModel):
     excluded_columns: list[SampleColumnName]
     collected: list[SampleCollectedColumn]
     skipped: list[SampleSkippedColumn]
+
+
+class AiSettingsRequest(BaseModel):
+    """Owner-only (SPEC-09 W3.1). Omit a field to leave it unchanged. The sample-values switch has its own endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    result_rows_to_model: StrictBool | None = None
+
+
+class AiSettingsResponse(BaseModel):
+    result_rows_to_model: bool
+    sample_values_enabled: bool
+    result_rows_to_model_generation: int
+
+
+class ColumnPrivacyEntry(BaseModel):
+    """One text column with the suggestion, the owner's override and the effective flag. Names only."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_name: str = Field(alias="schema")
+    table: str
+    column: str
+    type: str
+    suggested_personal: bool
+    state: Literal["personal", "not_personal"] | None
+    effective_personal: bool
+
+
+class ColumnPrivacyChange(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    schema_name: str = Field(min_length=1, max_length=63, alias="schema")
+    table: str = Field(min_length=1, max_length=63)
+    column: str = Field(min_length=1, max_length=63)
+    state: Literal["personal", "not_personal"] | None
+
+
+class ColumnPrivacyUpdateRequest(BaseModel):
+    """``state: null`` clears the override so the suggestion applies again."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    changes: list[ColumnPrivacyChange] = Field(max_length=2000)
 
 
 class SourceProfileTableSelectionRequest(BaseModel):

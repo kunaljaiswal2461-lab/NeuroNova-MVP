@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.nl_sql_record import NlSqlTurn
 from app.services.postgres_query_executor import PostgresQueryExecutionResult
 from agentic_engine.findings.finding_types import FindingType, Severity
 from agentic_engine.llm_engine.models import TokenUsage
@@ -170,6 +171,8 @@ class ChatMessage(BaseModel):
     # Bounded typed PostgreSQL data is intentionally kept distinct from the
     # legacy uploaded-file/Polars ``query_result`` contract.
     postgres_result: PostgresChatResult | None = None
+    # SPEC-09 C2: the SQL, assumptions, repair record and presentation spec of a model-written-SQL turn.
+    nl_sql: NlSqlTurn | None = None
     # Display-only provenance for QUERY turns. This is deliberately kept out
     # of ``history_for_prompt`` so generated query code is never sent back to
     # the LLM on later turns.
@@ -233,6 +236,10 @@ class ChatStreamEventType(str, enum.Enum):
     UNSUPPORTED = "unsupported"
     CATALOG = "catalog"
     POSTGRES_RESULT = "postgres_result"
+    # SPEC-09 C1: the model-written query, the one repair, and the resolved presentation spec.
+    SQL_GENERATED = "sql_generated"
+    REPAIRING = "repairing"
+    PRESENTATION = "presentation"
     INTENT = "intent"
     CITATIONS = "citations"
     QUERY_RESULT = "query_result"

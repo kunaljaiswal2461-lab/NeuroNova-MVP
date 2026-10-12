@@ -1020,6 +1020,55 @@ async def list_metric_definitions_for_owner(
     return tuple(views)
 
 
+async def list_active_metric_definitions_readonly(
+    session: AsyncSession,
+    *,
+    owner_user_id: uuid.UUID,
+    source_id: uuid.UUID,
+    settings: Settings | None = None,
+) -> tuple[ResolvedMetricDefinition, ...]:
+    """ACTIVE, currently resolvable metrics of one owned source, with **no writes and no commit** (SPEC-08 B7).
+
+    ``list_metric_definitions_for_owner`` marks a stale definition NEEDS_REVIEW as it goes, so building a prompt
+    could change data. Here a definition that no longer resolves is simply left out; the existing listing
+    endpoint remains the place that marks it.
+    """
+    await get_source_for_owner(session, source_id=source_id, owner_user_id=owner_user_id)
+    try:
+        definitions = (
+            await session.execute(
+                select(MetricDefinition)
+                .where(
+                    MetricDefinition.source_id == source_id,
+                    MetricDefinition.owner_user_id == owner_user_id,
+                    MetricDefinition.lifecycle_state == MetricLifecycleState.ACTIVE,
+                )
+                .order_by(MetricDefinition.display_name, MetricDefinition.id)
+            )
+        ).scalars().all()
+    except SQLAlchemyError:
+        await _rollback_quietly(session)
+        raise MetricPersistenceError() from None
+    resolved: list[ResolvedMetricDefinition] = []
+    for definition in definitions:
+        version = await _version_for_definition(
+            session, definition=definition, version_number=definition.current_version_number
+        )
+        try:
+            resolved.append(
+                await _rematerialize_version(
+                    session,
+                    definition=definition,
+                    version=version,
+                    owner_user_id=owner_user_id,
+                    settings=settings or get_settings(),
+                )
+            )
+        except (MetricCatalogUnavailableError, _MetricRequirementError):
+            continue
+    return tuple(resolved)
+
+
 async def list_metric_definition_versions_for_owner(
     session: AsyncSession,
     *,
@@ -1454,6 +1503,7 @@ __all__ = [
     "expand_metric_relationship_query_intent",
     "expand_metric_query_intent",
     "get_metric_definition_for_owner",
+    "list_active_metric_definitions_readonly",
     "list_metric_definition_versions_for_owner",
     "list_metric_definitions_for_owner",
     "match_metric_definition_for_question",

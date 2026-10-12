@@ -29,6 +29,16 @@ GOLDEN_WITH = SNAPSHOTS / "fixture_shop_with_samples.txt"
 GOLDEN_WITHOUT = SNAPSHOTS / "fixture_shop.txt"
 
 
+def unordered(text: str) -> str:
+    import re
+
+    def sort_values(match):
+        items = re.findall(r'"(?:[^"\\]|\\.)*"', match.group(1))
+        return "values: [" + ", ".join(sorted(items)) + "]"
+
+    return re.sub(r"values: \[(.*)\]", sort_values, text)
+
+
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def ctx():
     c = await bootstrap()
@@ -159,7 +169,10 @@ async def test_L2_2_golden_schema_with_samples(ctx):
     assert plain.text == GOLDEN_WITHOUT.read_text(encoding="utf-8")          # no format change when off
     if os.environ.get("NN_UPDATE_GOLDEN") == "1":
         GOLDEN_WITH.write_text(built.text, encoding="utf-8")
-    assert built.text == GOLDEN_WITH.read_text(encoding="utf-8")
+    # The order of near-equal frequencies (the four sales channels are ~25% each) depends on which rows ANALYZE sampled,
+    # so it differs between fixture rebuilds. The rendered ORDER BY FREQUENCY is tested in tests/sample_values; here the
+    # snapshot is compared with each values list sorted (SPEC-09: found when the fixture was rebuilt).
+    assert unordered(built.text) == unordered(GOLDEN_WITH.read_text(encoding="utf-8"))
     print(f"\nschema tokens: {plain.token_count} without samples, {built.token_count} with samples (o200k_base)")
     assert "enterprise " in built.text and built.text.count("values:") >= 5
 
