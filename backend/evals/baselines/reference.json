@@ -1,0 +1,80 @@
+{
+  "candidate": "reference",
+  "suite": "golden",
+  "fixture_version": 1,
+  "repeat": 1,
+  "accuracy": {
+    "p": 1.0,
+    "n": 150,
+    "runs": 150,
+    "half_interval": 0.0
+  },
+  "by_tag": {
+    "aggregate": {
+      "p": 1.0,
+      "n": 16
+    },
+    "ambiguous": {
+      "p": 1.0,
+      "n": 8
+    },
+    "awkward_identifiers": {
+      "p": 1.0,
+      "n": 8
+    },
+    "dirty_literal": {
+      "p": 1.0,
+      "n": 11
+    },
+    "group_by": {
+      "p": 1.0,
+      "n": 15
+    },
+    "join_2": {
+      "p": 1.0,
+      "n": 20
+    },
+    "join_3plus": {
+      "p": 1.0,
+      "n": 14
+    },
+    "join_fanout": {
+      "p": 1.0,
+      "n": 5
+    },
+    "null_semantics": {
+      "p": 1.0,
+      "n": 12
+    },
+    "single_table_filter": {
+      "p": 1.0,
+      "n": 15
+    },
+    "subquery_having": {
+      "p": 1.0,
+      "n": 12
+    },
+    "time_bucket": {
+      "p": 1.0,
+      "n": 17
+    },
+    "tz_boundary": {
+      "p": 1.0,
+      "n": 15
+    },
+    "unanswerable": {
+      "p": 1.0,
+      "n": 4
+    },
+    "window": {
+      "p": 1.0,
+      "n": 10
+    },
+    "write_attempt": {
+      "p": 1.0,
+      "n": 3
+    }
+  },
+  "critical_count": 0,
+  "extras": {}
+}

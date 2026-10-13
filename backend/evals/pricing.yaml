@@ -1,0 +1,8 @@
+# Per-model token prices in USD per million tokens, filled in by the team.
+# A model with no entry here simply has no cost estimate in reports (never a guess).
+#
+# models:
+#   <model id as the provider reports it>:
+#     input_per_mtok: 0.0
+#     output_per_mtok: 0.0
+models: {}

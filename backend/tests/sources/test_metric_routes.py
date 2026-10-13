@@ -167,7 +167,7 @@ def metric_route_context(monkeypatch):
         return {
             "Authorization": "Bearer "
             + create_access_token(
-                str(user.id), user.email, user.role.value, settings.jwt_secret_key, 30
+                str(user.id), user.email, user.role.value, settings.jwt_signing_key, 30
             )
         }
 

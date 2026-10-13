@@ -1,0 +1,60 @@
+{
+  "fixture_version": 1,
+  "tables": {
+    "shop.Order Events": {
+      "rows": 40808,
+      "md5": "b1d19bbc1bd9ce50140c8b0c65726095"
+    },
+    "shop.customers": {
+      "rows": 5000,
+      "md5": "b75bf33d39c6fe4023c0b5cf01597b0d"
+    },
+    "shop.order_items": {
+      "rows": 140322,
+      "md5": "4085bbd4ebf77efe32bde1bd5db78abc"
+    },
+    "shop.orders": {
+      "rows": 60000,
+      "md5": "2105ab1d7ebc6889ebdc6df60561c54b"
+    },
+    "shop.page_views": {
+      "rows": 2000000,
+      "md5": "57ff0a4172399922ec0fe9ce8ff53d5b"
+    },
+    "shop.products": {
+      "rows": 400,
+      "md5": "3bf41ec8dba574f3135eabc1c2b01bc8"
+    },
+    "shop.refunds": {
+      "rows": 2146,
+      "md5": "d0d35cad132a105d04f6d62642783fec"
+    },
+    "shop.regions": {
+      "rows": 36,
+      "md5": "3497ff49d5b91340df998839b0a614f1"
+    }
+  },
+  "anchors": {
+    "customers_total": 5000,
+    "orders_total": 60000,
+    "orders_paid_count": 42020,
+    "orders_paid_revenue": "5532150000.34",
+    "orders_by_status": {
+      "Cancelled": 7685,
+      "PAID": 42020,
+      "REFUNDED": 1760,
+      "pending": 8535
+    },
+    "guest_orders": 1855,
+    "undelivered_orders": 26569,
+    "march_2026_orders_ist": 2105,
+    "march_2026_orders_utc": 2089,
+    "order_items_total": 140322,
+    "refunds_total": 2146,
+    "refunds_amount": "232612635.95",
+    "padded_enterprise_customers": 12,
+    "page_views_total": 2000000,
+    "customers_without_phone": 186,
+    "refunds_without_reason": 45
+  }
+}

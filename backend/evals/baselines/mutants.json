@@ -1,0 +1,80 @@
+{
+  "candidate": "mutants",
+  "suite": "golden",
+  "fixture_version": 1,
+  "repeat": 1,
+  "accuracy": {
+    "p": 1.0,
+    "n": 426,
+    "runs": 426,
+    "half_interval": 0.0
+  },
+  "by_tag": {
+    "aggregate": {
+      "p": 1.0,
+      "n": 50
+    },
+    "awkward_identifiers": {
+      "p": 1.0,
+      "n": 24
+    },
+    "dirty_literal": {
+      "p": 1.0,
+      "n": 34
+    },
+    "group_by": {
+      "p": 1.0,
+      "n": 58
+    },
+    "join_2": {
+      "p": 1.0,
+      "n": 67
+    },
+    "join_3plus": {
+      "p": 1.0,
+      "n": 43
+    },
+    "join_fanout": {
+      "p": 1.0,
+      "n": 17
+    },
+    "null_semantics": {
+      "p": 1.0,
+      "n": 42
+    },
+    "single_table_filter": {
+      "p": 1.0,
+      "n": 73
+    },
+    "subquery_having": {
+      "p": 1.0,
+      "n": 40
+    },
+    "time_bucket": {
+      "p": 1.0,
+      "n": 17
+    },
+    "tz_boundary": {
+      "p": 1.0,
+      "n": 44
+    },
+    "window": {
+      "p": 1.0,
+      "n": 24
+    }
+  },
+  "critical_count": 0,
+  "extras": {
+    "equivalence_total": 426,
+    "equivalence_failed": 0,
+    "equivalence_pass_rate": 1.0,
+    "wrong_total": 456,
+    "wrong_killed": 412,
+    "survivors": 0,
+    "survivors_data_insensitive": 0,
+    "survivors_grader_lenient": 0,
+    "accepted_survivors": 44,
+    "invalid_mutants": 0,
+    "mutation_kill_rate": 1.0
+  }
+}

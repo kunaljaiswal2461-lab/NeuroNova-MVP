@@ -1,0 +1,184 @@
+# SPEC-04 §11.2. Table-driven: every case must be rejected with exactly `code`.
+# `scope: dup` uses the scope with the same table name in two schemas (ambiguous_table).
+# Expected codes follow the §7 stage order: a node-type rejection (stage 5) comes before the
+# token-level function check (stage 6), so e.g. current_user is `unsupported_syntax`.
+
+# ── statements ──────────────────────────────────────────────────────────────
+- {id: stmt-multi, sql: "SELECT 1; DROP TABLE shop.orders", code: multiple_statements}
+- {id: stmt-comment-hidden, sql: "SELECT 1 /*;*/ ; DELETE FROM shop.orders", code: multiple_statements}
+- {id: stmt-do, sql: "DO $$ BEGIN PERFORM pg_sleep(1); END $$", code: unsupported_statement}
+- {id: stmt-call, sql: "CALL foo()", code: unsupported_statement}
+- {id: stmt-lock, sql: "LOCK TABLE shop.orders", code: unsupported_statement}
+- {id: stmt-explain-analyze, sql: "EXPLAIN ANALYZE SELECT 1", code: unsupported_statement}
+- {id: stmt-copy, sql: "COPY shop.orders TO '/tmp/x'", code: unsupported_statement}
+- {id: stmt-set, sql: "SET search_path = public", code: unsupported_statement}
+- {id: stmt-insert, sql: "INSERT INTO shop.orders (id) VALUES (1)", code: unsupported_statement}
+- {id: stmt-update, sql: "UPDATE shop.orders SET status = 'x'", code: unsupported_statement}
+- {id: stmt-delete, sql: "DELETE FROM shop.orders", code: unsupported_statement}
+- {id: stmt-truncate, sql: "TRUNCATE shop.orders", code: unsupported_statement}
+- {id: stmt-create, sql: "CREATE TABLE t (a int)", code: unsupported_statement}
+- {id: stmt-drop, sql: "DROP TABLE shop.orders", code: unsupported_statement}
+- {id: stmt-alter, sql: "ALTER TABLE shop.orders ADD COLUMN x int", code: unsupported_statement}
+- {id: stmt-grant, sql: "GRANT SELECT ON shop.orders TO public", code: unsupported_statement}
+- {id: stmt-begin, sql: "BEGIN", code: unsupported_statement}
+- {id: stmt-commit, sql: "COMMIT", code: unsupported_statement}
+- {id: stmt-merge, sql: "MERGE INTO shop.orders o USING shop.orders p ON o.id = p.id WHEN MATCHED THEN DELETE", code: unsupported_statement}
+- {id: stmt-show, sql: "SHOW search_path", code: unsupported_statement}
+- {id: stmt-vacuum, sql: "VACUUM shop.orders", code: unsupported_statement}
+- {id: stmt-prepare, sql: "PREPARE x AS SELECT 1", code: unsupported_statement}
+- {id: stmt-execute, sql: "EXECUTE x", code: unsupported_statement}
+- {id: stmt-reset, sql: "RESET ALL", code: unsupported_statement}
+- {id: stmt-use, sql: "USE shop", code: unsupported_statement}
+- {id: stmt-describe, sql: "DESCRIBE shop.orders", code: unsupported_statement}
+- {id: stmt-analyze, sql: "ANALYZE shop.orders", code: unsupported_statement}
+- {id: stmt-notify, sql: "NOTIFY ch, 'x'", code: parse_error}
+- {id: stmt-garbage, sql: "SELEKT FROM WHERE", code: parse_error}
+- {id: stmt-unclosed-string, sql: "SELECT 'abc", code: parse_error}
+
+# ── hidden writes and locks (a Select root hides a data-changing node, F2) ──
+- {id: hidden-dml-cte, sql: "WITH x AS (DELETE FROM shop.orders RETURNING *) SELECT * FROM x", code: unsupported_syntax}
+- {id: hidden-update-cte, sql: "WITH x AS (UPDATE shop.orders SET status = 'a' RETURNING *) SELECT * FROM x", code: unsupported_syntax}
+- {id: hidden-insert-cte, sql: "WITH x AS (INSERT INTO shop.orders (id) VALUES (1) RETURNING *) SELECT * FROM x", code: unsupported_syntax}
+- {id: hidden-select-into, sql: "SELECT * INTO t FROM shop.orders", code: unsupported_syntax}
+- {id: hidden-for-update, sql: "SELECT * FROM shop.orders FOR UPDATE", code: unsupported_syntax}
+- {id: hidden-for-share, sql: "SELECT * FROM shop.orders FOR SHARE", code: unsupported_syntax}
+- {id: hidden-for-no-key-update, sql: "SELECT * FROM shop.orders FOR NO KEY UPDATE", code: unsupported_syntax}
+- {id: hidden-tablesample, sql: "SELECT * FROM shop.orders TABLESAMPLE SYSTEM (1)", code: unsupported_syntax}
+
+# ── functions ───────────────────────────────────────────────────────────────
+- {id: fn-pg-sleep, sql: "SELECT pg_sleep(1)", code: function_not_allowed}
+- {id: fn-pg-sleep-qualified, sql: "SELECT pg_catalog.pg_sleep(1)", code: schema_qualified_function}
+- {id: fn-pg-sleep-quoted, sql: 'SELECT "pg_sleep"(1)', code: function_not_allowed}
+- {id: fn-pg-sleep-unicode-ident, sql: 'SELECT U&"\0070g_sleep"(1)', code: unsupported_syntax}
+- {id: fn-advisory-lock, sql: "SELECT pg_advisory_lock(1)", code: function_not_allowed}
+- {id: fn-try-advisory-lock, sql: "SELECT pg_try_advisory_lock(1)", code: function_not_allowed}
+- {id: fn-dblink, sql: "SELECT dblink('host=x','select 1')", code: function_not_allowed}
+- {id: fn-read-file, sql: "SELECT pg_read_file('/etc/passwd')", code: function_not_allowed}
+- {id: fn-ls-dir, sql: "SELECT pg_ls_dir('.')", code: function_not_allowed}
+- {id: fn-lo-import, sql: "SELECT lo_import('/etc/passwd')", code: function_not_allowed}
+- {id: fn-set-config, sql: "SELECT set_config('statement_timeout','0',false)", code: function_not_allowed}
+- {id: fn-current-setting, sql: "SELECT current_setting('server_version')", code: function_not_allowed}
+- {id: fn-txid-current, sql: "SELECT txid_current()", code: function_not_allowed}
+- {id: fn-terminate-backend, sql: "SELECT pg_terminate_backend(1)", code: function_not_allowed}
+- {id: fn-query-to-xml, sql: "SELECT query_to_xml('select 1', true, true, '')", code: function_not_allowed}
+- {id: fn-nextval, sql: "SELECT nextval('s')", code: function_not_allowed}
+- {id: fn-random, sql: "SELECT random()", code: unsupported_syntax}
+- {id: fn-clock-timestamp, sql: "SELECT clock_timestamp()", code: function_not_allowed}
+- {id: fn-md5, sql: "SELECT md5(status) FROM shop.orders", code: unsupported_syntax}
+- {id: fn-version, sql: "SELECT version()", code: unsupported_syntax}
+- {id: fn-current-user, sql: "SELECT current_user", code: unsupported_syntax}
+- {id: fn-session-user, sql: "SELECT session_user", code: unsupported_syntax}
+- {id: fn-current-database, sql: "SELECT current_database()", code: unsupported_syntax}
+- {id: fn-backend-pid, sql: "SELECT pg_backend_pid()", code: function_not_allowed}
+- {id: fn-inet-server-addr, sql: "SELECT inet_server_addr()", code: function_not_allowed}
+- {id: fn-array-agg, sql: "SELECT array_agg(id) FROM shop.orders", code: unsupported_syntax}
+- {id: fn-format, sql: "SELECT format('%s', status) FROM shop.orders", code: unsupported_syntax}
+- {id: fn-localtimestamp, sql: "SELECT localtimestamp", code: unsupported_syntax}
+- {id: fn-to-timestamp-epoch, sql: "SELECT to_timestamp(1234567890)", code: unsupported_syntax}
+- {id: fn-regexp-replace, sql: "SELECT regexp_replace(status, 'a', 'b') FROM shop.orders", code: unsupported_syntax}
+- {id: fn-starts-with, sql: "SELECT starts_with(status, 'a') FROM shop.orders", code: unsupported_syntax}
+- {id: fn-make-interval, sql: "SELECT make_interval(days => 1)", code: unsupported_syntax}
+- {id: fn-justify-days, sql: "SELECT justify_days(INTERVAL '40 days')", code: unsupported_syntax}
+- {id: fn-width-bucket, sql: "SELECT width_bucket(total_amount, 0, 100, 5) FROM shop.orders", code: unsupported_syntax}
+- {id: fn-bitwise-and, sql: "SELECT id & 1 FROM shop.orders", code: unsupported_syntax}
+- {id: fn-in-where, sql: "SELECT id FROM shop.orders WHERE pg_sleep(1) IS NULL", code: function_not_allowed}
+- {id: fn-in-subquery, sql: "SELECT id FROM shop.orders WHERE id IN (SELECT pg_backend_pid())", code: function_not_allowed}
+- {id: fn-in-cte, sql: "WITH a AS (SELECT pg_sleep(1) AS s) SELECT * FROM a", code: function_not_allowed}
+- {id: fn-in-order-by, sql: "SELECT id FROM shop.orders ORDER BY pg_sleep(1)", code: function_not_allowed}
+- {id: fn-alias-collision, sql: "SELECT 1 AS pg_sleep, pg_sleep(1)", code: function_not_allowed}
+
+# ── casts ───────────────────────────────────────────────────────────────────
+- {id: cast-regclass, sql: "SELECT 'pg_authid'::regclass", code: cast_type_not_allowed}
+- {id: cast-regproc, sql: "SELECT 'pg_sleep'::regproc", code: cast_type_not_allowed}
+- {id: cast-regtype, sql: "SELECT 'int4'::regtype", code: cast_type_not_allowed}
+- {id: cast-oid, sql: "SELECT 1::oid", code: cast_type_not_allowed}
+- {id: cast-json, sql: "SELECT status::json FROM shop.orders", code: cast_type_not_allowed}
+- {id: cast-jsonb, sql: "SELECT status::jsonb FROM shop.orders", code: cast_type_not_allowed}
+- {id: cast-bytea, sql: "SELECT status::bytea FROM shop.orders", code: cast_type_not_allowed}
+- {id: cast-array, sql: "SELECT status::text[] FROM shop.orders", code: cast_type_not_allowed}
+- {id: cast-function-style, sql: "SELECT CAST('pg_authid' AS regclass)", code: cast_type_not_allowed}
+- {id: cast-name, sql: "SELECT status::name FROM shop.orders", code: cast_type_not_allowed}
+- {id: cast-xml, sql: "SELECT status::xml FROM shop.orders", code: cast_type_not_allowed}
+
+# ── tables ──────────────────────────────────────────────────────────────────
+- {id: tbl-pg-authid, sql: "SELECT * FROM pg_catalog.pg_authid", code: table_not_in_scope}
+- {id: tbl-unqualified-pg-class, sql: "SELECT relname FROM pg_class", code: table_not_in_scope}
+- {id: tbl-information-schema, sql: "SELECT * FROM information_schema.tables", code: table_not_in_scope}
+- {id: tbl-internal-salaries, sql: "SELECT * FROM internal.salaries", code: table_not_in_scope}
+- {id: tbl-audit-log, sql: "SELECT * FROM shop.audit_log", code: table_not_in_scope}
+- {id: tbl-customer-contacts, sql: "SELECT * FROM shop.customer_contacts", code: table_not_in_scope}
+- {id: tbl-view-not-in-scope, sql: "SELECT * FROM shop.v_daily_sales", code: table_not_in_scope}
+- {id: tbl-wrong-case-quoted, sql: 'SELECT * FROM shop."ORDERS"', code: table_not_in_scope}
+- {id: tbl-typo, sql: "SELECT * FROM shop.clients", code: table_not_in_scope}
+- {id: tbl-in-subquery, sql: "SELECT id FROM shop.orders WHERE id IN (SELECT id FROM internal.salaries)", code: table_not_in_scope}
+- {id: tbl-in-exists, sql: "SELECT id FROM shop.orders o WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_authid)", code: table_not_in_scope}
+- {id: tbl-in-select-list, sql: "SELECT (SELECT count(*) FROM pg_class) FROM shop.orders", code: table_not_in_scope}
+- {id: tbl-in-join, sql: "SELECT * FROM shop.orders o JOIN internal.salaries s ON true", code: table_not_in_scope}
+- {id: tbl-in-union, sql: "SELECT id FROM shop.orders UNION SELECT id FROM shop.audit_log", code: table_not_in_scope}
+- {id: tbl-cte-leak, sql: "SELECT * FROM (WITH o AS (SELECT 1 x) SELECT x FROM o) a, o", code: table_not_in_scope}
+- {id: tbl-database-qualified, sql: "SELECT * FROM nn_client.shop.orders", code: database_qualified_table}
+- {id: tbl-ambiguous, sql: "SELECT * FROM orders", code: ambiguous_table, scope: dup}
+- {id: tbl-rows-from, sql: "SELECT * FROM ROWS FROM (generate_series(1,3)) AS t(x)", code: table_function_not_allowed}
+- {id: tbl-dblink-from, sql: "SELECT * FROM dblink('host=x', 'select 1') AS t(a int)", code: function_not_allowed}
+- {id: tbl-unnest-from, sql: "SELECT * FROM unnest(ARRAY[1,2]) AS t(x)", code: unsupported_syntax}
+- {id: tbl-pg-ls-dir-from, sql: "SELECT * FROM pg_ls_dir('.') AS t(x)", code: function_not_allowed}
+
+# ── columns ─────────────────────────────────────────────────────────────────
+- {id: col-not-found, sql: "SELECT region FROM shop.orders", code: column_not_found}
+- {id: col-ambiguous, sql: "SELECT id FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id", code: ambiguous_column}
+- {id: col-quoted-table-column, sql: 'SELECT event_type FROM shop."Order Events"', code: column_not_found}
+- {id: col-qualified-missing, sql: "SELECT o.nope FROM shop.orders o", code: column_not_found}
+- {id: col-in-where, sql: "SELECT id FROM shop.orders WHERE nope = 1", code: column_not_found}
+
+# ── shape ───────────────────────────────────────────────────────────────────
+- {id: shape-recursive, sql: "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r) SELECT * FROM r", code: unsupported_syntax}
+- {id: shape-values, sql: "SELECT * FROM (VALUES (1),(2)) v(x)", code: unsupported_syntax}
+- {id: shape-any-array, sql: "SELECT id FROM shop.orders WHERE id = ANY (ARRAY[1,2])", code: unsupported_syntax}
+- {id: shape-all-subquery, sql: "SELECT id FROM shop.orders WHERE id = ALL (SELECT 1)", code: unsupported_syntax}
+- {id: shape-array-literal, sql: "SELECT ARRAY[1,2]", code: unsupported_syntax}
+- {id: shape-param-dollar, sql: "SELECT id FROM shop.orders WHERE id = $1", code: unsupported_syntax}
+- {id: shape-param-question, sql: "SELECT id FROM shop.orders WHERE id = ?", code: unsupported_syntax}
+- {id: shape-limit-subquery, sql: "SELECT id FROM shop.orders LIMIT (SELECT 5)", code: non_literal_limit}
+- {id: shape-offset-subquery, sql: "SELECT id FROM shop.orders LIMIT 5 OFFSET (SELECT 1)", code: non_literal_limit}
+- {id: shape-fetch-ties, sql: "SELECT id FROM shop.orders ORDER BY id FETCH FIRST 5 ROWS WITH TIES", code: unsupported_syntax}
+- {id: shape-fetch-percent, sql: "SELECT id FROM shop.orders ORDER BY id FETCH FIRST 5 PERCENT ROWS ONLY", code: unsupported_syntax}
+
+# ── text and size ───────────────────────────────────────────────────────────
+- {id: text-empty, sql: "", code: empty_input}
+- {id: text-whitespace, sql: "  \n\t ", code: empty_input}
+- {id: text-nul, sql: "SELECT 'a\0b'", code: invalid_text}
+
+# ── found while probing (not in the spec's list; see spec04.learning.md) ───────────────
+# A CTE or derived-table alias that shares a name with a system table must not hide it.
+- {id: hazard-cte-shadows-qualified, sql: "WITH pg_authid AS (SELECT 1 a) SELECT * FROM pg_catalog.pg_authid", code: table_not_in_scope}
+- {id: hazard-derived-alias-shadows, sql: "SELECT * FROM (SELECT 1 a) AS pg_class, pg_class", code: table_not_in_scope}
+- {id: hazard-cte-defined-later, sql: "WITH a AS (SELECT * FROM b), b AS (SELECT 1 x) SELECT * FROM a", code: table_not_in_scope}
+- {id: hazard-cte-in-sibling-body, sql: "WITH a AS (SELECT 1 x) SELECT * FROM (SELECT * FROM a) t, pg_roles", code: table_not_in_scope}
+# Postgres reads an unquoted `user` as current_user even when a column has that name.
+- {id: hazard-user-keyword-column, sql: "SELECT user FROM shop.sessions", code: unsupported_syntax, scope: user_col}
+- {id: hazard-current-role-column, sql: "SELECT current_role FROM shop.sessions", code: unsupported_syntax, scope: user_col}
+- {id: hazard-system-user-column, sql: "SELECT system_user FROM shop.sessions", code: unsupported_syntax, scope: user_col}
+- {id: hazard-user-in-where, sql: "SELECT id FROM shop.sessions WHERE user = 'x'", code: unsupported_syntax, scope: user_col}
+
+# ── SPEC-05: a query must read at least one catalog table ───────────────────
+- {id: notable-select-1, sql: "SELECT 1", code: no_table_reference}
+- {id: notable-literal-string, sql: "SELECT 'O''Brien' AS s", code: no_table_reference}
+- {id: notable-generate-series, sql: "SELECT count(*) FROM generate_series(1, 1000000000)", code: no_table_reference}
+- {id: notable-generate-series-select, sql: "SELECT g FROM generate_series(1, 10) AS g", code: no_table_reference}
+- {id: notable-cte-only, sql: "WITH x AS (SELECT 1 AS a) SELECT a FROM x", code: no_table_reference}
+- {id: notable-age, sql: "SELECT age(timestamp '2026-06-01', timestamp '2025-01-15') AS a", code: no_table_reference}
+- {id: notable-trailing-semicolon, sql: "SELECT 1;", code: no_table_reference}
+
+# ── lpad/rpad length must be a literal <= 10,000 (a tiny query can otherwise build a 200 MB value) ──
+- {id: pad-lpad-huge, sql: "SELECT lpad(status, 200000000) FROM shop.orders", code: function_not_allowed}
+- {id: pad-rpad-huge, sql: "SELECT rpad(status, 200000000, 'x') FROM shop.orders", code: function_not_allowed}
+- {id: pad-just-over, sql: "SELECT rpad(status, 10001) FROM shop.orders", code: function_not_allowed}
+- {id: pad-column-length, sql: "SELECT lpad(status, id) FROM shop.orders", code: function_not_allowed}
+- {id: pad-expression-length, sql: "SELECT lpad(status, 5 + 5) FROM shop.orders", code: function_not_allowed}
+- {id: pad-cast-length, sql: "SELECT lpad(status, 200000000::int) FROM shop.orders", code: function_not_allowed}
+- {id: pad-subquery-length, sql: "SELECT lpad(status, (SELECT 200000000)) FROM shop.orders", code: function_not_allowed}
+- {id: pad-negative, sql: "SELECT lpad(status, -5) FROM shop.orders", code: function_not_allowed}
+- {id: pad-decimal, sql: "SELECT lpad(status, 10.0) FROM shop.orders", code: function_not_allowed}
+- {id: pad-quoted-name, sql: 'SELECT "lpad"(status, 200000000) FROM shop.orders', code: function_not_allowed}
+- {id: pad-nested, sql: "SELECT count(*) FROM shop.orders WHERE length(lpad(status, 200000000)) > 3", code: function_not_allowed}
+- {id: pad-two-args-spaced, sql: "SELECT LPAD (status, 200000000) FROM shop.orders", code: function_not_allowed}

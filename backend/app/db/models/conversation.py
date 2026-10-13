@@ -205,6 +205,9 @@ class ChatMessageRow(Base):
     # set.  It is separate from the legacy Polars ``query_result`` blob so the
     # two execution contracts cannot be confused on transcript reads.
     postgres_result: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # SPEC-09 C2: for a model-written-SQL turn, the SQL, assumptions, output intent, repair record and resolved
+    # presentation spec. This is the only place the SQL text of a chat turn is stored (I14).
+    nl_sql: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     degraded: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False

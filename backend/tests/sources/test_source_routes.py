@@ -328,7 +328,7 @@ def route_context(monkeypatch):
     def headers(user: User):
         return {
             "Authorization": "Bearer " + create_access_token(
-                str(user.id), user.email, user.role.value, settings.jwt_secret_key, 30
+                str(user.id), user.email, user.role.value, settings.jwt_signing_key, 30
             )
         }
 
@@ -501,7 +501,7 @@ async def test_http_fixture_can_inject_the_explicit_disposable_destination_polic
     app.dependency_overrides[get_settings] = lambda: settings
     headers = {
         "Authorization": "Bearer " + create_access_token(
-            str(owner.id), owner.email, owner.role.value, settings.jwt_secret_key, 30
+            str(owner.id), owner.email, owner.role.value, settings.jwt_signing_key, 30
         )
     }
     try:

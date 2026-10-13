@@ -1,0 +1,112 @@
+# SPEC-03 §15.4. Three jobs: fast unit tests, the Docker fixture, and a manual model eval.
+name: backend
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_model_eval:
+        description: "Run the stage4c model evaluation (needs OPENAI_API_KEY and the ACK secrets)"
+        type: boolean
+        default: false
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  # Needs no Docker, network service or model key (INV-P0-03).
+  # SPEC-04: the validator's L1 tests must pass on the production (3.11) and laptop (3.12) Pythons.
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: sudo apt-get update && sudo apt-get install -y libmagic1
+        working-directory: .
+      - run: pip install -r requirements.txt
+      - run: pytest -q
+
+  # The isolated Postgres topology: TLS, restricted roles, 2M-row table, grader self-tests.
+  live:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Does this change touch backend/ ?
+        id: scope
+        working-directory: .
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$base" ] || ! git cat-file -e "$base" 2>/dev/null || git diff --name-only "$base" HEAD | grep -q '^backend/'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Bring up the fixture
+        if: steps.scope.outputs.run == 'true'
+        working-directory: .
+        run: docker compose -f backend/evals/fixture/compose.yml up -d --build
+      - name: Live tests, linter, reference and mutants
+        if: steps.scope.outputs.run == 'true'
+        working-directory: .
+        run: |
+          docker compose -f backend/evals/fixture/compose.yml run --rm runner sh -c "
+            NN_LIVE_PG=1 pytest -q -m live_pg &&
+            python -m evals.lint --live &&
+            python -m evals.runner --suite golden --candidate reference --compare-baseline &&
+            python -m evals.runner --suite golden --candidate mutants --compare-baseline"
+      - name: Fixture rebuild reproduces the committed checksums (F9)
+        if: steps.scope.outputs.run == 'true'
+        working-directory: .
+        run: sh backend/evals/fixture/verify_rebuild.sh
+      - name: Upload reports
+        if: always() && steps.scope.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-reports
+          path: backend/evals/reports/
+          if-no-files-found: ignore
+      - name: Tear down
+        if: always() && steps.scope.outputs.run == 'true'
+        working-directory: .
+        run: docker compose -f backend/evals/fixture/compose.yml down -v
+
+  # Manual only: real model calls, real money. Secrets are added in the repository settings.
+  model-eval:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && inputs.run_model_eval
+    environment: model-eval
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bring up the fixture
+        working-directory: .
+        run: docker compose -f backend/evals/fixture/compose.yml up -d --build
+      - name: stage4c baseline, 3 runs per question
+        working-directory: .
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          STAGE4C_EVALUATION_ACK: ${{ secrets.STAGE4C_EVALUATION_ACK }}
+        run: |
+          docker compose -f backend/evals/fixture/compose.yml run --rm runner \
+            python -m evals.runner --suite golden --candidate stage4c --repeat 3 --cassette off
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage4c-report
+          path: backend/evals/reports/
+          if-no-files-found: ignore
+      - if: always()
+        working-directory: .
+        run: docker compose -f backend/evals/fixture/compose.yml down -v

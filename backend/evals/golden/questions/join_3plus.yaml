@@ -1,0 +1,158 @@
+- id: join3-001
+  question: "What is the total value of items sold in each zone, counting paid orders only?"
+  tags: [join_3plus]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT r.zone, sum(i.quantity * i.unit_price) FROM shop.order_items i JOIN shop.orders o ON o.id = i.order_id JOIN shop.customers c ON c.id = o.customer_id JOIN shop.regions r ON r.id = c.region_id WHERE o.status = 'PAID' GROUP BY r.zone
+    output_type: bar
+  notes: "Line value = quantity x unit_price (not orders.total_amount, which includes GST). accept-survivor:join_flip (a later INNER JOIN or a WHERE on the joined table removes the rows a LEFT JOIN would add)"
+  reviewed_by: null
+
+- id: join3-002
+  question: "Which 5 regions have the highest total value of paid orders?"
+  tags: [join_3plus]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT r.name, sum(o.total_amount) AS total FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id JOIN shop.regions r ON r.id = c.region_id WHERE o.status = 'PAID' GROUP BY r.id, r.name ORDER BY total DESC LIMIT 5
+    output_type: ranked_list
+    order_matters: true
+  notes: "accept-survivor:join_flip (a later INNER JOIN or a WHERE on the joined table removes the rows a LEFT JOIN would add)"
+  reviewed_by: null
+
+- id: join3-003
+  question: "What is the total value of paid orders for each region in the South zone?"
+  tags: [join_3plus]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT r.name, sum(o.total_amount) FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id JOIN shop.regions r ON r.id = c.region_id WHERE o.status = 'PAID' AND r.zone = 'South' GROUP BY r.id, r.name
+    output_type: pivot
+  notes: "accept-survivor:join_flip (a later INNER JOIN or a WHERE on the joined table removes the rows a LEFT JOIN would add)"
+  reviewed_by: null
+
+- id: join3-004
+  question: "How many units of each product category do our Enterprise customers buy?"
+  tags: [join_3plus, dirty_literal]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT p.category, sum(i.quantity)
+      FROM shop.order_items i JOIN shop.orders o ON o.id = i.order_id JOIN shop.customers c ON c.id = o.customer_id JOIN shop.products p ON p.id = i.product_id
+      WHERE lower(trim(c.segment)) = 'enterprise' GROUP BY p.category
+    output_type: bar
+  notes: "Enterprise includes the padded, lowercase 'enterprise ' variants (12 customers). accept-survivor:join_flip (a later INNER JOIN or a WHERE on the joined table removes the rows a LEFT JOIN would add)"
+  reviewed_by: null
+
+- id: join3-005
+  question: "How many different customers have bought something from the Beauty category?"
+  tags: [join_3plus]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(DISTINCT o.customer_id) FROM shop.order_items i JOIN shop.orders o ON o.id = i.order_id JOIN shop.products p ON p.id = i.product_id
+      WHERE p.category = 'Beauty'
+    output_type: kpi
+  notes: "Guest orders (NULL customer) are not customers."
+  reviewed_by: null
+
+- id: join3-006
+  question: "What is the average value of paid orders that contain at least one inactive product?"
+  tags: [join_3plus, join_fanout]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT avg(o.total_amount) FROM shop.orders o
+      WHERE o.status = 'PAID' AND EXISTS (SELECT 1 FROM shop.order_items i JOIN shop.products p ON p.id = i.product_id WHERE i.order_id = o.id AND NOT p.is_active)
+    output_type: kpi
+    numeric_tolerance:
+      abs: "0.01"
+  notes: "Each order counts once however many inactive lines it has."
+  reviewed_by: null
+
+- id: join3-007
+  question: "How much was refunded to customers in each zone?"
+  tags: [join_3plus]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT r.zone, sum(f.amount) FROM shop.refunds f JOIN shop.orders o ON o.id = f.order_id JOIN shop.customers c ON c.id = o.customer_id JOIN shop.regions r ON r.id = c.region_id GROUP BY r.zone
+    output_type: pivot
+  notes: "Refunds on guest orders have no region and drop out. accept-survivor:join_flip (a later INNER JOIN or a WHERE on the joined table removes the rows a LEFT JOIN would add)"
+  reviewed_by: null
+
+- id: join3-008
+  question: "Who are the 5 customers refunded the most money in total?"
+  tags: [join_3plus]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT c.full_name, sum(f.amount) AS refunded FROM shop.refunds f JOIN shop.orders o ON o.id = f.order_id JOIN shop.customers c ON c.id = o.customer_id GROUP BY c.id, c.full_name ORDER BY refunded DESC LIMIT 5
+    output_type: ranked_list
+    order_matters: true
+  reviewed_by: null
+
+- id: join3-009
+  question: "How many units of each product category were sold through each channel?"
+  tags: [join_3plus]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT o.channel, p.category, sum(i.quantity) FROM shop.order_items i JOIN shop.orders o ON o.id = i.order_id JOIN shop.products p ON p.id = i.product_id GROUP BY o.channel, p.category
+    output_type: heatmap
+  reviewed_by: null
+
+- id: join3-010
+  question: "How many Electronics units were sold in each month of 2025?"
+  tags: [join_3plus, time_bucket]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT date_trunc('month', o.ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS month, sum(i.quantity)
+      FROM shop.order_items i JOIN shop.orders o ON o.id = i.order_id JOIN shop.products p ON p.id = i.product_id
+      WHERE p.category = 'Electronics' AND o.ordered_at >= TIMESTAMPTZ '2025-01-01 00:00:00+05:30' AND o.ordered_at < TIMESTAMPTZ '2026-01-01 00:00:00+05:30'
+      GROUP BY 1 ORDER BY 1
+    output_type: line
+    order_matters: true
+  notes: "Month labels are the first day of the month (a date). accept-survivor:flip_comparison (no row sits exactly on this boundary, or the comparison is between aggregates that cannot tie)"
+  reviewed_by: null
+
+- id: join3-011
+  question: "Among customers in the West zone, which channel has the highest average order value? Rank all channels."
+  tags: [join_3plus]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT o.channel, avg(o.total_amount) AS avg_value FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id JOIN shop.regions r ON r.id = c.region_id WHERE r.zone = 'West' GROUP BY o.channel ORDER BY avg_value DESC
+    output_type: takeaways
+    order_matters: true
+    numeric_tolerance:
+      abs: "0.01"
+  notes: "All order statuses. accept-survivor:join_flip (a later INNER JOIN or a WHERE on the joined table removes the rows a LEFT JOIN would add)"
+  reviewed_by: null
+
+- id: join3-012
+  question: "How many shipped orders does each zone have?"
+  tags: [join_3plus, awkward_identifiers]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT r.zone, count(DISTINCT o.id)
+      FROM shop."Order Events" e JOIN shop.orders o ON o.id = e."order" JOIN shop.customers c ON c.id = o.customer_id JOIN shop.regions r ON r.id = c.region_id
+      WHERE e."Event Type" = 'shipped' GROUP BY r.zone
+    output_type: bar
+  notes: "accept-survivor:join_flip (a later INNER JOIN or a WHERE on the joined table removes the rows a LEFT JOIN would add)"
+  reviewed_by: null

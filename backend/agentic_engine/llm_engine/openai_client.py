@@ -94,11 +94,8 @@ class OpenAIClient:
         try:
             parsed: dict[str, Any] = json.loads(content)
         except json.JSONDecodeError as exc:
-            logger.warning(
-                "llm.invalid_json",
-                model=model,
-                snippet=content[:200],
-            )
+            # Model output can hold SQL or database values: log sizes only (SPEC-08 I7).
+            logger.warning("llm.invalid_json", model=model, content_chars=len(content))
             raise LLMUnavailable(f"OpenAI returned non-JSON content: {exc}") from exc
 
         usage = response.usage
@@ -108,6 +105,64 @@ class OpenAIClient:
             input_tokens=usage.prompt_tokens if usage else 0,
             output_tokens=usage.completion_tokens if usage else 0,
         )
+
+    # ── Strict JSON-schema mode (NL->SQL pass 1) ─────────────────────────
+
+    async def chat_structured(
+        self,
+        *,
+        model: str,
+        system: str,
+        user: str,
+        json_schema: dict,
+        schema_name: str,
+        max_tokens: int = 1500,
+        temperature: float = 0.0,
+        seed: int | None = None,
+        run: int = 0,
+    ) -> ChatResult:
+        kwargs: dict[str, Any] = {}
+        if seed is not None:
+            kwargs["seed"] = seed
+        try:
+            response = await self._client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {"name": schema_name, "strict": True, "schema": json_schema},
+                },
+                max_tokens=max_tokens,
+                temperature=temperature,
+                **kwargs,
+            )
+        except (APITimeoutError, RateLimitError, APIError) as exc:
+            logger.warning("llm.call_failed", model=model, error=str(exc))
+            raise LLMUnavailable(f"OpenAI call failed: {exc}") from exc
+
+        usage = response.usage
+        tokens = dict(
+            model=response.model,
+            input_tokens=usage.prompt_tokens if usage else 0,
+            output_tokens=usage.completion_tokens if usage else 0,
+        )
+        choice = response.choices[0]
+        content = choice.message.content or ""
+        if getattr(choice.message, "refusal", None):
+            return ChatResult(content_json={}, finish_reason="refusal", **tokens)
+        if choice.finish_reason != "stop":
+            return ChatResult(content_json={}, finish_reason=str(choice.finish_reason), **tokens)
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            logger.warning("llm.invalid_json", model=model, content_chars=len(content))
+            return ChatResult(content_json={}, finish_reason="invalid_json", **tokens)
+        if not isinstance(parsed, dict):
+            return ChatResult(content_json={}, finish_reason="invalid_json", **tokens)
+        return ChatResult(content_json=parsed, **tokens)
 
     # ── Streaming-mode (Layer 7) ─────────────────────────────────────────
 

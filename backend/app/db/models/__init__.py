@@ -7,6 +7,7 @@ from app.db.models.conversation import (
 from app.db.models.catalog import (
     CatalogAsset,
     CatalogColumn,
+    CatalogColumnSample,
     CatalogDeclaredKey,
     CatalogDeclaredKeyColumn,
     CatalogForeignKey,
@@ -23,12 +24,13 @@ from app.db.models.finding_embedding import EMBEDDING_DIMENSION, FindingEmbeddin
 from app.db.models.source import (
     DataSource,
     SourceCredential,
+    SourceSampleExclusion,
     SourceStatus,
     SourceTableScope,
     SourceType,
     TLSMode,
 )
-from app.db.models.postgres_query_run import PostgresQueryRun, PostgresQueryRunStatus
+from app.db.models.postgres_query_run import PostgresQueryRun, PostgresQueryRunAsset, PostgresQueryRunStatus
 from app.db.models.metric_definition import (
     MetricAggregateOperation,
     MetricDefinition,
@@ -60,6 +62,7 @@ from app.db.models.user import RefreshToken, User, UserRole
 __all__ = [
     "CatalogAsset",
     "CatalogColumn",
+    "CatalogColumnSample",
     "CatalogDeclaredKey",
     "CatalogDeclaredKeyColumn",
     "CatalogForeignKey",
@@ -81,6 +84,7 @@ __all__ = [
     "DataSource",
     "SourceCredential",
     "SourceCatalogHead",
+    "SourceSampleExclusion",
     "SourceStatus",
     "SourceTableScope",
     "SourceType",

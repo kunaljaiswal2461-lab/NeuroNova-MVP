@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic import StrictBool, BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from app.db.models.source import SourceStatus, SourceType, TLSMode
 from app.db.models.catalog import (
@@ -674,6 +674,91 @@ class SourceProfilingConfigurationResponse(BaseModel):
     # Completed aggregate-only profiles are retained; every read rechecks the
     # current source owner and selected-table scope.
     historical_profiles_retained: Literal[True] = True
+
+
+class SampleColumnName(BaseModel):
+    """A column named by schema, table and column. Names only; never a value."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    schema_name: str = Field(min_length=1, max_length=63, alias="schema")
+    table: str = Field(min_length=1, max_length=63)
+    column: str = Field(min_length=1, max_length=63)
+
+
+class SampleValuesConfigurationRequest(BaseModel):
+    """Owner-only. ``excluded_columns`` REPLACES the exclusion list; omit a field to leave it unchanged."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    excluded_columns: list[SampleColumnName] | None = Field(default=None, max_length=2000)
+
+
+class SampleCollectedColumn(SampleColumnName):
+    method: Literal["pg_stats", "exact"]
+    value_count: int
+
+
+class SampleSkippedColumn(SampleColumnName):
+    reason: str
+
+
+class SampleValuesResponse(BaseModel):
+    """Counts and names only. The values go to the model, not to another API surface (SPEC-07 I7)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool
+    sample_values_generation: int
+    excluded_columns: list[SampleColumnName]
+    collected: list[SampleCollectedColumn]
+    skipped: list[SampleSkippedColumn]
+
+
+class AiSettingsRequest(BaseModel):
+    """Owner-only (SPEC-09 W3.1). Omit a field to leave it unchanged. The sample-values switch has its own endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    result_rows_to_model: StrictBool | None = None
+
+
+class AiSettingsResponse(BaseModel):
+    result_rows_to_model: bool
+    sample_values_enabled: bool
+    result_rows_to_model_generation: int
+
+
+class ColumnPrivacyEntry(BaseModel):
+    """One text column with the suggestion, the owner's override and the effective flag. Names only."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_name: str = Field(alias="schema")
+    table: str
+    column: str
+    type: str
+    suggested_personal: bool
+    state: Literal["personal", "not_personal"] | None
+    effective_personal: bool
+
+
+class ColumnPrivacyChange(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    schema_name: str = Field(min_length=1, max_length=63, alias="schema")
+    table: str = Field(min_length=1, max_length=63)
+    column: str = Field(min_length=1, max_length=63)
+    state: Literal["personal", "not_personal"] | None
+
+
+class ColumnPrivacyUpdateRequest(BaseModel):
+    """``state: null`` clears the override so the suggestion applies again."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    changes: list[ColumnPrivacyChange] = Field(max_length=2000)
 
 
 class SourceProfileTableSelectionRequest(BaseModel):

@@ -35,6 +35,13 @@ class PostgresQueryRun(Base, TimestampMixin):
     __tablename__ = "postgres_query_runs"
     __table_args__ = (
         CheckConstraint("returned_row_count >= 0", name="returned_row_count_nonnegative"),
+        CheckConstraint("query_kind IN ('compiled','sql')", name="query_kind_valid"),
+        # Compiled runs name their one asset; SQL runs may touch several, listed in
+        # postgres_query_run_assets (MATCH SIMPLE skips the composite FK when asset_id is NULL).
+        CheckConstraint(
+            "(query_kind = 'compiled' AND asset_id IS NOT NULL) OR (query_kind = 'sql' AND asset_id IS NULL)",
+            name="query_kind_asset_consistent",
+        ),
         ForeignKeyConstraint(
             ["source_id", "owner_user_id"],
             ["data_sources.id", "data_sources.owner_user_id"],
@@ -93,9 +100,21 @@ class PostgresQueryRun(Base, TimestampMixin):
     owner_user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
     source_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
     snapshot_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
-    asset_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
-    # Stage 4A's structural fingerprint; never a SQL or parameter fingerprint.
-    plan_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    asset_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    # 'compiled' (Stage 4B plan) or 'sql' (validated model SQL, SPEC-05). SQL text is never stored.
+    query_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="compiled", server_default="compiled"
+    )
+    # The structural fingerprint: for 'compiled' Stage 4A's plan fingerprint, for 'sql' the SQL with every
+    # literal replaced by a placeholder (SPEC-05 F10). Never a SQL-text or parameter fingerprint.
+    plan_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        comment=(
+            "Structural fingerprint: Stage 4A plan fingerprint (compiled) or SQL with literals replaced "
+            "by placeholders (sql). Never a SQL-text or parameter fingerprint."
+        ),
+    )
     status: Mapped[PostgresQueryRunStatus] = mapped_column(
         Enum(PostgresQueryRunStatus, name="postgres_query_run_status_enum", native_enum=True),
         nullable=False,
@@ -125,3 +144,27 @@ class PostgresQueryRun(Base, TimestampMixin):
         nullable=True,
         index=True,
     )
+
+
+class PostgresQueryRunAsset(Base):
+    """One catalog asset read by a 'sql' run (a raw SELECT can touch several tables)."""
+
+    __tablename__ = "postgres_query_run_assets"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["run_id"], ["postgres_query_runs.id"],
+            name="fk_postgres_query_run_assets_run_id_postgres_query_runs",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["source_id", "snapshot_id", "asset_id"],
+            ["catalog_assets.source_id", "catalog_assets.snapshot_id", "catalog_assets.id"],
+            name="fk_postgres_query_run_assets_source_snapshot_asset",
+            ondelete="CASCADE",
+        ),
+    )
+
+    run_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    asset_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    source_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)

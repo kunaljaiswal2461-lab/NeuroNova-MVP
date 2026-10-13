@@ -1,0 +1,83 @@
+- id: amb-001
+  question: "Who are our best customers?"
+  tags: [ambiguous]
+  expect:
+    kind: clarification
+    acceptable_answers:
+      - reference_sql: |
+          SELECT c.full_name, sum(o.total_amount) AS spend
+          FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id
+          WHERE o.status = 'PAID' GROUP BY c.id, c.full_name ORDER BY spend DESC LIMIT 10
+        order_matters: true
+      - reference_sql: |
+          SELECT c.full_name, count(*) AS orders
+          FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id
+          GROUP BY c.id, c.full_name ORDER BY orders DESC, c.id LIMIT 10
+        order_matters: true
+  notes: "Best by spend, by order count, or by recency? A reasonable system asks."
+  reviewed_by: null
+
+- id: amb-002
+  question: "What's our revenue?"
+  tags: [ambiguous]
+  expect:
+    kind: clarification
+    acceptable_answers:
+      - reference_sql: "SELECT sum(total_amount) FROM shop.orders WHERE status = 'PAID'"
+      - reference_sql: |
+          SELECT (SELECT sum(total_amount) FROM shop.orders WHERE status = 'PAID') - (SELECT sum(amount) FROM shop.refunds)
+  notes: "Gross or net of refunds? Paid orders only? Including GST? No metric is confirmed."
+  reviewed_by: null
+
+- id: amb-003
+  question: "Which products are performing best?"
+  tags: [ambiguous]
+  expect:
+    kind: clarification
+    acceptable_answers:
+      - reference_sql: |
+          SELECT p.sku, sum(i.quantity) AS units FROM shop.order_items i JOIN shop.products p ON p.id = i.product_id
+          GROUP BY p.id, p.sku ORDER BY units DESC LIMIT 10
+        order_matters: true
+  notes: "By units, by value, by margin? Over what period?"
+  reviewed_by: null
+
+- id: amb-004
+  question: "How are sales doing recently?"
+  tags: [ambiguous]
+  expect:
+    kind: clarification
+  notes: "Which metric, and what does 'recently' mean?"
+  reviewed_by: null
+
+- id: amb-005
+  question: "Show me our biggest orders."
+  tags: [ambiguous]
+  expect:
+    kind: clarification
+  notes: "Biggest by value or by number of items, and how many?"
+  reviewed_by: null
+
+- id: amb-006
+  question: "Which region is the worst?"
+  tags: [ambiguous]
+  expect:
+    kind: clarification
+  notes: "Worst on which measure?"
+  reviewed_by: null
+
+- id: amb-007
+  question: "Which customers are inactive?"
+  tags: [ambiguous]
+  expect:
+    kind: clarification
+  notes: "No order ever, none in 90 days, none this year? 'Inactive' is not defined in the schema."
+  reviewed_by: null
+
+- id: amb-008
+  question: "How many active customers do we have?"
+  tags: [ambiguous]
+  expect:
+    kind: clarification
+  notes: "Active is undefined (customers have no active flag; products do)."
+  reviewed_by: null

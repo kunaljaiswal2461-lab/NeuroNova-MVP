@@ -23,6 +23,15 @@ from app.services.stale_dataset_reconciler import run_stale_dataset_reconciler
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
+    log = get_logger(__name__)
+    settings = get_settings()
+    log.info("app.config", app_env=settings.app_env)
+    if settings.jwt_secret_ephemeral:
+        log.warning(
+            "auth.jwt_secret.ephemeral",
+            detail="JWT_SECRET_KEY not set; using a per-process random key. "
+                   "Tokens will not survive a restart. Dev only.",
+        )
     reconciler = asyncio.create_task(
         run_stale_dataset_reconciler(), name="stale-dataset-reconciler",
     )

@@ -110,6 +110,9 @@ class _Statement:
 
 
 class _Connection:
+    async def set_type_codec(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
     def __init__(
         self,
         *,

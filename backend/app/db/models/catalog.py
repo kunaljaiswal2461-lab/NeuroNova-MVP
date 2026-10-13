@@ -19,6 +19,8 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    JSON,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -153,6 +155,9 @@ class CatalogSnapshot(Base):
     sync_run_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
     scope_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # SPEC-07 B5: ``[[schema, table, column, reason], ...]`` for the text columns that got no sample values, or
+    # NULL when this snapshot was published without a collection (switch off, or the fence moved). Never a value.
+    sample_skips: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -245,6 +250,8 @@ class CatalogColumn(Base):
             "column_name",
             name="uq_catalog_columns_asset_name",
         ),
+        # Target of the composite FK from catalog_column_samples (SPEC-07); trivially unique because id is the PK.
+        UniqueConstraint("source_id", "snapshot_id", "id", name="uq_catalog_columns_source_snapshot_id"),
         UniqueConstraint(
             "source_id",
             "snapshot_id",
@@ -516,3 +523,32 @@ class CatalogForeignKeyColumn(Base):
     referenced_asset_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     referencing_column_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     referenced_column_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+
+
+class CatalogColumnSample(Base):
+    """Example values of one text column in one snapshot (SPEC-07 D1). Row data: delete with the source's switch.
+
+    ``values`` is a JSON array of ``{"v": str, "f": float}`` ordered by frequency then code point. The values are
+    byte-exact (case and trailing spaces kept). They are sent to the model and are never returned by an API.
+    """
+
+    __tablename__ = "catalog_column_samples"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["source_id", "snapshot_id", "column_id"],
+            ["catalog_columns.source_id", "catalog_columns.snapshot_id", "catalog_columns.id"],
+            name="fk_catalog_column_samples_column",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("method IN ('pg_stats','exact')", name="method_valid"),
+        Index("ix_catalog_column_samples_source", "source_id"),
+    )
+
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    column_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    source_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    values: Mapped[list] = mapped_column(JSON, nullable=False)
+    method: Mapped[str] = mapped_column(String(16), nullable=False)
+    coverage: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sample_values_generation: Mapped[int] = mapped_column(Integer, nullable=False)

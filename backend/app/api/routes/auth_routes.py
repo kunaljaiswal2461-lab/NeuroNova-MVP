@@ -261,7 +261,7 @@ async def google_oauth_start(frontend_origin: str, settings: SettingsDep):
     state = create_one_time_token(
         return_origin,
         "google_oauth_return_origin",
-        settings.jwt_secret_key,
+        settings.jwt_signing_key,
         expire_hours=1,
     )
     params = {
@@ -299,7 +299,7 @@ async def google_oauth_callback(
 
     try:
         return_origin = decode_one_time_token(
-            state, "google_oauth_return_origin", settings.jwt_secret_key
+            state, "google_oauth_return_origin", settings.jwt_signing_key
         )
         return_origin = _validated_frontend_origin(return_origin, settings)
     except JWTError as exc:

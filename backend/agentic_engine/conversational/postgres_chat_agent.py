@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +18,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.connectors.postgres_query_executor import PostgresExecutionCancellation
 from app.core.config import Settings, get_settings
 from app.db.session import get_sessionmaker
-from app.services import metric_service, relationship_service
+from app.schemas.nl_sql_record import NlSqlTurn
+from app.services import column_privacy, metric_service, relationship_service
+from app.services.nl_sql import messages as nl_messages
+from app.services.nl_sql.adapter import to_chat_result
+from app.services.nl_sql.history import history_from_messages
+from app.services.nl_sql.cancel import TurnCancelled
+from app.services.nl_sql.pass2 import write_presentation
+from app.services.nl_sql.pipeline import PipelineEvent, PipelineOutcome, answer_question
+from app.services.nl_sql.turn_record import build_turn_record, presentation_record, sse_presentation
+from app.services.nl_sql.write_guard import is_write_or_ddl_request
 from app.services.postgres_query_executor import (
     PostgresQueryDeliveryBinding,
     PostgresQueryExecutionResult,
@@ -41,6 +51,8 @@ from agentic_engine.conversational.postgres_planner import (
     postgres_history_for_prompt,
 )
 from agentic_engine.llm_engine.base_llm import LLMClient
+from agentic_engine.llm_engine.factory import build_llm, llm_available
+from agentic_engine.llm_engine.models import TokenUsage
 from agentic_engine.llm_engine.openai_client import build_client
 
 
@@ -90,7 +102,10 @@ async def _persist_assistant(
     degraded_reason: str | None = None,
     token_usage: Any | None = None,
     commit: bool = True,
+    nl_sql: NlSqlTurn | None = None,
 ) -> ChatMessage:
+    # ``nl_sql`` is passed only by the model-written-SQL path, so a typed-path turn calls the manager exactly as before.
+    extra: dict[str, Any] = {"nl_sql": nl_sql} if nl_sql is not None else {}
     return await manager.append_message(
         session_db=session_db,
         session_id=session_id,
@@ -103,6 +118,7 @@ async def _persist_assistant(
         degraded_reason=degraded_reason,
         token_usage=token_usage,
         commit=commit,
+        **extra,
     )
 
 
@@ -178,6 +194,7 @@ async def _persist_postgres_result_with_delivery_guard(
     degraded: bool,
     degraded_reason: str | None,
     token_usage: Any | None,
+    nl_sql: NlSqlTurn | None = None,
 ) -> ChatMessage | None:
     """Commit one row-bearing message while the saved source remains fenced.
 
@@ -220,6 +237,7 @@ async def _persist_postgres_result_with_delivery_guard(
                     degraded_reason=degraded_reason,
                     token_usage=token_usage,
                     commit=False,
+                    nl_sql=nl_sql,
                 )
             except Exception as exc:
                 raise _PostgresResultPersistenceError() from exc
@@ -333,6 +351,331 @@ async def _persist_cancelled_after_disconnect(
         return
 
 
+# ── SPEC-09: the model-written-SQL path ──────────────────────────────────────────────────────────
+
+def _sql_sse(event: PipelineEvent, *, source_id: uuid.UUID) -> ChatStreamEvent:
+    if event.name == "sql_generated":
+        return _event(ChatStreamEventType.SQL_GENERATED, dict(event.data))
+    if event.name == "repairing":
+        return _event(ChatStreamEventType.REPAIRING, {"reason_code": event.data.get("reason_code")})
+    return _event(
+        ChatStreamEventType.EXECUTING,
+        {"state": "executing", "source_id": str(source_id), "snapshot_id": event.data.get("snapshot_id")},
+    )
+
+
+async def _question_names_a_metric(
+    session_db: AsyncSession, *, owner_user_id: uuid.UUID, source_id: uuid.UUID, question: str
+) -> bool:
+    """R3: does the question name a confirmed metric (matched or ambiguous)? ``unavailable`` and errors mean no."""
+    try:
+        match = await metric_service.match_metric_definition_for_question(
+            session_db, owner_user_id=owner_user_id, source_id=source_id, question=question
+        )
+    except Exception:
+        match = None
+    finally:
+        try:
+            await session_db.rollback()
+        except Exception:
+            pass
+    return match is not None and getattr(match, "kind", None) in ("matched", "ambiguous")
+
+
+def _usage_of(calls: Any, extra: TokenUsage | None = None) -> TokenUsage:
+    usage = TokenUsage()
+    if extra is not None:
+        usage.input_tokens, usage.output_tokens, usage.call_count = (
+            extra.input_tokens, extra.output_tokens, extra.call_count
+        )
+    for call in calls:
+        usage.add(call.input_tokens, call.output_tokens)
+    return usage
+
+
+async def _load_privacy_flags(session_factory: Callable[[], Any], source_id: uuid.UUID):
+    """Effective personal-data flags of the head snapshot, read once. ``None`` means unreadable (fail closed)."""
+    try:
+        async with session_factory() as session:
+            try:
+                return await column_privacy.load_effective_flags(session, source_id)
+            finally:
+                await session.rollback()
+    except Exception:
+        return None
+
+
+async def _stream_sql_path(
+    *,
+    route: str,
+    session_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+    source_id: uuid.UUID,
+    user_message: str,
+    session_db: AsyncSession,
+    settings: Settings,
+    llm: LLMClient | None,
+    cancellation: PostgresExecutionCancellation,
+    app_session_factory: Callable[[], Any],
+    messages: list[ChatMessage],
+    carried_usage: TokenUsage | None,
+    set_persisted: Callable[[], None],
+    set_emitted: Callable[[], None],
+    cancelled_events: Callable[[], Any],
+    sql_execute: Callable[..., Any] | None = None,
+    sql_execute_kwargs: Mapping[str, Any] | None = None,
+    turn_started: datetime | None = None,
+) -> AsyncIterator[ChatStreamEvent]:
+    """Pass 1 (+ at most one repair), execution, pass 2, and the guarded delivery of one answer."""
+
+    turn_started = turn_started or datetime.now(timezone.utc)
+    if llm is None and not llm_available(settings):
+        # The typed path is unaffected; only a SQL-path turn needs the model (W2.1).
+        message = nl_messages.MODEL_NOT_CONFIGURED
+        assistant = await _persist_assistant(
+            session_db=session_db, session_id=session_id, content=message, degraded=True,
+            degraded_reason="model_unavailable", token_usage=carried_usage,
+        )
+        set_persisted()
+        yield _event(ChatStreamEventType.ERROR, {"code": "model_unavailable", "message": message})
+        yield _event(ChatStreamEventType.TOKEN, {"text": message})
+        yield _done(assistant, token_usage=carried_usage)
+        return
+    active_llm = llm if llm is not None else build_llm(settings)
+    history = history_from_messages(messages[:-1])
+
+    queue: asyncio.Queue[PipelineEvent] = asyncio.Queue()
+
+    async def on_event(event: PipelineEvent) -> None:
+        await queue.put(event)
+
+    task = asyncio.ensure_future(
+        answer_question(
+            session_factory=app_session_factory,
+            settings=settings,
+            llm=active_llm,
+            user_id=owner_user_id,
+            source_id=source_id,
+            question=user_message,
+            history=history,
+            reference_time=turn_started,
+            time_zone=settings.nl_sql_default_time_zone,
+            cancellation=cancellation,
+            on_event=on_event,
+            execute=sql_execute,
+            execute_kwargs=sql_execute_kwargs,
+        )
+    )
+    try:
+        while True:
+            getter = asyncio.ensure_future(queue.get())
+            done, _ = await asyncio.wait({getter, task}, return_when=asyncio.FIRST_COMPLETED)
+            if getter in done:
+                yield _sql_sse(getter.result(), source_id=source_id)
+                continue
+            getter.cancel()
+            break
+        while not queue.empty():
+            yield _sql_sse(queue.get_nowait(), source_id=source_id)
+        outcome: PipelineOutcome = task.result()
+    finally:
+        if not task.done():
+            task.cancel()
+
+    if outcome.failure_code == "execution_cancelled" or cancellation.cancelled:
+        for event in await cancelled_events():
+            yield event
+        return
+    await session_db.rollback()
+
+    usage = _usage_of(outcome.llm_calls, carried_usage)
+    snapshot_id = str(outcome.snapshot_id) if outcome.snapshot_id else None
+
+    if outcome.kind in ("clarification", "unsupported"):
+        text = outcome.user_message or nl_messages.GENERIC
+        record = build_turn_record(route=route, outcome=outcome, presentation=None, llm_calls=outcome.llm_calls, pass2_ran=False)
+        assistant = await _persist_assistant(
+            session_db=session_db, session_id=session_id, content=text,
+            unsupported=outcome.kind == "unsupported", token_usage=usage, nl_sql=record,
+        )
+        set_persisted()
+        yield _event(
+            ChatStreamEventType.CLARIFICATION if outcome.kind == "clarification" else ChatStreamEventType.UNSUPPORTED,
+            {"message": text, "outcome": outcome.kind, "snapshot_id": snapshot_id},
+        )
+        yield _event(ChatStreamEventType.TOKEN, {"text": text})
+        yield _done(assistant, token_usage=usage)
+        return
+
+    if outcome.kind == "failed":
+        text = outcome.user_message or nl_messages.GENERIC
+        record = build_turn_record(route=route, outcome=outcome, presentation=None, llm_calls=outcome.llm_calls, pass2_ran=False)
+        assistant = await _persist_assistant(
+            session_db=session_db, session_id=session_id, content=text, degraded=True,
+            degraded_reason=outcome.failure_code, token_usage=usage, nl_sql=record,
+        )
+        set_persisted()
+        yield _event(ChatStreamEventType.ERROR, {"code": outcome.failure_code, "message": text})
+        yield _event(ChatStreamEventType.TOKEN, {"text": text})
+        yield _done(assistant, token_usage=usage)
+        return
+
+    # ── an answer: the rows exist; decide what may leave the process ───────────────────────────────
+    execution = outcome.execution
+    assert execution is not None and outcome.envelope is not None
+    adapted = to_chat_result(
+        execution, started_at=turn_started, completed_at=datetime.now(timezone.utc),
+        row_cap=settings.postgres_execution_max_result_rows,
+    )
+    access_changed = {"code": "access_changed", "message": "Access changed before the database result could be delivered."}
+    if not await _authorize_before_disclosure(
+        owner_user_id=owner_user_id, session_id=session_id, session_factory=app_session_factory
+    ):
+        set_emitted()
+        yield _event(ChatStreamEventType.ERROR, access_changed)
+        yield _event(ChatStreamEventType.DONE, {"session_id": str(session_id)})
+        return
+    binding = _delivery_binding_for_result(adapted, owner_user_id=owner_user_id, source_id=source_id)
+    if binding is None:
+        set_emitted()
+        yield _event(ChatStreamEventType.ERROR, access_changed)
+        yield _event(ChatStreamEventType.DONE, {"session_id": str(session_id)})
+        return
+
+    # W4.6: a check, not a hold. If the source was revoked since the query ran, no row goes to the model.
+    try:
+        async with postgres_query_delivery_guard(
+            app_session_factory, owner_user_id=owner_user_id, binding=binding, settings=settings
+        ):
+            pass
+        revoked = False
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        revoked = True
+    if revoked:
+        text = nl_messages.ACCESS_REVOKED
+        record = build_turn_record(route=route, outcome=outcome, presentation=None, llm_calls=outcome.llm_calls, pass2_ran=False)
+        assistant = await _persist_assistant(
+            session_db=session_db, session_id=session_id, content=text, degraded=True,
+            degraded_reason="access_revoked", token_usage=usage,
+        )
+        set_persisted()
+        yield _event(ChatStreamEventType.ERROR, {"code": "access_revoked", "message": text})
+        yield _event(ChatStreamEventType.TOKEN, {"text": text})
+        yield _done(assistant, token_usage=usage)
+        return
+    if cancellation.cancelled:
+        for event in await cancelled_events():
+            yield event
+        return
+
+    consent, _generation = await column_privacy.read_consent(
+        app_session_factory, source_id=source_id, owner_user_id=owner_user_id
+    )
+    flags = await _load_privacy_flags(app_session_factory, source_id) if consent else None
+    if consent and flags is None:
+        consent = False                                # unreadable privacy flags: send no row
+    flags = flags or column_privacy.PrivacyFlags({}, {})
+    pass2 = None
+    if not cancellation.cancelled:
+        try:
+            pass2 = await write_presentation(
+                llm=active_llm, settings=settings, question=user_message, envelope=outcome.envelope,
+                execution=execution, flags=flags, consent=consent, repaired=outcome.repair is not None,
+                cancellation=cancellation,
+            )
+        except TurnCancelled:
+            pass2 = None                      # the turn was cancelled during the model call: nothing is delivered
+    if pass2 is None or cancellation.cancelled:
+        for event in await cancelled_events():
+            yield event
+        return
+
+    all_calls = (*outcome.llm_calls, *((pass2.llm_call,) if pass2.llm_call is not None else ()))
+    usage = _usage_of(all_calls, carried_usage)
+    summary = _summary_for_result(adapted)
+    presentation = presentation_record(
+        pass2, summary=summary, consent=consent, complete=adapted.complete, repaired=outcome.repair is not None
+    )
+    content = presentation.answer
+    record = build_turn_record(
+        route=route, outcome=outcome, presentation=presentation, llm_calls=all_calls, pass2_ran=True
+    )
+
+    delivery_allowed = False
+    assistant: ChatMessage | None = None
+    async with cancellation.delivery_guard() as delivery_allowed:
+        if delivery_allowed:
+            assistant = await _persist_postgres_result_with_delivery_guard(
+                owner_user_id=owner_user_id, session_id=session_id, source_id=source_id, result=adapted,
+                content=content, settings=settings, session_factory=app_session_factory, degraded=False,
+                degraded_reason=None, token_usage=usage, nl_sql=record,
+            )
+            if assistant is not None:
+                set_persisted()
+    if not delivery_allowed:
+        for event in await cancelled_events():
+            yield event
+        return
+    if assistant is None:
+        set_emitted()
+        yield _event(ChatStreamEventType.ERROR, access_changed)
+        yield _event(ChatStreamEventType.DONE, {"session_id": str(session_id)})
+        return
+    if cancellation.cancelled or not await _authorize_before_disclosure(
+        owner_user_id=owner_user_id, session_id=session_id, session_factory=app_session_factory
+    ):
+        set_emitted()
+        if cancellation.cancelled:
+            yield _event(ChatStreamEventType.ERROR, {
+                "code": "execution_cancelled",
+                "message": "The database calculation was cancelled before its result could be delivered.",
+            })
+            yield _done(assistant, token_usage=usage)
+        else:
+            yield _event(ChatStreamEventType.ERROR, access_changed)
+            yield _event(ChatStreamEventType.DONE, {"session_id": str(session_id)})
+        return
+
+    sse_allowed = False
+    try:
+        async with postgres_query_delivery_guard(
+            app_session_factory, owner_user_id=owner_user_id, binding=binding, settings=settings
+        ) as delivery_session:
+            conversation = await manager.get_session_for_access(
+                delivery_session, session_id, access=manager.ConversationAccess.for_user(owner_user_id)
+            )
+            if (
+                conversation.session.source_id == source_id
+                and conversation.source is not None
+                and conversation.source.id == source_id
+                and not cancellation.cancelled
+            ):
+                sse_allowed = True
+                set_emitted()
+                yield _event(ChatStreamEventType.POSTGRES_RESULT, {"postgres_result": adapted.model_dump(mode="json")})
+                yield _event(ChatStreamEventType.PRESENTATION, sse_presentation(presentation))
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        sse_allowed = False
+    if not sse_allowed:
+        set_emitted()
+        if cancellation.cancelled:
+            yield _event(ChatStreamEventType.ERROR, {
+                "code": "execution_cancelled",
+                "message": "The database calculation was cancelled before its result could be delivered.",
+            })
+            yield _done(assistant, token_usage=usage)
+        else:
+            yield _event(ChatStreamEventType.ERROR, access_changed)
+            yield _event(ChatStreamEventType.DONE, {"session_id": str(session_id)})
+        return
+    yield _event(ChatStreamEventType.TOKEN, {"text": content})
+    yield _done(assistant, token_usage=usage)
+
+
 async def stream_postgres_chat_turn(
     *,
     session_id: uuid.UUID,
@@ -347,8 +690,11 @@ async def stream_postgres_chat_turn(
     executor: Callable[..., Any] | None = None,
     session_factory: Callable[[], Any] | None = None,
     turn_id: uuid.UUID | None = None,
+    sql_execute: Callable[..., Any] | None = None,
+    sql_execute_kwargs: Mapping[str, Any] | None = None,
 ) -> AsyncIterator[ChatStreamEvent]:
-    """Run one source-bound chat turn without ever accepting raw SQL.
+    """Run one source-bound chat turn. The typed path never accepts raw SQL; the SQL path (hybrid mode) runs model SQL
+    only after the validator and the restricted gateway (SPEC-09).
 
     User messages are committed before planning because the remote gateway uses
     its own short-lived session factory.  Every normal terminal path writes
@@ -436,6 +782,14 @@ async def stream_postgres_chat_turn(
             terminal_emitted = True
             return (_event(ChatStreamEventType.DONE, {"session_id": str(session_id)}),)
 
+    def _mark_persisted() -> None:
+        nonlocal terminal_persisted
+        terminal_persisted = True
+
+    def _mark_emitted() -> None:
+        nonlocal terminal_emitted
+        terminal_emitted = True
+
     async def _persist_safe_delivery_failure() -> ChatMessage | None:
         """Record a failed result handoff without converting it into cancel.
 
@@ -516,6 +870,47 @@ async def stream_postgres_chat_turn(
             for event in await _cancelled_events():
                 yield event
             return
+        # SPEC-09 W2.1. ``typed_only`` skips all of this and the turn is exactly the Stage 4C turn.
+        fallthrough_allowed = False
+        if settings.nl_sql_route_mode == "hybrid":
+            if is_write_or_ddl_request(user_message):
+                # R2: a write request reaches no model on either path.
+                assistant = await _persist_assistant(
+                    session_db=session_db, session_id=session_id, content=nl_messages.WRITE_REFUSAL, unsupported=True
+                )
+                terminal_persisted = True
+                yield _event(
+                    ChatStreamEventType.UNSUPPORTED,
+                    {"message": nl_messages.WRITE_REFUSAL, "outcome": "unsupported", "snapshot_id": None},
+                )
+                yield _event(ChatStreamEventType.TOKEN, {"text": nl_messages.WRITE_REFUSAL})
+                yield _done(assistant)
+                return
+            if not await _question_names_a_metric(
+                session_db, owner_user_id=owner_user_id, source_id=session.source_id, question=user_message
+            ):
+                async for event in _stream_sql_path(
+                    route="sql",
+                    session_id=session_id,
+                    owner_user_id=owner_user_id,
+                    source_id=session.source_id,
+                    user_message=user_message,
+                    session_db=session_db,
+                    settings=settings,
+                    llm=llm,
+                    cancellation=cancellation,
+                    app_session_factory=app_session_factory,
+                    messages=messages,
+                    carried_usage=None,
+                    set_persisted=_mark_persisted,
+                    set_emitted=_mark_emitted,
+                    cancelled_events=_cancelled_events,
+                    sql_execute=sql_execute,
+                    sql_execute_kwargs=sql_execute_kwargs,
+                ):
+                    yield event
+                return
+            fallthrough_allowed = True       # R3: a confirmed metric keeps the typed path
         active_llm = llm if llm is not None else build_client(settings.openai_api_key)
         planning = await plan_postgres_question(
             session=session_db,
@@ -529,6 +924,31 @@ async def stream_postgres_chat_turn(
         )
         if cancellation.cancelled:
             for event in await _cancelled_events():
+                yield event
+            return
+
+        if fallthrough_allowed and not planning.executable and planning.kind == "unsupported":
+            # R3a: the typed path cannot do this (for example a join that is not an approved relationship). The
+            # confirmed metric is in the schema glossary, so model SQL may still answer. Exactly once.
+            async for event in _stream_sql_path(
+                route="sql_after_metric_fallthrough",
+                session_id=session_id,
+                owner_user_id=owner_user_id,
+                source_id=session.source_id,
+                user_message=user_message,
+                session_db=session_db,
+                settings=settings,
+                llm=llm,
+                cancellation=cancellation,
+                app_session_factory=app_session_factory,
+                messages=messages,
+                carried_usage=planning.token_usage,
+                set_persisted=_mark_persisted,
+                set_emitted=_mark_emitted,
+                cancelled_events=_cancelled_events,
+                sql_execute=sql_execute,
+                sql_execute_kwargs=sql_execute_kwargs,
+            ):
                 yield event
             return
 

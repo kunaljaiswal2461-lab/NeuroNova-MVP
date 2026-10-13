@@ -41,6 +41,7 @@ from app.db.models.conversation import (
 from app.db.models.dataset import DatasetRecord, DatasetStatus
 from app.db.models.source import DataSource
 from app.exceptions.custom_exceptions import NotFoundError
+from app.schemas.nl_sql_record import NlSqlTurn
 from app.services.postgres_query_executor import PostgresQueryExecutionResult
 from agentic_engine.conversational.models import (
     MAX_HISTORY_MESSAGES,
@@ -375,6 +376,7 @@ async def append_message(
     citations: list[RagCitation] | None = None,
     query_result: QueryResult | None = None,
     postgres_result: PostgresChatResult | PostgresQueryExecutionResult | None = None,
+    nl_sql: NlSqlTurn | None = None,
     degraded: bool = False,
     degraded_reason: str | None = None,
     unsupported: bool = False,
@@ -408,6 +410,7 @@ async def append_message(
             if normalized_postgres_result is not None
             else None
         ),
+        nl_sql=nl_sql.model_dump(mode="json") if nl_sql is not None else None,
         degraded=degraded,
         degraded_reason=degraded_reason,
         unsupported=unsupported,
@@ -656,6 +659,7 @@ def _row_to_message(row: ChatMessageRow) -> ChatMessage:
         citations=citations,
         query_result=query_result,
         postgres_result=postgres_result,
+        nl_sql=_decode_nl_sql(row.nl_sql),
         # ``expression`` is the exact normalised string that the query
         # executor validated and compiled. It remains display-only: prompt
         # history is built solely from ``content`` above.
@@ -726,6 +730,16 @@ def _decode_postgres_result(blob: dict[str, Any] | None) -> PostgresChatResult |
         # Validation errors can echo an invalid value (including a result cell),
         # so deliberately avoid serializing the exception into audit logs.
         logger.warning("conversation.postgres_result_decode_failed")
+        return None
+
+
+def _decode_nl_sql(blob: dict[str, Any] | None) -> NlSqlTurn | None:
+    if not blob:
+        return None
+    try:
+        return NlSqlTurn.model_validate(blob)
+    except Exception:  # pragma: no cover - schema drift guard; never echo the value
+        logger.warning("conversation.nl_sql_decode_failed")
         return None
 
 

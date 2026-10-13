@@ -1,0 +1,215 @@
+- id: stf-001
+  question: "Show me the customers in Mumbai who signed up in 2026."
+  tags: [single_table_filter]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT id, full_name, email, signup_at
+      FROM shop.customers
+      WHERE city = 'Mumbai'
+        AND signup_at >= TIMESTAMPTZ '2026-01-01 00:00:00+05:30'
+    output_type: table
+  notes: "Year boundary is IST. 2026 means 1 Jan 2026 onwards (data runs to 9 June)."
+  reviewed_by: null
+
+- id: stf-002
+  question: "Which active Electronics products cost more than 40,000 rupees?"
+  tags: [single_table_filter]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT id, sku, name, unit_price
+      FROM shop.products
+      WHERE category = 'Electronics' AND is_active AND unit_price > 40000
+    output_type: table
+  notes: "'Active' means is_active = true. Strictly more than 40000."
+  reviewed_by: null
+
+- id: stf-003
+  question: "List the phone-channel orders worth more than 600,000 rupees."
+  tags: [single_table_filter]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT id, ordered_at, status, total_amount
+      FROM shop.orders
+      WHERE channel = 'phone' AND total_amount > 600000
+    output_type: table
+  notes: "Any status. Channel value is lowercase 'phone'."
+  reviewed_by: null
+
+- id: stf-004
+  question: "Show the refunds larger than 500,000 rupees."
+  tags: [single_table_filter]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT id, order_id, amount, reason
+      FROM shop.refunds
+      WHERE amount > 500000
+    output_type: table
+  reviewed_by: null
+
+- id: stf-005
+  question: "Which products are no longer active? Give me their SKUs and names."
+  tags: [single_table_filter]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT sku, name
+      FROM shop.products
+      WHERE NOT is_active
+    output_type: table
+  reviewed_by: null
+
+- id: stf-006
+  question: "Show the orders placed on 14 June 2026."
+  tags: [single_table_filter, tz_boundary]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT id, customer_id, status, total_amount
+      FROM shop.orders
+      WHERE ordered_at >= TIMESTAMPTZ '2026-06-14 00:00:00+05:30'
+        AND ordered_at <  TIMESTAMPTZ '2026-06-15 00:00:00+05:30'
+    output_type: table
+  notes: "A calendar day is an IST day. A UTC day would miss the first 5.5 hours of the IST day and add orders from 15 June IST. accept-survivor:drop_predicate (dropping this predicate cannot change the answer on this data (the bound lies beyond the data, which ends on 14 June 2026, or the predicate is redundant)); accept-survivor:flip_comparison (no row sits exactly on this boundary, or the comparison is between aggregates that cannot tie)"
+  reviewed_by: null
+
+- id: stf-007
+  question: "Who are our customers in Panaji?"
+  tags: [single_table_filter]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT id, full_name, email
+      FROM shop.customers
+      WHERE city = 'Panaji'
+    output_type: table
+  reviewed_by: null
+
+- id: stf-008
+  question: "Which products cost under 1,000 rupees?"
+  tags: [single_table_filter]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT id, sku, name, category, unit_price
+      FROM shop.products
+      WHERE unit_price < 1000
+    output_type: table
+  notes: "Includes inactive products: the question does not say 'we sell'."
+  reviewed_by: null
+
+- id: stf-009
+  question: "Show the 'Late delivery' refunds that were more than 100,000 rupees."
+  tags: [single_table_filter]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT id, order_id, amount, refunded_at
+      FROM shop.refunds
+      WHERE reason = 'Late delivery' AND amount > 100000
+    output_type: table
+  reviewed_by: null
+
+- id: stf-010
+  question: "Show the checkout page views between 11 pm and midnight on 14 June 2026."
+  tags: [single_table_filter, tz_boundary]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT id, customer_id, viewed_at
+      FROM shop.page_views
+      WHERE path = '/checkout'
+        AND viewed_at >= TIMESTAMPTZ '2026-06-14 23:00:00+05:30'
+        AND viewed_at <  TIMESTAMPTZ '2026-06-15 00:00:00+05:30'
+    output_type: table
+  notes: "Times are IST. The path value is '/checkout' with a leading slash. This table has 2,000,000 rows. accept-survivor:drop_predicate (dropping this predicate cannot change the answer on this data (the bound lies beyond the data, which ends on 14 June 2026, or the predicate is redundant)); accept-survivor:flip_comparison (no row sits exactly on this boundary, or the comparison is between aggregates that cannot tie)"
+  reviewed_by: null
+
+- id: stf-011
+  question: "Which orders placed before 10 January 2024 are still pending?"
+  tags: [single_table_filter]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT id, customer_id, ordered_at, total_amount
+      FROM shop.orders
+      WHERE status = 'pending'
+        AND ordered_at < TIMESTAMPTZ '2024-01-10 00:00:00+05:30'
+    output_type: table
+  notes: "Status literal is lowercase 'pending' in the data."
+  reviewed_by: null
+
+- id: stf-012
+  question: "List the regions in the North-East zone."
+  tags: [single_table_filter]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT id, name
+      FROM shop.regions
+      WHERE zone = 'North-East'
+    output_type: table
+  notes: "Zone value is hyphenated 'North-East'."
+  reviewed_by: null
+
+- id: stf-013
+  question: "Show the 'Damaged on arrival' refunds issued in March 2026."
+  tags: [single_table_filter, tz_boundary]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT id, order_id, amount, refunded_at
+      FROM shop.refunds
+      WHERE reason = 'Damaged on arrival'
+        AND refunded_at >= TIMESTAMP '2026-03-01 00:00:00'
+        AND refunded_at <  TIMESTAMP '2026-04-01 00:00:00'
+    output_type: table
+  notes: "refunds.refunded_at is timestamp WITHOUT time zone and already holds IST wall-clock time. Compare it with naive literals. Converting it as if it were UTC shifts every row by 5h30m."
+  reviewed_by: null
+
+- id: stf-014
+  question: "Show all customers named Aarav Bhatt."
+  tags: [single_table_filter]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT id, full_name, city, email
+      FROM shop.customers
+      WHERE full_name = 'Aarav Bhatt'
+    output_type: table
+  notes: "Two different people share this name (Dibrugarh and Shimla). Both must be returned, with their ids."
+  reviewed_by: null
+
+- id: stf-015
+  question: "What are the 10 most expensive active products?"
+  tags: [single_table_filter]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT sku, name, unit_price
+      FROM shop.products
+      WHERE is_active
+      ORDER BY unit_price DESC
+      LIMIT 10
+    output_type: ranked_list
+    order_matters: true
+  notes: "'Active' means is_active. Prices are distinct at the cut-off."
+  reviewed_by: null

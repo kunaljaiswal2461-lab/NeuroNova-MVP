@@ -1,0 +1,10 @@
+fixture_version: 1
+reference_clock: "2026-06-15T10:00:00+05:30"
+reference_time_zone: "Asia/Kolkata"
+tags: [single_table_filter, aggregate, group_by, time_bucket, tz_boundary, join_2,
+       join_3plus, join_fanout, window, subquery_having, dirty_literal, null_semantics,
+       awkward_identifiers, ambiguous, unanswerable, write_attempt, adversarial,
+       chain, refinement, regrouping, period_shift, topic_switch, clarification_followup, failed_followup]
+output_types: [kpi, kpi_comparison, table, ranked_list, bar, grouped_bar, line,
+               multi_line, area, pie, scatter, histogram, heatmap, pivot, narrative,
+               takeaways]

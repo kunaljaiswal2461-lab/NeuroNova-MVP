@@ -41,7 +41,6 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    APP_ENV=dev \
     APP_HOST=0.0.0.0 \
     APP_PORT=8000
 

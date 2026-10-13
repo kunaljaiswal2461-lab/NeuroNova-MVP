@@ -1,9 +1,10 @@
 import os
+import secrets
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from functools import lru_cache
 from typing import Literal
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, PrivateAttr, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
 
@@ -66,16 +67,23 @@ if ENV_TXT_FILE.exists() and not ENV_FILE.exists():
 if ENV_FILE.exists():
     load_dotenv(dotenv_path=ENV_FILE, override=False)
 
+_KNOWN_WEAK_JWT_SECRETS = frozenset({"change-me-in-production"})
+_JWT_MIN_BYTES_NON_DEV = 32
+_JWT_MIN_BYTES_DEV = 16
+_JWT_GENERATOR_HINT = 'python -c "import secrets; print(secrets.token_urlsafe(48))"'
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE) if ENV_FILE.exists() else None,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        hide_input_in_errors=True,  # validation errors must never echo secrets (SPEC-02 INV-16)
     )
 
     # --- CONFIG FIELDS ---
-    app_env: Literal["dev", "staging", "prod"] = "dev"
+    app_env: Literal["dev", "staging", "prod"]  # no default: SPEC-02 INV-14
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     log_level: str = "INFO"
@@ -102,7 +110,9 @@ class Settings(BaseSettings):
     health_grade_d: int = 45
 
     # --- JWT ---
-    jwt_secret_key: str = Field(default="change-me-in-production", min_length=16)
+    # None = not configured; _jwt_secret_is_safe decides what that means per environment.
+    jwt_secret_key: SecretStr | None = None
+    _jwt_secret_ephemeral: bool = PrivateAttr(default=False)
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
 
@@ -196,6 +206,44 @@ class Settings(BaseSettings):
     )
     postgres_execution_cursor_prefetch: int = Field(default=50, ge=1, le=1_000)
 
+    # --- SQL execution cost guard (SPEC-05): reject when EXPLAIN total cost exceeds this ---
+    # Planner cost units, not time: the 5 s statement timeout stays as the backstop.
+    # Corpus max is ~5.1e5; the pathological probes start at 1.25e7.
+    postgres_sql_max_plan_cost: float = Field(default=5_000_000.0, ge=1_000.0, le=1e10)
+    # Largest text form of one result row; the server refuses bigger rows before they are sent.
+    postgres_sql_max_row_bytes: int = Field(default=1_048_576, ge=1_024, le=64 * 1_048_576)
+
+    # --- NL->SQL validator limits (SPEC-04); the caps sit far above real queries ---
+    sql_guard_max_chars: int = Field(default=20_000, ge=100, le=200_000)
+    sql_guard_max_paren_depth: int = Field(default=32, ge=4, le=100)
+    sql_guard_max_ast_nodes: int = Field(default=3_000, ge=100, le=50_000)
+
+    # --- NL->SQL schema context (SPEC-06): o200k_base tokens for the whole schema block ---
+    # --- Sample values for text columns (SPEC-07) ---
+    sample_values_max_distinct: int = Field(default=50, ge=1, le=50)
+    sample_values_min_coverage: float = Field(default=0.95, gt=0, le=1)
+    sample_values_exact_max_bytes: int = Field(default=64 * 1024 * 1024, ge=0, le=1024 * 1024 * 1024)
+    # Hard ceiling for the whole collection step of one sync; a slow source never holds the publish longer.
+    sample_values_total_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    nl_sql_schema_budget_tokens: int = Field(default=8_000, ge=1_000, le=32_000)
+
+    # --- NL->SQL pass 1 (SPEC-08 B8) ---
+    nl_sql_max_question_chars: int = Field(default=4_000, ge=100, le=20_000)
+    nl_sql_seed: int = 7
+    nl_sql_max_output_tokens: int = Field(default=1_200, ge=200, le=8_000)
+    nl_sql_default_time_zone: str = "Asia/Kolkata"
+
+    # --- hybrid database chat (SPEC-09) ---
+    # "hybrid": a confirmed metric keeps the typed path, everything else is answered with model-written SQL.
+    # "typed_only": the Stage 4C typed path alone (kill switch; the old suites pin it).
+    nl_sql_route_mode: Literal["typed_only", "hybrid"] = "hybrid"
+    # Pass 2 (presentation): rows sent to the model, and the token budget of its whole input message.
+    nl_sql_pass2_max_rows: int = Field(default=50, ge=1, le=200)
+    nl_sql_pass2_budget_tokens: int = Field(default=6_000, ge=1_000, le=32_000)
+    nl_sql_pass2_max_output_tokens: int = Field(default=1_200, ge=200, le=8_000)
+    # Development and tests only: a JSONL script of model answers replaces the OpenAI client (see the stub LLM).
+    nl_sql_stub_llm_path: str = ""
+
     # --- optional bounded PostgreSQL profiling (Stage 6A; disabled per source) ---
     # These are intentionally separate from analytical query budgets. A
     # profile uses fixed internal aggregate operations over a bounded
@@ -252,6 +300,23 @@ class Settings(BaseSettings):
     # standard submission ports (including Gmail's 587) use STARTTLS.
     smtp_tls: bool = True
 
+    @model_validator(mode="after")
+    def _stub_llm_only_in_dev(self) -> "Settings":
+        if self.nl_sql_stub_llm_path and self.app_env == "prod":
+            raise ValueError("NL_SQL_STUB_LLM_PATH is not allowed when APP_ENV=prod")
+        return self
+
+    @field_validator("nl_sql_default_time_zone")
+    @classmethod
+    def validate_nl_sql_time_zone(cls, value: str) -> str:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            raise ValueError("nl_sql_default_time_zone must be an IANA time zone name") from None
+        return value
+
     @field_validator("postgres_profile_sample_percent")
     @classmethod
     def validate_profile_sample_precision(cls, value: float) -> float:
@@ -281,6 +346,51 @@ class Settings(BaseSettings):
         if self.auth_dev_auto_verify and self.app_env != "dev":
             raise ValueError("AUTH_DEV_AUTO_VERIFY is only allowed when APP_ENV=dev")
         return self
+
+    @model_validator(mode="after")
+    def _jwt_secret_is_safe(self) -> "Settings":
+        configured = self.jwt_secret_key.get_secret_value() if self.jwt_secret_key else ""
+
+        if configured in _KNOWN_WEAK_JWT_SECRETS:
+            raise ValueError(
+                "JWT_SECRET_KEY is set to a publicly known placeholder. Generate a new one: "
+                + _JWT_GENERATOR_HINT
+            )
+
+        if self.app_env == "dev":
+            if not configured:
+                # Still secure: nobody knows it. Tokens just don't survive a restart.
+                self.jwt_secret_key = SecretStr(secrets.token_urlsafe(48))
+                self._jwt_secret_ephemeral = True
+            elif len(configured.encode()) < _JWT_MIN_BYTES_DEV:
+                raise ValueError(f"JWT_SECRET_KEY must be at least {_JWT_MIN_BYTES_DEV} bytes.")
+            return self
+
+        if len(configured.encode()) < _JWT_MIN_BYTES_NON_DEV:
+            raise ValueError(
+                f"JWT_SECRET_KEY must be set to at least {_JWT_MIN_BYTES_NON_DEV} random bytes "
+                f"when APP_ENV={self.app_env}. Generate one: " + _JWT_GENERATOR_HINT
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _no_dev_on_hosted_platform(self) -> "Settings":
+        # Render sets RENDER=true on every service. Move hosts -> add that platform's marker.
+        if self.app_env == "dev" and os.environ.get("RENDER", "").lower() == "true":
+            raise ValueError(
+                "APP_ENV=dev is not allowed on Render. Set APP_ENV=prod (or staging) "
+                "in the service's environment settings."
+            )
+        return self
+
+    @property
+    def jwt_signing_key(self) -> str:
+        assert self.jwt_secret_key is not None  # guaranteed by _jwt_secret_is_safe
+        return self.jwt_secret_key.get_secret_value()
+
+    @property
+    def jwt_secret_ephemeral(self) -> bool:
+        return self._jwt_secret_ephemeral
 
     # --- Google OAuth ---
     google_client_id: str = ""

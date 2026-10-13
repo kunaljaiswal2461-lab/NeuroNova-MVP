@@ -1,0 +1,118 @@
+- id: dirty-001
+  question: "How many pending orders are there?"
+  tags: [dirty_literal]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.orders WHERE status = 'pending'
+    output_type: kpi
+  notes: "Stored value is lowercase 'pending'; WHERE status = 'PENDING' silently returns 0."
+  reviewed_by: null
+
+- id: dirty-002
+  question: "How many cancelled orders do we have?"
+  tags: [dirty_literal]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.orders WHERE status = 'Cancelled'
+    output_type: kpi
+  notes: "Stored value is title case 'Cancelled'."
+  reviewed_by: null
+
+- id: dirty-003
+  question: "How many orders have been refunded?"
+  tags: [dirty_literal]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.orders WHERE status = 'REFUNDED'
+    output_type: kpi
+  notes: "Order status REFUNDED (not the refunds table)."
+  reviewed_by: null
+
+- id: dirty-004
+  question: "How many Enterprise customers do we have?"
+  tags: [dirty_literal]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.customers WHERE lower(trim(segment)) = 'enterprise'
+    output_type: kpi
+  notes: "Includes the 12 padded lowercase 'enterprise ' rows: 436, not 424."
+  reviewed_by: null
+
+- id: dirty-005
+  question: "What is the total value of paid orders from Enterprise customers?"
+  tags: [dirty_literal]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT sum(o.total_amount) FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id WHERE o.status = 'PAID' AND lower(trim(c.segment)) = 'enterprise'
+    output_type: kpi
+  notes: "Enterprise includes padded variants. accept-survivor:join_flip (a later INNER JOIN or a WHERE on the joined table removes the rows a LEFT JOIN would add)"
+  reviewed_by: null
+
+- id: dirty-006
+  question: "How many Retail customers do we have?"
+  tags: [dirty_literal]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.customers WHERE segment = 'Retail'
+    output_type: kpi
+  notes: "Control: Retail has no dirty variants."
+  reviewed_by: null
+
+- id: dirty-007
+  question: "How many paid orders came through the web?"
+  tags: [dirty_literal]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.orders WHERE status = 'PAID' AND channel = 'web'
+    output_type: kpi
+  reviewed_by: null
+
+- id: dirty-008
+  question: "How many orders came through the Store channel?"
+  tags: [dirty_literal]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.orders WHERE channel = 'store'
+    output_type: kpi
+  notes: "User capitalises Store; stored value is lowercase."
+  reviewed_by: null
+
+- id: dirty-009
+  question: "What is the average value of paid PHONE orders?"
+  tags: [dirty_literal]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT avg(total_amount) FROM shop.orders WHERE status = 'PAID' AND channel = 'phone'
+    output_type: kpi
+    numeric_tolerance:
+      abs: "0.01"
+  reviewed_by: null
+
+- id: dirty-010
+  question: "How many refunded orders were placed through the app?"
+  tags: [dirty_literal]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.orders WHERE status = 'REFUNDED' AND channel = 'app'
+    output_type: kpi
+  reviewed_by: null

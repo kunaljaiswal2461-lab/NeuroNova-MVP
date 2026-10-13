@@ -4,6 +4,8 @@ import Layout from '../components/Layout'
 import { sourceApi, sourceErrorCode } from '../api/sources'
 import { DatabaseChartRenderer } from '../components/charts/DatabaseChartRenderer'
 import { buildDatabaseResultChartSpec } from '../components/charts/databaseChartSpec'
+import AnswerView from '../components/answers/AnswerView'
+import { answerFromRecord } from '../components/answers/answerState'
 
 const SOURCE_SESSION_STORAGE_PREFIX = 'neuronova:source-chat-session:v1:'
 
@@ -82,6 +84,8 @@ function toDisplayMessage(message) {
     role: role === 'user' ? 'user' : 'assistant',
     text: message.content ?? '',
     postgresResult: resultFromMessage(message),
+    // SPEC-09: a model-written-SQL turn carries its SQL, assumptions and resolved presentation spec.
+    answer: answerFromRecord(message.nl_sql),
     activity: null,
     outcome: message.unsupported ? 'unsupported' : null,
     streaming: false,
@@ -454,7 +458,7 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
     setMessages(current => [
       ...current,
       { id: userId, role: 'user', text: question, streaming: false },
-      { id: assistantId, role: 'assistant', text: '', postgresResult: null, terminalText: null, activity: 'Planning an authorized database query…', outcome: null, streaming: true },
+      { id: assistantId, role: 'assistant', text: '', postgresResult: null, answer: null, terminalText: null, activity: 'Planning an authorized database query…', outcome: null, streaming: true },
     ])
     setInput('')
     setStreaming(true)
@@ -474,6 +478,28 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
             ...current,
             snapshotId: data?.snapshot_id ?? current.snapshotId,
           }))
+        } else if (event === 'sql_generated') {
+          // The owner sees the query (decision 6). A second one means the first was corrected once.
+          setMessages(current => current.map(message => message.id === assistantId
+            ? {
+                ...message,
+                answer: {
+                  ...(message.answer ?? {}),
+                  sql: typeof data?.sql === 'string' ? data.sql : null,
+                  assumptions: Array.isArray(data?.assumptions) ? data.assumptions : [],
+                  route: 'sql',
+                },
+                activity: 'Query written · checking…',
+              }
+            : message))
+        } else if (event === 'repairing') {
+          setMessages(current => current.map(message => message.id === assistantId
+            ? { ...message, answer: { ...(message.answer ?? {}), repaired: true }, activity: 'First query failed · correcting once…' }
+            : message))
+        } else if (event === 'presentation') {
+          setMessages(current => current.map(message => message.id === assistantId
+            ? { ...message, answer: { ...(message.answer ?? {}), presentation: data && typeof data === 'object' ? data : null } }
+            : message))
         } else if (event === 'executing') {
           updateAssistant(assistantId, { activity: safeEventMessage(data, 'Executing a controlled read-only query…') })
         } else if (event === 'clarification' || event === 'clarification_required') {
@@ -628,10 +654,12 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
                     <div style={{ width: 28, height: 28, borderRadius: 8, background: 'var(--color-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 4 }}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M3 12h3M18 12h3M12 3v3M12 18v3" /></svg></div>
                     <div style={{ flex: 1, maxWidth: '85%' }}><div className="chat-assistant">
                       <SourceStatus activity={message.activity} />
-                      {message.text && <p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-primary)', lineHeight: 1.6, marginBottom: message.postgresResult ? 10 : 0, whiteSpace: 'pre-wrap' }}>{message.text}{message.streaming && <span style={{ display: 'inline-block', width: 8, height: 14, background: 'var(--color-primary-indigo)', marginLeft: 2, borderRadius: 1, verticalAlign: 'text-bottom', animation: 'pulse-dot 0.8s ease-in-out infinite' }} />}</p>}
+                      {message.text && !message.answer?.presentation && <p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-primary)', lineHeight: 1.6, marginBottom: message.postgresResult ? 10 : 0, whiteSpace: 'pre-wrap' }}>{message.text}{message.streaming && <span style={{ display: 'inline-block', width: 8, height: 14, background: 'var(--color-primary-indigo)', marginLeft: 2, borderRadius: 1, verticalAlign: 'text-bottom', animation: 'pulse-dot 0.8s ease-in-out infinite' }} />}</p>}
                       {message.outcome === 'clarification' && <span style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: '#1D4ED8' }}>Clarification required</span>}
                       {message.outcome === 'unsupported' && <span style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: '#92400E' }}>Unsupported operation</span>}
-                      <PostgresResultTable result={message.postgresResult} />
+                      {message.postgresResult && message.answer?.presentation
+                        ? <AnswerView result={message.postgresResult} answer={message.answer} />
+                        : <PostgresResultTable result={message.postgresResult} />}
                     </div></div>
                   </div>
                 )}

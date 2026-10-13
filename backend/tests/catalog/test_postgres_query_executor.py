@@ -428,6 +428,9 @@ class _Statement:
 
 
 class _Connection:
+    async def set_type_codec(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
     def __init__(
         self,
         *,
@@ -588,6 +591,7 @@ async def test_execute_returns_typed_values_and_enforces_client_session_policy(e
         "default_transaction_read_only": "on",
         "search_path": "pg_catalog",
         "TimeZone": "UTC",
+        "DateStyle": "ISO, YMD",
         "statement_timeout": "5000",
         "lock_timeout": "2000",
         "idle_in_transaction_session_timeout": "10000",

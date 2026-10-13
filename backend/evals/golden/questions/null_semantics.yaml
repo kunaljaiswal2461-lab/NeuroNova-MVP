@@ -1,0 +1,94 @@
+- id: null-001
+  question: "How many orders were placed by guests?"
+  tags: [null_semantics]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.orders WHERE customer_id IS NULL
+    output_type: kpi
+  reviewed_by: null
+
+- id: null-002
+  question: "What percentage of orders are guest orders?"
+  tags: [null_semantics]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT 100.0 * count(*) FILTER (WHERE customer_id IS NULL) / count(*) FROM shop.orders
+    output_type: kpi
+    numeric_tolerance:
+      abs: "0.05"
+  notes: "Percent on a 0-100 scale."
+  reviewed_by: null
+
+- id: null-003
+  question: "How many paid orders have not been delivered yet?"
+  tags: [null_semantics]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.orders WHERE status = 'PAID' AND delivered_on IS NULL
+    output_type: kpi
+  reviewed_by: null
+
+- id: null-004
+  question: "On average, how many days does delivery take after the order date, for delivered orders?"
+  tags: [null_semantics, tz_boundary]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT avg(delivered_on - (ordered_at AT TIME ZONE 'Asia/Kolkata')::date) FROM shop.orders WHERE delivered_on IS NOT NULL
+    output_type: kpi
+    numeric_tolerance:
+      abs: "0.01"
+  notes: "Order date is the IST calendar date; undelivered orders are excluded (avg ignores NULL). accept-survivor:drop_predicate (dropping this predicate cannot change the answer on this data (the bound lies beyond the data, which ends on 14 June 2026, or the predicate is redundant))"
+  reviewed_by: null
+
+- id: null-005
+  question: "How many page views came from logged-in customers and how many from anonymous visitors?"
+  tags: [null_semantics]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(customer_id) AS logged_in, count(*) FILTER (WHERE customer_id IS NULL) AS anonymous FROM shop.page_views
+    output_type: kpi_comparison
+  reviewed_by: null
+
+- id: null-006
+  question: "List paid guest orders worth more than 500,000 rupees."
+  tags: [null_semantics]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT id, ordered_at, total_amount FROM shop.orders WHERE status = 'PAID' AND customer_id IS NULL AND total_amount > 500000
+    output_type: table
+  reviewed_by: null
+
+- id: null-007
+  question: "How many customers have never placed an order?"
+  tags: [null_semantics]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT count(*) FROM shop.customers c WHERE NOT EXISTS (SELECT 1 FROM shop.orders o WHERE o.customer_id = c.id)
+    output_type: kpi
+  notes: "NOT EXISTS, not NOT IN (the subquery column contains NULLs, so NOT IN would return 0). accept-survivor:agg_swap (the column has no NULLs in the rows being counted)"
+  reviewed_by: null
+
+- id: null-008
+  question: "How much paid order value came from guests versus registered customers?"
+  tags: [null_semantics]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT sum(total_amount) FILTER (WHERE customer_id IS NULL) AS guests, sum(total_amount) FILTER (WHERE customer_id IS NOT NULL) AS registered FROM shop.orders WHERE status = 'PAID'
+    output_type: kpi_comparison
+  reviewed_by: null

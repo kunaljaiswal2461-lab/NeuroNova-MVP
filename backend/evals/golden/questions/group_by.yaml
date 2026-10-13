@@ -1,0 +1,180 @@
+- id: grp-001
+  question: "How many orders do we have in each status?"
+  tags: [group_by]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT status, count(*) FROM shop.orders GROUP BY status
+    output_type: bar
+  notes: "Status labels are returned exactly as stored."
+  reviewed_by: null
+
+- id: grp-002
+  question: "What share of orders came through each sales channel? Give me the order count per channel."
+  tags: [group_by]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT channel, count(*) FROM shop.orders GROUP BY channel
+    output_type: pie
+  reviewed_by: null
+
+- id: grp-003
+  question: "What is the total value of paid orders for each channel?"
+  tags: [group_by]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT channel, sum(total_amount) FROM shop.orders WHERE status = 'PAID' GROUP BY channel
+    output_type: bar
+  reviewed_by: null
+
+- id: grp-004
+  question: "For each product category, how many products are there and how many of them are active?"
+  tags: [group_by]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT category, count(*) AS products, count(*) FILTER (WHERE is_active) AS active FROM shop.products GROUP BY category
+    output_type: scatter
+  reviewed_by: null
+
+- id: grp-005
+  question: "What is the average list price in each product category?"
+  tags: [group_by]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT category, avg(unit_price) FROM shop.products GROUP BY category
+    output_type: bar
+    numeric_tolerance:
+      abs: "0.01"
+  reviewed_by: null
+
+- id: grp-006
+  question: "How many refunds were issued for each reason?"
+  tags: [group_by]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT reason, count(*) FROM shop.refunds GROUP BY reason
+    output_type: bar
+  notes: "One reason value is odd free text planted in the data; it is a group like any other."
+  reviewed_by: null
+
+- id: grp-007
+  question: "How many order lines were there for each quantity value?"
+  tags: [group_by]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT quantity, count(*) FROM shop.order_items GROUP BY quantity
+    output_type: histogram
+  reviewed_by: null
+
+- id: grp-008
+  question: "For every sales channel and order status, how many orders are there?"
+  tags: [group_by]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT channel, status, count(*) FROM shop.orders GROUP BY channel, status
+    output_type: grouped_bar
+  reviewed_by: null
+
+- id: grp-009
+  question: "How many page views did each of the home, cart, checkout, search and account pages get?"
+  tags: [group_by]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT path, count(*) FROM shop.page_views WHERE path IN ('/', '/cart', '/checkout', '/search', '/account') GROUP BY path
+    output_type: pie
+  notes: "2,000,000-row scan. Product pages (/products/<id>) are excluded by the question."
+  reviewed_by: null
+
+- id: grp-010
+  question: "What is the average order value for each status?"
+  tags: [group_by]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT status, avg(total_amount) FROM shop.orders GROUP BY status
+    output_type: takeaways
+    numeric_tolerance:
+      abs: "0.01"
+  reviewed_by: null
+
+- id: grp-011
+  question: "How much money was refunded for each refund reason?"
+  tags: [group_by]
+  difficulty: easy
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT reason, sum(amount) FROM shop.refunds GROUP BY reason
+    output_type: table
+  reviewed_by: null
+
+- id: grp-012
+  question: "Give me a table with one row per channel and one column per order status showing total order value."
+  tags: [group_by]
+  difficulty: hard
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT channel,
+        sum(total_amount) FILTER (WHERE status = 'PAID') AS paid,
+        sum(total_amount) FILTER (WHERE status = 'pending') AS pending,
+        sum(total_amount) FILTER (WHERE status = 'Cancelled') AS cancelled,
+        sum(total_amount) FILTER (WHERE status = 'REFUNDED') AS refunded
+      FROM shop.orders GROUP BY channel
+    output_type: pivot
+  notes: "Column order and names are free; the four status columns plus the channel are required."
+  reviewed_by: null
+
+- id: grp-013
+  question: "How many orders have 1 line item, how many have 2, and so on?"
+  tags: [group_by, subquery_having]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT n, count(*) FROM (SELECT order_id, count(*) AS n FROM shop.order_items GROUP BY order_id) t GROUP BY n
+    output_type: histogram
+  reviewed_by: null
+
+- id: grp-014
+  question: "How many products fall into each 10,000-rupee price band (0-9,999, 10,000-19,999 and so on)?"
+  tags: [group_by]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT floor(unit_price / 10000) * 10000 AS band_start, count(*) FROM shop.products GROUP BY 1
+    output_type: histogram
+  notes: "Band label is the lower bound of the band."
+  reviewed_by: null
+
+- id: grp-015
+  question: "For each channel, what are the smallest, largest and average paid order values?"
+  tags: [group_by]
+  difficulty: medium
+  expect:
+    kind: answer
+    reference_sql: |
+      SELECT channel, min(total_amount), max(total_amount), avg(total_amount) FROM shop.orders WHERE status = 'PAID' GROUP BY channel
+    output_type: grouped_bar
+    numeric_tolerance:
+      abs: "0.01"
+  reviewed_by: null
