@@ -74,3 +74,17 @@ The whole pass-2 user message must stay within `nl_sql_pass2_budget_tokens` (6,0
 Immediately before pass 2 the delivery guard is *entered and exited* (a check): if access was revoked after the query
 ran, no row goes to the model and `access_revoked` is stored. The guard is **not** held during the model call; it is
 entered again for persistence and again for the row-bearing frames.
+
+## Value segments and display time zone (SPEC-10 W3)
+
+`validate_and_resolve` also returns `answer_segments` and `takeaways_segments`: the resolved text cut into
+`{"t":"text","text"}` and `{"t":"value","exact","kind","source","column"}` pieces, so the browser can format each value
+without re-parsing prose. **S1:** concatenating each segment's `text` or `exact` reproduces `answer` (and every takeaway)
+byte for byte, including the 2 000-character cut: a value that would be cut becomes a text segment holding the kept
+prefix. A value longer than 400 characters is also emitted as text (the record's bound).
+
+`kind` is the column's kind for `row`; `integer` for `count|nulls|distinct` and `rowcount`; the column's kind for
+`min|max|sum`; `decimal` for `mean` and `delta`; `percent` for `delta_pct` (`text` when it is `n/a`); `null` for a value
+that resolved to `—`. The pass-2 fallback emits one text segment. `display_time_zone` is
+`nl_sql_default_time_zone`. The record version is 2; version-1 rows still load. An empty result that downgrades a chart to
+a table records the downgrade in `fallback` but adds no "does not fit" caveat.
