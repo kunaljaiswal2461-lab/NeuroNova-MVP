@@ -44,10 +44,10 @@ export default function KpiComparisonRenderer({ result, spec }) {
       </div>
       <div>
         <span style={{ display: 'block', fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--color-text-muted)' }}>Change</span>
-        <strong data-testid="kpi-delta" style={{ fontFamily: 'var(--font-heading)', fontSize: 22, color: 'var(--color-text-primary)' }}>
+        <strong data-testid="kpi-delta" title={delta ? delta.title : undefined} tabIndex={delta ? 0 : undefined} style={{ fontFamily: 'var(--font-heading)', fontSize: 22, color: 'var(--color-text-primary)' }}>
           {delta == null ? '—' : <><span aria-hidden="true">{arrow(deltaExact)} </span>{delta.text}</>}
         </strong>
-        <span data-testid="kpi-delta-pct" style={{ display: 'block', fontFamily: 'var(--font-data)', fontSize: 12, color: 'var(--color-text-secondary)' }}>{percent ? percent.text : '—'}</span>
+        <span data-testid="kpi-delta-pct" title={percent ? percent.title : undefined} tabIndex={percent ? 0 : undefined} style={{ display: 'block', fontFamily: 'var(--font-data)', fontSize: 12, color: 'var(--color-text-secondary)' }}>{percent ? percent.text : '—'}</span>
       </div>
     </section>
   )

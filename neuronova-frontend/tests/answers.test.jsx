@@ -138,6 +138,17 @@ describe('renderers', () => {
     expect(screen.getByTestId('kpi-delta-pct').textContent).toBe('20.00%')
   })
 
+  it('kpi_comparison lets the exact delta and percentage be inspected, by hover and by keyboard (Greptile)', () => {
+    const two = result({ columns: [['cur', 'numeric'], ['prev', 'numeric']], rows: [[dec('10'), dec('3')]] })
+    render(<AnswerView result={two} answer={answer({ display: 'kpi_comparison', encodings: { ...NO, y: ['cur', 'prev'] }, derived: { delta: '7.0000000000000001', delta_pct: '233.33%' } })} />)
+    const delta = screen.getByTestId('kpi-delta')
+    const percent = screen.getByTestId('kpi-delta-pct')
+    expect(delta.getAttribute('title')).toBe('7.0000000000000001')
+    expect(delta.tabIndex).toBe(0)
+    expect(percent.getAttribute('title')).toBe('233.33%')
+    expect(percent.tabIndex).toBe(0)
+  })
+
   it('kpi_comparison without a derived delta shows a dash, not a browser calculation', () => {
     const two = result({ columns: [['cur', 'numeric'], ['prev', 'numeric']], rows: [[dec('120'), dec('100')]] })
     render(<AnswerView result={two} answer={answer({ display: 'kpi_comparison', encodings: { ...NO, y: ['cur', 'prev'] }, derived: {} })} />)

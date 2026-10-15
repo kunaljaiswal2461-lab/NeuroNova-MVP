@@ -396,6 +396,9 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
   const resultReceivedRef = useRef(false)
   const focusAfterTurnRef = useRef(false)
   const sessionIdRef = useRef(null)
+  const turnSeqRef = useRef(0)           // bumped on every send: a transcript read from before it is stale
+  const creatingRef = useRef(false)      // a New conversation request is in flight: sending is blocked meanwhile
+  const [creating, setCreating] = useState(false)
 
   const scrollToBottom = useCallback(() => {
     const element = listRef.current
@@ -549,11 +552,14 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
   const reconcile = useCallback(async () => {
     const id = sessionIdRef.current
     if (!id) return null
+    const seq = turnSeqRef.current
     try {
       const transcript = await sourceApi.getChatMessages(id, { limit: 500 })
       const stored = transcript?.messages ?? []
       if (sessionIdRef.current !== id) return null
-      setMessages(stored.map(toDisplayMessage))
+      // A read that started before the user sent another question is older than that turn: applying it would delete
+      // the new bubbles. The caller still gets the data; the view is left alone.
+      if (turnSeqRef.current === seq) setMessages(stored.map(toDisplayMessage))
       return stored
     } catch {
       return null // keep the local view
@@ -562,7 +568,7 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
 
   const handleSend = useCallback(async (override) => {
     const question = (typeof override === 'string' ? override : input).trim()
-    if (!question || streaming) return
+    if (!question || streaming || creatingRef.current) return
     if (question.length > MAX_QUESTION_CHARS) return
     if (!sessionId || !sourceId) {
       setSessionError('This database conversation is not ready yet.')
@@ -572,7 +578,9 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
     const stamp = Date.now()
     const userId = `user-${stamp}`
     const assistantId = `assistant-${stamp}`
-    const storedUserCount = messages.filter(message => message.role === 'user' && !String(message.id).startsWith('user-')).length
+    // How many times this exact question is already in the conversation (saved or sent earlier in this page).
+    const sameQuestionBefore = messages.filter(message => message.role === 'user' && message.text === question).length
+    turnSeqRef.current += 1
     const streamController = new AbortController()
     streamAbortRef.current?.abort()
     streamAbortRef.current = streamController
@@ -699,8 +707,9 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
         if (failure.reconcile) {
           const stored = await reconcile()
           // The server may have accepted the question after all: then it is in the transcript, not in the box.
-          const storedCount = stored ? stored.filter(message => String(message.role).toLowerCase() === 'user').length : 0
-          if (stored && storedCount > storedUserCount) setInput(current => (current === question ? '' : current))
+          const sameQuestionNow = stored ? stored.filter(message => String(message.role).toLowerCase() === 'user' && message.content === question).length : 0
+          // Clear the box only when a NEW saved copy of this question appeared: an earlier question must not count.
+          if (stored && sameQuestionNow > sameQuestionBefore) setInput(current => (current === question ? '' : current))
         }
       } else if (cancelledByUser) {
         if (resultReceivedRef.current) {
@@ -753,13 +762,17 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
   }, [cancelling, sessionId])
 
   const startNewConversation = async () => {
-    if (streaming) return
+    if (streaming || creatingRef.current) return
+    creatingRef.current = true
+    setCreating(true)
     setNewConversationError(null)
     try {
       const created = await sourceApi.createChatSession(sourceId, { mode: 'AUTO' })
       const session = created?.session
       if (!isSourceSession(session, sourceId)) throw new Error('source_session_mismatch')
       saveSessionId(sourceId, session.session_id)
+      sessionIdRef.current = session.session_id      // a read of the old conversation must not land in the new one
+      turnSeqRef.current += 1
       setSessionId(session.session_id)
       setMessages([])
       setNotice(null)
@@ -767,6 +780,9 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
       composerRef.current?.focus()
     } catch (error) {
       setNewConversationError(safeErrorMessage(error, 'We could not start a new conversation. Your current conversation is unchanged.'))
+    } finally {
+      creatingRef.current = false
+      setCreating(false)
     }
   }
 
@@ -794,7 +810,7 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
   const displayName = sourceContext.displayName || 'Selected PostgreSQL source'
   const sessionReady = Boolean(sessionId && !sessionError)
   const tooLong = input.length > MAX_QUESTION_CHARS
-  const canSend = Boolean(input.trim()) && sessionReady && !streaming && !tooLong
+  const canSend = Boolean(input.trim()) && sessionReady && !streaming && !creating && !tooLong
 
   const renderAssistant = (message) => {
     const sqlAnswer = Boolean(message.postgresResult) && message.answer?.route === 'sql'
@@ -830,7 +846,7 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
       <div className="chat-workspace" style={{ display: 'grid', gridTemplateColumns: '1fr 260px', gap: 0, height: 'calc(100vh - var(--topbar-height) - 48px)', position: 'relative' }}>
         <div className="chat-conversation" style={{ display: 'flex', flexDirection: 'column', background: 'transparent', minHeight: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, marginBottom: 12, paddingRight: 12 }}>
-            <button type="button" className="btn btn-ghost-neutral btn-sm" onClick={() => { void startNewConversation() }} disabled={streaming || !sessionReady}>New conversation</button>
+            <button type="button" className="btn btn-ghost-neutral btn-sm" onClick={() => { void startNewConversation() }} disabled={streaming || creating || !sessionReady}>New conversation</button>
             <span style={{ background: '#EFF6FF', color: '#1D4ED8', border: '1px solid #BFDBFE', borderRadius: 'var(--radius-full)', padding: '5px 12px', fontFamily: 'var(--font-heading)', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Database mode</span>
           </div>
           {newConversationError && <div role="alert" style={{ ...card, marginBottom: 8, marginRight: 12, background: '#FFF1F2', border: '1px solid #FECDD3', color: '#9F1239' }}>{newConversationError}</div>}
@@ -873,7 +889,7 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
             <div role="alert" style={{ ...card, marginTop: 12, background: '#FFFBEB', border: '1px solid #FDE68A', color: '#92400E', display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
               <span>{notice.text}</span>
               <span style={{ display: 'flex', gap: 8 }}>
-                {notice.refresh && <button type="button" className="btn btn-ghost-neutral btn-sm" onClick={() => { void reconcile() }}>Refresh conversation</button>}
+                {notice.refresh && <button type="button" className="btn btn-ghost-neutral btn-sm" onClick={() => { if (!streamAbortRef.current) void reconcile() }}>Refresh conversation</button>}
                 <button type="button" className="btn btn-ghost-neutral btn-sm" aria-label="Dismiss notice" onClick={() => setNotice(null)}>Dismiss</button>
               </span>
             </div>

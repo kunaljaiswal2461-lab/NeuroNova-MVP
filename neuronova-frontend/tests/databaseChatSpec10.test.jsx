@@ -337,3 +337,83 @@ it('E50: the copy no longer promises one table or no charts', async () => {
   expect(screen.getByText('Read-only · answers show their SQL')).toBeTruthy()
   expect(within(document.body).queryByText(/Arbitrary joins are not available/)).toBeNull()
 })
+
+// ── Greptile review findings ────────────────────────────────────────────────
+
+const okStream = () => (async function* () {
+  yield { event: 'start', data: { turn_id: 't' } }
+  yield { event: 'sql_generated', data: { sql: GOOD, assumptions: [], attempt: 1 } }
+  yield { event: 'postgres_result', data: { postgres_result: result } }
+  yield { event: 'presentation', data: presentation }
+  yield { event: 'token', data: { text: presentation.answer } }
+  yield { event: 'done', data: {} }
+})()
+const saved = (question, id) => [
+  { message_id: `u${id}`, role: 'USER', content: question },
+  { message_id: `a${id}`, role: 'ASSISTANT', content: presentation.answer, postgres_result: result, nl_sql: { outcome: 'answer', sql: GOOD, assumptions: [], repair: null, presentation } },
+]
+
+it('P1: an unsent question stays in the box after an earlier turn succeeded in this page', async () => {
+  renderChat()
+  api.streamSSE.mockImplementationOnce(() => okStream())
+  await ask('first question')
+  await screen.findByTestId('answer-text')
+  transcript = saved('first question', 1)                               // the server holds only the first turn
+  api.streamSSE.mockImplementationOnce(failWith({ code: 'connect_timeout', transient: true }))
+  await ask('second question')
+  expect((await screen.findByRole('alert')).textContent).toMatch(/back in the box/)
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Database question' }).value).toBe('second question'))
+})
+
+it('P1: asking the same question again does not let the earlier copy clear the box', async () => {
+  renderChat()
+  api.streamSSE.mockImplementationOnce(() => okStream())
+  await ask('same question')
+  await screen.findByTestId('answer-text')
+  transcript = saved('same question', 1)
+  api.streamSSE.mockImplementationOnce(failWith({ code: 'connect_timeout', transient: true }))
+  await ask('same question')
+  await screen.findByRole('alert')
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Database question' }).value).toBe('same question'))
+})
+
+it('P1: a transcript read that started before a new send cannot delete the new turn', async () => {
+  renderChat()
+  let releaseRead
+  const gate = new Promise(resolve => { releaseRead = resolve })
+  const realGet = api.get.getMockImplementation()
+  api.streamSSE.mockImplementationOnce(() => (async function* () {
+    yield { event: 'start', data: { turn_id: 't1' } }
+    throw Object.assign(new Error('net'), { transient: true })
+  })())
+  api.get.mockImplementation(path => (path.endsWith('/messages?limit=500') ? gate.then(() => ({ messages: [] })) : realGet(path)))
+  await ask('first')
+  await screen.findByText('The connection was lost while answering.')   // reconcile is now waiting on the gate
+  api.streamSSE.mockImplementationOnce(() => okStream())
+  await ask('second')
+  expect((await screen.findByTestId('answer-text')).textContent).toBe('There are 42 orders.')
+  releaseRead()                                                          // the OLD, empty transcript arrives late
+  await act(async () => { await Promise.resolve() })
+  expect(screen.getByTestId('answer-text').textContent).toBe('There are 42 orders.')
+  expect(screen.getByText('second', { selector: '.chat-user' })).toBeTruthy()
+})
+
+it('P1: sending is blocked while New conversation is being created, and creation cannot repeat', async () => {
+  renderChat()
+  await composer()
+  let releaseCreate
+  const gate = new Promise(resolve => { releaseCreate = resolve })
+  const realPost = api.post.getMockImplementation()
+  api.post.mockImplementation(path => (path === `/sources/${sourceId}/chat/sessions` ? gate.then(() => ({ session: { ...session, session_id: 'brand-new' } })) : realPost(path)))
+  fireEvent.click(screen.getByRole('button', { name: 'New conversation' }))
+  fireEvent.change(screen.getByRole('textbox', { name: 'Database question' }), { target: { value: 'typed while waiting' } })
+  expect(screen.getByRole('button', { name: 'Send database question' }).disabled).toBe(true)
+  expect(screen.getByRole('button', { name: 'New conversation' }).disabled).toBe(true)
+  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Database question' }), { key: 'Enter' })
+  expect(api.streamSSE).not.toHaveBeenCalled()
+  releaseCreate()
+  await waitFor(() => expect(screen.getByRole('button', { name: 'New conversation' }).disabled).toBe(false))
+  expect(api.post.mock.calls.filter(([path]) => path === `/sources/${sourceId}/chat/sessions`)).toHaveLength(2)   // load + one new
+  expect(window.sessionStorage.getItem(`neuronova:source-chat-session:v1:${sourceId}`)).toBe('brand-new')
+  expect(screen.getByRole('textbox', { name: 'Database question' }).value).toBe('typed while waiting')            // nothing lost
+})

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import datetime, timezone
@@ -507,7 +508,7 @@ async def _stream_sql_path(
         if not task.done():
             task.cancel()
 
-    async def budget_expired_events() -> list[ChatStreamEvent]:
+    async def budget_expired_events(completed_calls: tuple[Any, ...] = ()) -> list[ChatStreamEvent]:
         """Fail the turn with ``turn_timeout``; the turn's connection and model tasks are cancelled as on a user cancel."""
         await cancellation.cancel()
         if not task.done():
@@ -521,16 +522,19 @@ async def _stream_sql_path(
             repair=RepairRecord(reason_code=repair_reason, original_sql=first_sql)
             if repair_reason and first_sql and first_sql != last_sql else None,
         )
-        record = build_turn_record(route=route, outcome=timed_out, presentation=None, llm_calls=(), pass2_ran=False)
+        # Calls that finished before the budget ran out still happened: keep them in the record and the usage. Only the
+        # call that was cut short has unknown usage.
+        record = build_turn_record(route=route, outcome=timed_out, presentation=None, llm_calls=completed_calls, pass2_ran=False)
+        timeout_usage = _usage_of(completed_calls, carried_usage)
         assistant = await _persist_assistant(
             session_db=session_db, session_id=session_id, content=text, degraded=True,
-            degraded_reason="turn_timeout", token_usage=carried_usage, nl_sql=record,
+            degraded_reason="turn_timeout", token_usage=timeout_usage, nl_sql=record,
         )
         set_persisted()
         return [
             _event(ChatStreamEventType.ERROR, {"code": "turn_timeout", "message": text}),
             _event(ChatStreamEventType.TOKEN, {"text": text}),
-            _done(assistant, token_usage=carried_usage),
+            _done(assistant, token_usage=timeout_usage),
         ]
 
     if budget_expired:
@@ -612,7 +616,12 @@ async def _stream_sql_path(
         revoked = True
     if revoked:
         text = nl_messages.ACCESS_REVOKED
-        record = build_turn_record(route=route, outcome=outcome, presentation=None, llm_calls=outcome.llm_calls, pass2_ran=False)
+        # The stored record must say what happened: a failed turn (so a reload shows the failed card and the SQL that
+        # was tried), not the "answer" the pipeline had produced before access was revoked.
+        revoked_outcome = dataclasses.replace(
+            outcome, kind="failed", failure_code="access_revoked", user_message=text, execution=None
+        )
+        record = build_turn_record(route=route, outcome=revoked_outcome, presentation=None, llm_calls=outcome.llm_calls, pass2_ran=False)
         assistant = await _persist_assistant(
             session_db=session_db, session_id=session_id, content=text, degraded=True,
             degraded_reason="access_revoked", token_usage=usage, nl_sql=record,
@@ -654,7 +663,7 @@ async def _stream_sql_path(
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await pass2_task
         if budget_expired:
-            for event in await budget_expired_events():
+            for event in await budget_expired_events(outcome.llm_calls):
                 yield event
             return
         try:

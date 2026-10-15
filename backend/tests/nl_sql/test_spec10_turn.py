@@ -93,6 +93,9 @@ async def test_the_budget_expiring_during_pass_2_is_a_turn_timeout_not_a_cancell
     assert assistant.degraded and assistant.degraded_reason == "turn_timeout" and assistant.content == messages.TURN_TIMEOUT
     assert assistant.nl_sql.outcome == "failed" and assistant.nl_sql.failure_code == "turn_timeout"
     assert assistant.nl_sql.sql == GOOD and assistant.postgres_result is None
+    # Greptile: pass 1 finished before pass 2 timed out, so its call and tokens are kept; only pass 2's are unknown.
+    assert assistant.nl_sql.llm.calls == 1 and assistant.nl_sql.llm.input_tokens == 100
+    assert assistant.token_usage is not None and assistant.token_usage.input_tokens == 100
     assert "cancelled" not in run.data("token")[0]["text"]
 
 
@@ -131,7 +134,10 @@ async def test_a_revoked_turn_persists_its_record(synced, monkeypatch):
     """E41."""
     run = await drive(synced, monkeypatch, question=Q, responses=[sql_env(GOOD), KPI_SPEC], revoke_after_first_guard=True)
     assert run.assistant.degraded_reason == "access_revoked"
-    assert run.assistant.nl_sql is not None and run.assistant.nl_sql.sql == GOOD
+    record = run.assistant.nl_sql
+    assert record is not None and record.sql == GOOD
+    # Greptile: the saved record must say "failed", or a reload shows an answer card and loses the SQL panel.
+    assert record.outcome == "failed" and record.failure_code == "access_revoked"
 
 
 # ── W7.3: an empty result is not a "does not fit" case ───────────────────────
