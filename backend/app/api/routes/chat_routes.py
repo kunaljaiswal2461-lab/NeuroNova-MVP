@@ -16,7 +16,6 @@ each :class:`ChatStreamEvent` from the chat agent is encoded as one
 ``EventSource`` reads them in order and renders incrementally.
 """
 import asyncio
-import contextlib
 import json
 import time
 import uuid
@@ -41,7 +40,6 @@ from app.db.models.user import User
 from app.exceptions.custom_exceptions import AppError, NotFoundError
 from app.middlewares.rate_limiter import limiter
 from app.core.logging import get_logger
-from app.services.nl_sql import messages as nl_messages
 from app.schemas.chat_schemas import (
     CreateSessionRequest,
     MessageListResponse,
@@ -452,18 +450,11 @@ async def send_message(
                     authorized_session=conversation.session,
                     authorized_dataset=conversation.dataset,
                 )
-            if is_database_chat:
-                async for event in _with_heartbeat(stream, settings.chat_sse_heartbeat_seconds):
-                    if event is None:
-                        yield SSE_KEEPALIVE
-                        continue
-                    if cancellation is not None and await request.is_disconnected():
-                        await cancellation.cancel()
-                        return
-                    yield _encode_sse(event)
-            else:
-                async for event in stream:
-                    yield _encode_sse(event)
+            async for event in stream:
+                if cancellation is not None and await request.is_disconnected():
+                    await cancellation.cancel()
+                    return
+                yield _encode_sse(event)
         except asyncio.CancelledError:
             if cancellation is not None:
                 await cancellation.cancel()
@@ -484,11 +475,7 @@ async def send_message(
                 )
             yield _encode_sse_raw(
                 event="error",
-                data=(
-                    {"code": "internal_error", "message": nl_messages.INTERNAL}
-                    if is_database_chat
-                    else {"message": "internal error in chat stream"}
-                ),
+                data={"message": "internal error in chat stream"},
             )
             yield _encode_sse_raw(event="done", data={})
         finally:
@@ -518,46 +505,6 @@ async def send_message(
 
 
 # ── SSE encoding ────────────────────────────────────────────────────────────
-
-# An SSE comment: ignored by every parser, but it is bytes on the wire, so an idle-timeout proxy keeps the stream open.
-SSE_KEEPALIVE = b": keepalive\n\n"
-
-
-async def _with_heartbeat(
-    stream: AsyncIterator[ChatStreamEvent], interval: float
-) -> AsyncIterator[ChatStreamEvent | None]:
-    """Yield the stream's events, and ``None`` whenever ``interval`` seconds pass without one (SPEC-10 W1.1).
-
-    One ``__anext__()`` task stays pending across heartbeats. It is never cancelled on a timeout: that would cancel
-    the model call or the database query running inside the turn. It is cancelled only when this wrapper itself is
-    closed (disconnect or shutdown).
-    """
-    iterator = stream.__aiter__()
-    pending: asyncio.Future | None = None
-    try:
-        while True:
-            if pending is None:
-                pending = asyncio.ensure_future(iterator.__anext__())
-            done, _ = await asyncio.wait({pending}, timeout=interval)
-            if not done:
-                yield None
-                continue
-            finished, pending = pending, None
-            try:
-                event = finished.result()
-            except StopAsyncIteration:
-                return
-            yield event
-    finally:
-        if pending is not None:
-            pending.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await pending
-        aclose = getattr(iterator, "aclose", None)
-        if aclose is not None:
-            with contextlib.suppress(Exception):
-                await aclose()
-
 
 def _encode_sse(event: ChatStreamEvent) -> bytes:
     """Encode one :class:`ChatStreamEvent` as a single SSE frame."""

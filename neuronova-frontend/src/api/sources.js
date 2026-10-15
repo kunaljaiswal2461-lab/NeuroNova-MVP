@@ -329,10 +329,8 @@ export const sourceApi = {
     )
   },
 
-  async *streamChatMessage(sessionId, body, options) {
-    // Refresh a near-expiry access token first: a stream is never refreshed and replayed after a 401 (SPEC-10 W1.5).
-    await api.ensureFreshToken?.()
-    yield* api.streamSSE(
+  streamChatMessage(sessionId, body, options) {
+    return api.streamSSE(
       `/chat/sessions/${encodeURIComponent(sessionId)}/message`,
       body,
       jwtSourceOptions(options),

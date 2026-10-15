@@ -52,15 +52,15 @@ function resultCoverageText(coverage) {
   return 'Chart covers only the displayed authorized result rows.'
 }
 
-function ExactValueTooltip({ active, payload, spec, format }) {
+function ExactValueTooltip({ active, payload, spec }) {
   const point = active && Array.isArray(payload) ? payload[0]?.payload : null
   if (!point) return null
   const isProfile = Boolean(spec?.coverage?.population)
   return (
     <div style={{ maxWidth: 300, padding: '8px 10px', border: '1px solid var(--color-border)', borderRadius: 6, background: 'white', boxShadow: 'var(--shadow-card)' }}>
-      <strong style={{ display: 'block', fontFamily: 'var(--font-data)', fontSize: 11, color: 'var(--color-text-primary)', overflowWrap: 'anywhere' }}>{format ? format.x.line(point.xExact) : point.xExact}</strong>
+      <strong style={{ display: 'block', fontFamily: 'var(--font-data)', fontSize: 11, color: 'var(--color-text-primary)', overflowWrap: 'anywhere' }}>{point.xExact}</strong>
       <span style={{ display: 'block', marginTop: 4, fontFamily: 'var(--font-data)', fontSize: 11, color: 'var(--color-text-secondary)' }}>
-        {isProfile ? 'Exact observed null rate' : format ? 'Value' : 'Exact returned value'}: {format ? format.y.line(point.valueExact) : point.valueExact}
+        {isProfile ? 'Exact observed null rate' : 'Exact returned value'}: {point.valueExact}
       </span>
       {isProfile && <span style={{ display: 'block', marginTop: 3, fontFamily: 'var(--font-data)', fontSize: 10, color: 'var(--color-text-muted)' }}>{point.nullCount} observed nulls out of {point.observedRowCount} observed rows</span>}
     </div>
@@ -93,7 +93,7 @@ class ChartFailureBoundary extends Component {
   }
 }
 
-function ChartCanvas({ spec, format }) {
+function ChartCanvas({ spec }) {
   const isLine = spec.chart_type === 'line'
   const profile = Boolean(spec.coverage?.population)
   return (
@@ -109,14 +109,14 @@ function ChartCanvas({ spec, format }) {
               textAnchor="end"
               height={62}
               tick={{ fontFamily: 'var(--font-data)', fontSize: 10, fill: 'var(--color-text-muted)' }}
-              tickFormatter={format ? value => compactLabel(format.x.tick(value)) : compactLabel}
+              tickFormatter={compactLabel}
             />
             <YAxis
               tick={{ fontFamily: 'var(--font-data)', fontSize: 10, fill: 'var(--color-text-muted)' }}
-              tickFormatter={format ? format.y.tick : plottedNumber}
+              tickFormatter={plottedNumber}
               width={72}
             />
-            <Tooltip content={<ExactValueTooltip spec={spec} format={format} />} />
+            <Tooltip content={<ExactValueTooltip spec={spec} />} />
             <Line
               type="monotone"
               dataKey="valueApproximation"
@@ -137,14 +137,14 @@ function ChartCanvas({ spec, format }) {
               textAnchor="end"
               height={62}
               tick={{ fontFamily: 'var(--font-data)', fontSize: 10, fill: 'var(--color-text-muted)' }}
-              tickFormatter={format ? value => compactLabel(format.x.tick(value)) : compactLabel}
+              tickFormatter={compactLabel}
             />
             <YAxis
               tick={{ fontFamily: 'var(--font-data)', fontSize: 10, fill: 'var(--color-text-muted)' }}
-              tickFormatter={format ? format.y.tick : plottedNumber}
+              tickFormatter={plottedNumber}
               width={72}
             />
-            <Tooltip content={<ExactValueTooltip spec={spec} format={format} />} />
+            <Tooltip content={<ExactValueTooltip spec={spec} />} />
             <ReferenceLine y={0} stroke="var(--color-text-muted)" />
             <Bar
               dataKey="valueApproximation"
@@ -163,8 +163,7 @@ function ChartCanvas({ spec, format }) {
   )
 }
 
-// `format` (answers only) supplies display-formatted ticks and tooltips; without it the chart is exactly as before.
-export function DatabaseChartRenderer({ spec, onFailure, format = null }) {
+export function DatabaseChartRenderer({ spec, onFailure }) {
   if (!spec?.eligible) return null
   const coverageText = spec.coverage?.population
     ? profileCoverageText(spec.coverage)
@@ -177,7 +176,7 @@ export function DatabaseChartRenderer({ spec, onFailure, format = null }) {
       {spec.profile_sampling_notice && <p style={{ margin: '5px 0 0', fontFamily: 'var(--font-body)', fontSize: 11, lineHeight: 1.45, color: '#92400E' }}>{spec.profile_sampling_notice}</p>}
       <div style={{ marginTop: 10 }}>
         <ChartFailureBoundary onFailure={onFailure}>
-          <ChartCanvas spec={spec} format={format} />
+          <ChartCanvas spec={spec} />
         </ChartFailureBoundary>
       </div>
     </section>
