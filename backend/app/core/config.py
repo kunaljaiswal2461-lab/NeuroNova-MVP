@@ -233,12 +233,6 @@ class Settings(BaseSettings):
     nl_sql_max_output_tokens: int = Field(default=1_200, ge=200, le=8_000)
     nl_sql_default_time_zone: str = "Asia/Kolkata"
 
-    # --- chat transport and presentation (SPEC-10) ---
-    # An SSE comment frame is written when a database-chat stream has been silent this long (proxies drop idle streams).
-    chat_sse_heartbeat_seconds: float = Field(default=10.0, ge=2.0, le=30.0)
-    # Wall-clock budget of one SQL-path turn (pass 1, executions, repair, pass 2), measured from the turn start.
-    nl_sql_turn_budget_seconds: float = Field(default=150.0, ge=30.0, le=600.0)
-
     # --- hybrid database chat (SPEC-09) ---
     # "hybrid": a confirmed metric keeps the typed path, everything else is answered with model-written SQL.
     # "typed_only": the Stage 4C typed path alone (kill switch; the old suites pin it).

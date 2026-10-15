@@ -215,7 +215,7 @@ it('aborts a source stream on explicit cancellation without replaying the messag
   await screen.findByRole('button', { name: 'Cancel' })
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
-  await screen.findByText('Cancelled.')
+  await screen.findByText('The database query was cancelled.')
   await waitFor(() => expect(api.post).toHaveBeenCalledWith(
     `/chat/sessions/${session.session_id}/turns/turn-1/cancel`,
     {},
@@ -262,7 +262,7 @@ it('does not duplicate a terminal clarification when its matching token arrives'
 
   const clarificationNode = await screen.findByText((content, node) => node?.tagName === 'P' && content === clarification)
   expect(clarificationNode.textContent).toBe(clarification)
-  expect(screen.getByText('Reply below — your reply is read together with this question.')).toBeTruthy()
+  expect(screen.getByText('Clarification required')).toBeTruthy()
 })
 
 it('retains a delivered PostgreSQL result when the stream ends with an error event', async () => {
