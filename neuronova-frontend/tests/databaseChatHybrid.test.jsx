@@ -90,7 +90,7 @@ it('SQL answer: shows the activity while it runs, then the answer, the SQL and t
   renderChat()
   await ask()
 
-  await screen.findByText('Executing a controlled read-only query…')
+  await screen.findByText('Running the query on Shop…')
   release()
   expect((await screen.findByTestId('answer-text')).textContent).toBe('There are 42 orders.')
   expect(screen.getAllByText('There are 42 orders.')).toHaveLength(1)                      // not duplicated by the token text
@@ -120,12 +120,12 @@ it('shows the "query written" activity after sql_generated and the repair activi
   api.streamSSE.mockImplementation(() => stream())
   renderChat()
   await ask()
-  await screen.findByText('Query written · checking…')
+  await screen.findByText('Query written · checking it…')
   gates[0]()
-  await screen.findByText('First query failed · correcting once…')
+  await screen.findByText('The first query failed (a column name didn\'t match) · correcting it once…')
   gates[1]()
   await screen.findByTestId('answer-text')
-  expect(screen.getByText('Corrected automatically')).toBeTruthy()
+  expect(screen.getByText('Corrected automatically: a column name didn\'t match')).toBeTruthy()
   expect(document.querySelector('pre code').textContent).toBe('SELECT count(*) AS n FROM sales.orders')   // the corrected query
 })
 
@@ -158,8 +158,8 @@ it('a model_unavailable error shows the backend message', async () => {
 })
 
 it.each([
-  ['clarification', 'Which year do you mean?', 'Clarification required'],
-  ['unsupported', 'This assistant only reads data. It cannot change data or the database structure.', 'Unsupported operation'],
+  ['clarification', 'Which year do you mean?', 'Reply below — your reply is read together with this question.'],
+  ['unsupported', 'Joins across these tables are not supported.', 'Try asking for a read-only summary of the data instead.'],
 ])('%s ends the turn with its text and no SQL panel', async (event, message, badge) => {
   async function* stream() {
     yield { event, data: { message, outcome: event } }
@@ -206,7 +206,7 @@ it('reloads a stored SQL turn from nl_sql with the same fields', async () => {
   expect((await screen.findByTestId('answer-text')).textContent).toBe('There are 42 orders.')
   expect(screen.getByTestId('kpi-value').textContent).toBe('42')
   expect(screen.getByText('All time')).toBeTruthy()
-  expect(screen.getByText('Corrected automatically')).toBeTruthy()
+  expect(screen.getByText(/^Corrected automatically/)).toBeTruthy()
   expect(document.querySelector('pre code').textContent).toBe('SELECT count(*) AS n FROM sales.orders')
 })
 
@@ -219,4 +219,18 @@ it('reloads a typed-path turn without nl_sql exactly as before', async () => {
   renderChat()
   expect(await screen.findByLabelText('Controlled PostgreSQL result')).toBeTruthy()
   expect(screen.queryByText('SQL used')).toBeNull()
+})
+
+it('a write refusal has no hint (E21)', async () => {
+  const message = 'This assistant only reads data. It cannot change data or the database structure.'
+  async function* stream() {
+    yield { event: 'unsupported', data: { message, outcome: 'unsupported' } }
+    yield { event: 'token', data: { text: message } }
+    yield { event: 'done', data: {} }
+  }
+  api.streamSSE.mockImplementation(() => stream())
+  renderChat()
+  await ask('delete all orders')
+  expect(await screen.findByText(message)).toBeTruthy()
+  expect(screen.queryByText(/Try asking for a read-only summary/)).toBeNull()
 })

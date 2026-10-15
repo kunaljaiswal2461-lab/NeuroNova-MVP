@@ -1,19 +1,22 @@
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import { plotNumber } from '../../charts/databaseChartSpec'
+import { columnFormat } from '../display/chartFormat'
+import { FALLBACK_TIME_ZONE } from '../display/locale'
 import { ExactTooltipBox } from '../tooltip'
 import { SERIES_COLORS, cellString, resultView, shortLabel } from '../format'
 import { ChartFrame, eligibleFor } from './shared'
 
 export const eligible = eligibleFor
 
-function Tip({ active, payload }) {
+function Tip({ active, payload, fv }) {
   const slice = active && Array.isArray(payload) ? payload[0]?.payload : null
   if (!slice) return null
-  return <ExactTooltipBox title={slice.label} lines={[`Exact value: ${slice.exact}`, `Share: ${slice.share}`]} />
+  return <ExactTooltipBox title={slice.label} lines={[`Value: ${fv.line(slice.exact)}`, `Share: ${slice.share}`]} />
 }
 
 export default function PieRenderer({ result, spec }) {
   const { rows, index } = resultView(result)
+  const fv = columnFormat(result, spec.encodings.value, spec?.display_time_zone || FALLBACK_TIME_ZONE)
   const lp = index(spec.encodings.label)
   const vp = index(spec.encodings.value)
   const total = rows.reduce((sum, row) => sum + plotNumber(row[vp]).approximation, 0)
@@ -34,7 +37,7 @@ export default function PieRenderer({ result, spec }) {
           <Pie data={slices} dataKey="value" nameKey="label" outerRadius="75%" isAnimationActive={false}>
             {slices.map((slice, position) => <Cell key={slice.label + position} fill={SERIES_COLORS[position % SERIES_COLORS.length]} />)}
           </Pie>
-          <Tooltip content={<Tip />} />
+          <Tooltip content={<Tip fv={fv} />} />
           <Legend formatter={value => shortLabel(value)} />
         </PieChart>
       </ResponsiveContainer>

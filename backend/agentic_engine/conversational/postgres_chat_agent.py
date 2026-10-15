@@ -8,6 +8,7 @@ Stage 4B gateway.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import datetime, timezone
@@ -25,7 +26,7 @@ from app.services.nl_sql.adapter import to_chat_result
 from app.services.nl_sql.history import history_from_messages
 from app.services.nl_sql.cancel import TurnCancelled
 from app.services.nl_sql.pass2 import write_presentation
-from app.services.nl_sql.pipeline import PipelineEvent, PipelineOutcome, answer_question
+from app.services.nl_sql.pipeline import PipelineEvent, PipelineOutcome, RepairRecord, answer_question
 from app.services.nl_sql.turn_record import build_turn_record, presentation_record, sse_presentation
 from app.services.nl_sql.write_guard import is_write_or_ddl_request
 from app.services.postgres_query_executor import (
@@ -466,21 +467,77 @@ async def _stream_sql_path(
             execute_kwargs=sql_execute_kwargs,
         )
     )
+    budget = settings.nl_sql_turn_budget_seconds
+    budget_expired = False
+    first_sql: str | None = None
+    last_sql: str | None = None
+    repair_reason: str | None = None
+
+    def remaining_budget() -> float:
+        return budget - (datetime.now(timezone.utc) - turn_started).total_seconds()
+
+    def note_event(event: PipelineEvent) -> None:
+        nonlocal first_sql, last_sql, repair_reason
+        if event.name == "sql_generated" and isinstance(event.data.get("sql"), str):
+            first_sql = first_sql or event.data["sql"]
+            last_sql = event.data["sql"]
+        elif event.name == "repairing":
+            repair_reason = str(event.data.get("reason_code") or "") or None
+
+    outcome: PipelineOutcome | None = None
     try:
         while True:
             getter = asyncio.ensure_future(queue.get())
-            done, _ = await asyncio.wait({getter, task}, return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait({getter, task}, timeout=max(remaining_budget(), 0), return_when=asyncio.FIRST_COMPLETED)
             if getter in done:
-                yield _sql_sse(getter.result(), source_id=source_id)
+                pipeline_event = getter.result()
+                note_event(pipeline_event)
+                yield _sql_sse(pipeline_event, source_id=source_id)
                 continue
             getter.cancel()
+            if not done:
+                # SPEC-10 W1.2: the turn budget ran out. Flag it first so it is never reported as a user cancel.
+                budget_expired = True
             break
-        while not queue.empty():
-            yield _sql_sse(queue.get_nowait(), source_id=source_id)
-        outcome: PipelineOutcome = task.result()
+        if not budget_expired:
+            while not queue.empty():
+                yield _sql_sse(queue.get_nowait(), source_id=source_id)
+            outcome = task.result()
     finally:
         if not task.done():
             task.cancel()
+
+    async def budget_expired_events() -> list[ChatStreamEvent]:
+        """Fail the turn with ``turn_timeout``; the turn's connection and model tasks are cancelled as on a user cancel."""
+        await cancellation.cancel()
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+        await session_db.rollback()
+        text = nl_messages.TURN_TIMEOUT
+        timed_out = PipelineOutcome(
+            kind="failed", sql=last_sql, failure_code="turn_timeout", user_message=text,
+            repair=RepairRecord(reason_code=repair_reason, original_sql=first_sql)
+            if repair_reason and first_sql and first_sql != last_sql else None,
+        )
+        record = build_turn_record(route=route, outcome=timed_out, presentation=None, llm_calls=(), pass2_ran=False)
+        assistant = await _persist_assistant(
+            session_db=session_db, session_id=session_id, content=text, degraded=True,
+            degraded_reason="turn_timeout", token_usage=carried_usage, nl_sql=record,
+        )
+        set_persisted()
+        return [
+            _event(ChatStreamEventType.ERROR, {"code": "turn_timeout", "message": text}),
+            _event(ChatStreamEventType.TOKEN, {"text": text}),
+            _done(assistant, token_usage=carried_usage),
+        ]
+
+    if budget_expired:
+        for event in await budget_expired_events():
+            yield event
+        return
+    assert outcome is not None
 
     if outcome.failure_code == "execution_cancelled" or cancellation.cancelled:
         for event in await cancelled_events():
@@ -558,7 +615,7 @@ async def _stream_sql_path(
         record = build_turn_record(route=route, outcome=outcome, presentation=None, llm_calls=outcome.llm_calls, pass2_ran=False)
         assistant = await _persist_assistant(
             session_db=session_db, session_id=session_id, content=text, degraded=True,
-            degraded_reason="access_revoked", token_usage=usage,
+            degraded_reason="access_revoked", token_usage=usage, nl_sql=record,
         )
         set_persisted()
         yield _event(ChatStreamEventType.ERROR, {"code": "access_revoked", "message": text})
@@ -579,12 +636,29 @@ async def _stream_sql_path(
     flags = flags or column_privacy.PrivacyFlags({}, {})
     pass2 = None
     if not cancellation.cancelled:
-        try:
-            pass2 = await write_presentation(
+        yield _event(ChatStreamEventType.PRESENTING, {"state": "presenting"})      # SPEC-10 W2.1
+        pass2_task = asyncio.ensure_future(
+            write_presentation(
                 llm=active_llm, settings=settings, question=user_message, envelope=outcome.envelope,
                 execution=execution, flags=flags, consent=consent, repaired=outcome.repair is not None,
                 cancellation=cancellation,
             )
+        )
+        try:
+            await asyncio.wait({pass2_task}, timeout=max(remaining_budget(), 0))
+            if not pass2_task.done():
+                budget_expired = True
+        finally:
+            if not pass2_task.done():
+                pass2_task.cancel()                  # budget expired, or the stream was closed under us
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await pass2_task
+        if budget_expired:
+            for event in await budget_expired_events():
+                yield event
+            return
+        try:
+            pass2 = pass2_task.result()
         except TurnCancelled:
             pass2 = None                      # the turn was cancelled during the model call: nothing is delivered
     if pass2 is None or cancellation.cancelled:

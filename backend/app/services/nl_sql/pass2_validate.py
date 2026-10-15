@@ -38,6 +38,7 @@ CONSENT_OFF_CAVEAT = "The AI model did not see row values for this answer (sourc
 REPAIRED_CAVEAT = "The first query failed and was corrected automatically. Check the assumptions."
 MAX_RESOLVED_VALUE_CHARS = 200
 MAX_RESOLVED_ANSWER_CHARS = 2_000
+MAX_SEGMENT_EXACT_CHARS = 400       # the record's Segment.exact bound
 ALLOWED_YEARS = range(1900, 2101)
 ALLOWED_COUNTS = range(1, 11)
 
@@ -64,6 +65,9 @@ class Resolved:
     downgrade: str | None = None            # ``display_downgraded:<from>-><to>``
     derived: dict[str, str] = field(default_factory=dict)
     dropped: int = 0
+    # SPEC-10 W3: where each resolved value sits in ``answer`` / each takeaway (invariant S1: they concatenate back).
+    answer_segments: list[dict[str, Any]] = field(default_factory=list)
+    takeaways_segments: list[list[dict[str, Any]]] = field(default_factory=list)
 
 
 # ── sanitising ────────────────────────────────────────────────────────────────────────────────────
@@ -297,6 +301,68 @@ def _delta(current: str, previous: str) -> tuple[str, str]:
     return plain(delta), format(pct, "f") + "%"
 
 
+def text_segments(text: str) -> list[dict[str, Any]]:
+    """One text segment (none for an empty string)."""
+    return [{"t": "text", "text": text}] if text else []
+
+
+def build_segments(
+    template: str,
+    resolve_ref: Any,
+    *,
+    limit: int | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Resolve ``template`` and return ``(resolved text, segments)`` (SPEC-10 W3.1).
+
+    ``resolve_ref(ref) -> (exact, kind, source, column)``. ``limit`` cuts the resolved text at that many characters;
+    a value that would be cut becomes a text segment holding the kept prefix, so the segments always concatenate to
+    the (possibly cut) text, byte for byte (S1).
+    """
+    segments: list[dict[str, Any]] = []
+    out: list[str] = []
+    used = 0
+    position = 0
+
+    def push_text(text: str) -> bool:
+        nonlocal used
+        if not text:
+            return True
+        room = None if limit is None else limit - used
+        if room is not None and len(text) > room:
+            text = text[: max(room, 0)]
+            full = False
+        else:
+            full = True
+        if text:
+            if segments and segments[-1]["t"] == "text":
+                segments[-1]["text"] += text
+            else:
+                segments.append({"t": "text", "text": text})
+            out.append(text)
+            used += len(text)
+        return full
+
+    for match in _REF.finditer(template):
+        if not push_text(template[position : match.start()]):
+            return "".join(out), segments
+        ref = parse_ref(match.group(1))
+        assert ref is not None
+        exact, kind, source, column = resolve_ref(ref)
+        room = None if limit is None else limit - used
+        if room is not None and len(exact) > room:
+            push_text(exact)                      # cut inside a value: only its prefix survives, as text
+            return "".join(out), segments
+        if len(exact) > MAX_SEGMENT_EXACT_CHARS:
+            push_text(exact)                      # too long to be a typed value (the record schema caps it)
+        else:
+            segments.append({"t": "value", "exact": exact, "kind": kind, "source": source, "column": column})
+            out.append(exact)
+            used += len(exact)
+        position = match.end()
+    push_text(template[position:])
+    return "".join(out), segments
+
+
 def validate_and_resolve(
     raw: Any,
     *,
@@ -401,7 +467,8 @@ def validate_and_resolve(
     extra_caveats: list[str] = []
     if final[0] != spec.display:
         downgrade = f"display_downgraded:{spec.display}->{final[0]}"
-        extra_caveats.append(f"Shown as {final[0]} because the result does not fit {spec.display}.")
+        if execution.rows:                 # SPEC-10 W7.3: an empty result is not a "does not fit" case
+            extra_caveats.append(f"Shown as {final[0]} because the result does not fit {spec.display}.")
 
     # 6. Mandatory caveats, added in code.
     mandatory = mandatory_caveats(
@@ -423,23 +490,41 @@ def validate_and_resolve(
             except (InvalidOperation, ValueError):
                 derived = {}
 
-    def resolve(match: re.Match[str]) -> str:
-        ref = parse_ref(match.group(1))
-        assert ref is not None
+    def resolve_ref(ref: Ref) -> tuple[str, str | None, str, str | None]:
+        """``(exact string, kind, source, column label)`` of one reference."""
         if ref.kind == "rowcount":
-            return str(execution.row_count)
+            return str(execution.row_count), "integer", "rowcount", None
         if ref.kind == "row":
             text = cell_text(execution.rows[ref.index][label_index[ref.label]])
-            return "—" if text is None else _clean_value(text)
+            if text is None:
+                return "—", None, "row", ref.label
+            return _clean_value(text), kinds[label_index[ref.label]] or "text", "row", ref.label
         if ref.kind == "stat":
-            return inp.stat(ref.label, ref.function) or "—"
+            value = inp.stat(ref.label, ref.function)
+            if value is None:
+                return "—", None, "stat", ref.label
+            column_kind = kinds[label_index[ref.label]] if ref.label in label_index else None
+            if ref.function in ("count", "nulls", "distinct"):
+                kind = "integer"
+            elif ref.function == "mean":
+                kind = "decimal"
+            else:
+                kind = column_kind or "text"
+            return value, kind, "stat", ref.label
         current = cell_text(execution.rows[0][label_index[ref.label]])
         previous = cell_text(execution.rows[0][label_index[ref.other]])
         delta, pct = _delta(current or "0", previous or "0")
-        return delta if ref.kind == "delta" else pct
+        if ref.kind == "delta":
+            return delta, "decimal", "delta", ref.label
+        return pct, ("text" if pct == "n/a" else "percent"), "delta_pct", ref.label
 
-    resolved_answer = _REF.sub(resolve, answer_template)[:MAX_RESOLVED_ANSWER_CHARS]
-    resolved_takeaways = [_REF.sub(resolve, t) for t in kept_takeaways]
+    resolved_answer, answer_segments = build_segments(answer_template, resolve_ref, limit=MAX_RESOLVED_ANSWER_CHARS)
+    resolved_takeaways: list[str] = []
+    takeaways_segments: list[list[dict[str, Any]]] = []
+    for template in kept_takeaways:
+        text, segments = build_segments(template, resolve_ref)
+        resolved_takeaways.append(text)
+        takeaways_segments.append(segments)
 
     seen: set[str] = set()
     table_columns: list[dict[str, str]] = []
@@ -462,4 +547,6 @@ def validate_and_resolve(
         downgrade=downgrade,
         derived=derived,
         dropped=dropped,
+        answer_segments=answer_segments,
+        takeaways_segments=takeaways_segments,
     )

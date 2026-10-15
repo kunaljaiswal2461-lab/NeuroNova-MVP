@@ -9,12 +9,15 @@ from app.schemas.nl_sql_record import (
     Pass2Info,
     PresentationRecord,
     RepairModel,
+    Segment,
     TableColumn,
 )
 
 from .pass2 import Pass2Outcome
 from .pass2_validate import mandatory_caveats
 from .pipeline import PipelineOutcome
+from app.core.config import get_settings
+
 from .prompt import PASS2_PROMPT_VERSION, PROMPT_VERSION
 
 EMPTY_ENCODINGS: dict[str, Any] = {"x": None, "y": [], "series": None, "label": None, "value": None}
@@ -32,12 +35,15 @@ def presentation_record(
         budget_cut=inp.budget_cut if inp is not None else None,
     )
     resolved = pass2.resolved
+    display_time_zone = get_settings().nl_sql_default_time_zone
     if resolved is None:
         return PresentationRecord(
             display="table", encodings=dict(EMPTY_ENCODINGS), table_columns=[], answer_template=summary, answer=summary,
             takeaways_template=[], takeaways=[],
             caveats=mandatory_caveats(complete=complete, masked=False, consent=consent, repaired=repaired),
             fallback=pass2.fallback or "spec_invalid", pass2=info,
+            answer_segments=[Segment(t="text", text=summary)] if summary else [], takeaways_segments=[],
+            display_time_zone=display_time_zone,
         )
     return PresentationRecord(
         display=resolved.display,
@@ -51,6 +57,9 @@ def presentation_record(
         fallback=resolved.downgrade,
         derived=resolved.derived,
         pass2=info,
+        answer_segments=[Segment(**x) for x in resolved.answer_segments],
+        takeaways_segments=[[Segment(**x) for x in group] for group in resolved.takeaways_segments],
+        display_time_zone=display_time_zone,
     )
 
 
@@ -65,7 +74,17 @@ def sse_presentation(record: PresentationRecord) -> dict[str, Any]:
         "table_columns": [c.model_dump() for c in record.table_columns],
         "fallback": record.fallback,
         "derived": record.derived,
+        "answer_segments": [_segment_json(s) for s in record.answer_segments],
+        "takeaways_segments": [[_segment_json(s) for s in group] for group in record.takeaways_segments],
+        "display_time_zone": record.display_time_zone,
     }
+
+
+def _segment_json(segment: Segment) -> dict[str, Any]:
+    """Only the keys that belong to the segment's type (D2)."""
+    if segment.t == "text":
+        return {"t": "text", "text": segment.text or ""}
+    return {"t": "value", "exact": segment.exact or "", "kind": segment.kind, "source": segment.source, "column": segment.column}
 
 
 def build_turn_record(
