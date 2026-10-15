@@ -21,6 +21,8 @@ TOO_EXPENSIVE = "That question needs a very large calculation. Add a time range 
 TIMEOUT = "The calculation took too long. Add a time range or a filter and ask again."
 ROW_TOO_LARGE = "The result rows are too large to show. Ask for fewer or shorter columns."
 QUESTION_TOO_LONG = "The question is too long. Please shorten it to under 4,000 characters."
+TURN_TIMEOUT = "This question took too long to answer. Try a narrower question, or try again in a moment."
+INTERNAL = "Something went wrong while answering. Please try again."
 OVER_BUDGET = "This source has too many columns to answer in one question. Select fewer tables for this source."
 
 # Codes whose message is the "rephrase" text: a repairable failure that stayed failed after the one repair.
@@ -43,6 +45,7 @@ FIXED_BY_CODE = {
     "access_changed": ACCESS_CHANGED,
     "access_revoked": ACCESS_REVOKED,
     "execution_cancelled": CANCELLED,
+    "turn_timeout": TURN_TIMEOUT,
 }
 ALL_CODES = frozenset({"column_not_found", "table_not_in_scope"}) | REPHRASE_CODES | frozenset(FIXED_BY_CODE)
 

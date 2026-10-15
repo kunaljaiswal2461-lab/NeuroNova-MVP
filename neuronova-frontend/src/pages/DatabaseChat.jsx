@@ -6,6 +6,8 @@ import { DatabaseChartRenderer } from '../components/charts/DatabaseChartRendere
 import { buildDatabaseResultChartSpec } from '../components/charts/databaseChartSpec'
 import AnswerView from '../components/answers/AnswerView'
 import { answerFromRecord } from '../components/answers/answerState'
+import TurnProgress from '../components/answers/TurnProgress'
+import { CancelledNote, ClarificationCard, FailedCard, InterruptedNote, UnsupportedCard } from '../components/answers/OutcomeCards'
 
 const SOURCE_SESSION_STORAGE_PREFIX = 'neuronova:source-chat-session:v1:'
 
@@ -62,9 +64,35 @@ function safeErrorMessage(error, fallback = 'We could not start this database co
   return SAFE_SOURCE_ERRORS[code] || fallback
 }
 
+// SPEC-10 W6.2: the backend wrote an actionable message for this event (every one is a constant), so it comes first.
 function safeEventMessage(data, fallback) {
   const code = data?.code || data?.failure_code || data?.error_code
-  return SAFE_SOURCE_ERRORS[code] || data?.message || fallback
+  if (typeof data?.message === 'string' && data.message.trim()) return data.message
+  return SAFE_SOURCE_ERRORS[code] || fallback
+}
+
+const WRITE_REFUSAL = 'This assistant only reads data. It cannot change data or the database structure.'
+const MAX_QUESTION_CHARS = 4000
+const QUESTION_TOO_LONG = 'The question is too long. Please shorten it to under 4,000 characters.'
+const GENERIC_FAILURE = 'The database conversation could not be completed.'
+
+// SPEC-10 D5. A failure is pre-acceptance when no `start` event arrived: the server never took the question.
+function noticeFor(error) {
+  const code = error?.code
+  const serverCode = error?.response?.error?.code
+  if (error?.status === 401 || code === 'authentication_required') return { text: 'Your sign-in expired. Please sign in again.', restore: true }
+  if (error?.status === 409 || serverCode === 'turn_in_progress') {
+    return { text: 'An earlier question in this conversation is still being answered (maybe in another tab). Wait for it to finish, then send again.', restore: true, refresh: true }
+  }
+  if (error?.status === 429) {
+    const seconds = Number(error?.response?.retry_after)
+    const minutes = Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds / 60) : null
+    return { text: `You've reached the question limit for now. ${minutes ? `Try again in about ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.` : 'Try again later.'}`, restore: true }
+  }
+  if (code === 'connect_timeout' || error?.transient || error?.name === 'TypeError' || error?.name === 'TimeoutError') {
+    return { text: "The server didn't respond. Your question wasn't sent — it's back in the box.", restore: true, reconcile: true }
+  }
+  return { text: safeErrorMessage(error, GENERIC_FAILURE), restore: true, reconcile: true }
 }
 
 function isSourceSession(session, sourceId) {
@@ -77,17 +105,26 @@ function resultFromMessage(message) {
   return message.query_result?.execution_id ? message.query_result : null
 }
 
+function outcomeFromRow(message, answer) {
+  if (answer?.outcome) return answer.outcome
+  if (message.unsupported) return 'unsupported'
+  if (message.degraded_reason === 'execution_cancelled') return 'cancelled'
+  return 'answer'
+}
+
 function toDisplayMessage(message) {
   const role = String(message.role ?? '').toLowerCase()
+  // SPEC-09: a model-written-SQL turn carries its SQL, assumptions and resolved presentation spec.
+  const answer = answerFromRecord(message.nl_sql)
   return {
     id: message.message_id ?? `${message.created_at ?? Date.now()}-${role}`,
     role: role === 'user' ? 'user' : 'assistant',
     text: message.content ?? '',
     postgresResult: resultFromMessage(message),
-    // SPEC-09: a model-written-SQL turn carries its SQL, assumptions and resolved presentation spec.
-    answer: answerFromRecord(message.nl_sql),
-    activity: null,
-    outcome: message.unsupported ? 'unsupported' : null,
+    answer,
+    outcome: role === 'user' ? null : outcomeFromRow(message, answer),
+    errorCode: answer?.failureCode ?? message.degraded_reason ?? null,
+    stage: null,
     streaming: false,
   }
 }
@@ -313,11 +350,27 @@ function PostgresResultTable({ result }) {
   )
 }
 
-function SourceStatus({ activity }) {
-  if (!activity) return null
+const card = { padding: '10px 12px', borderRadius: 8, fontFamily: 'var(--font-body)', fontSize: 12 }
+
+function prefersReducedMotion() {
+  try {
+    return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true
+  } catch {
+    return false
+  }
+}
+
+function AiSettingsBlock({ settings }) {
+  if (!settings) return null
+  const onOff = value => (value ? 'On' : 'Off')
   return (
-    <div role="status" style={{ marginBottom: 8, padding: '7px 10px', background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 6, fontFamily: 'var(--font-data)', fontSize: 11, color: '#1D4ED8' }}>
-      {activity}
+    <div style={{ marginBottom: 20 }}>
+      <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>AI settings</p>
+      <div style={{ background: 'white', border: '1px solid var(--color-border)', borderRadius: 8, padding: '10px 12px', fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-secondary)', lineHeight: 1.55 }}>
+        <div>Result rows sent to the AI model: <strong>{onOff(settings.result_rows_to_model)}</strong></div>
+        <div>Example values in questions: <strong>{onOff(settings.sample_values_enabled)}</strong></div>
+        <Link to="/upload" style={{ display: 'inline-block', marginTop: 6, fontSize: 12 }}>Change</Link>
+      </div>
     </div>
   )
 }
@@ -330,15 +383,50 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
   const [cancelling, setCancelling] = useState(false)
   const [resultReceived, setResultReceived] = useState(false)
   const [sessionError, setSessionError] = useState(null)
+  const [notice, setNotice] = useState(null)
+  const [newConversationError, setNewConversationError] = useState(null)
+  const [aiSettings, setAiSettings] = useState(null)
+  const [unpinned, setUnpinned] = useState(false)
   const [sourceContext, setSourceContext] = useState({ displayName: null, snapshotId: null })
-  const messagesEndRef = useRef(null)
+  const listRef = useRef(null)
+  const composerRef = useRef(null)
+  const pinnedRef = useRef(true)
   const streamAbortRef = useRef(null)
   const turnIdRef = useRef(null)
   const resultReceivedRef = useRef(false)
+  const focusAfterTurnRef = useRef(false)
+  const sessionIdRef = useRef(null)
+  const turnSeqRef = useRef(0)           // bumped on every send: a transcript read from before it is stale
+  const creatingRef = useRef(false)      // a New conversation request is in flight: sending is blocked meanwhile
+  const [creating, setCreating] = useState(false)
 
+  const scrollToBottom = useCallback(() => {
+    const element = listRef.current
+    if (!element) return
+    if (prefersReducedMotion() || typeof element.scrollTo !== 'function') element.scrollTop = element.scrollHeight
+    else element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' })
+  }, [])
+
+  // SPEC-10 W6.3: follow the conversation only while the reader is at the bottom.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    if (pinnedRef.current) scrollToBottom()
+  }, [messages, scrollToBottom])
+
+  const handleScroll = () => {
+    const element = listRef.current
+    if (!element) return
+    const pinned = element.scrollHeight - element.scrollTop - element.clientHeight < 120
+    pinnedRef.current = pinned
+    setUnpinned(!pinned)
+  }
+
+  const jumpToLatest = () => {
+    pinnedRef.current = true
+    setUnpinned(false)
+    scrollToBottom()
+  }
+
+  useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -435,30 +523,80 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
     }
   }, [sourceId])
 
-  const updateAssistant = useCallback((assistantId, patch) => {
-    setMessages(current => current.map(message => message.id === assistantId ? { ...message, ...patch } : message))
+  // SPEC-10 W6.6: the owner's AI settings, read-only. Hidden when they cannot be read; refreshed when the window
+  // regains focus because they may have been changed in another tab.
+  useEffect(() => {
+    let disposed = false
+    const load = () => {
+      Promise.resolve()
+        .then(() => sourceApi.getAiSettings(sourceId))
+        .then(settings => { if (!disposed) setAiSettings(settings && typeof settings === 'object' ? settings : null) })
+        .catch(() => { if (!disposed) setAiSettings(null) })
+    }
+    load()
+    window.addEventListener('focus', load)
+    return () => {
+      disposed = true
+      window.removeEventListener('focus', load)
+    }
+  }, [sourceId])
+
+  const patchMessage = useCallback((assistantId, patch) => {
+    setMessages(current => current.map(message => message.id === assistantId
+      ? { ...message, ...(typeof patch === 'function' ? patch(message) : patch) }
+      : message))
   }, [])
 
-  const handleSend = useCallback(async () => {
-    const question = input.trim()
-    if (!question || streaming) return
+  // SPEC-10 W1.7. The server transcript is the source of truth after any turn that ended without `done`. Read only:
+  // nothing is ever re-sent. Returns the transcript's messages, or null when it could not be read.
+  const reconcile = useCallback(async () => {
+    const id = sessionIdRef.current
+    if (!id) return null
+    const seq = turnSeqRef.current
+    try {
+      const transcript = await sourceApi.getChatMessages(id, { limit: 500 })
+      const stored = transcript?.messages ?? []
+      if (sessionIdRef.current !== id) return null
+      // A read that started before the user sent another question is older than that turn: applying it would delete
+      // the new bubbles. The caller still gets the data; the view is left alone.
+      if (turnSeqRef.current === seq) setMessages(stored.map(toDisplayMessage))
+      return stored
+    } catch {
+      return null // keep the local view
+    }
+  }, [])
+
+  const handleSend = useCallback(async (override) => {
+    const question = (typeof override === 'string' ? override : input).trim()
+    if (!question || streaming || creatingRef.current) return
+    if (question.length > MAX_QUESTION_CHARS) return
     if (!sessionId || !sourceId) {
       setSessionError('This database conversation is not ready yet.')
       return
     }
 
-    const userId = `user-${Date.now()}`
-    const assistantId = `assistant-${Date.now()}`
+    const stamp = Date.now()
+    const userId = `user-${stamp}`
+    const assistantId = `assistant-${stamp}`
+    // How many times this exact question is already in the conversation (saved or sent earlier in this page).
+    const sameQuestionBefore = messages.filter(message => message.role === 'user' && message.text === question).length
+    turnSeqRef.current += 1
     const streamController = new AbortController()
     streamAbortRef.current?.abort()
     streamAbortRef.current = streamController
     turnIdRef.current = null
     resultReceivedRef.current = false
+    let accepted = false
+    let sawDone = false
+    let sawError = false
     setResultReceived(false)
+    setNotice(null)
+    pinnedRef.current = true
+    setUnpinned(false)
     setMessages(current => [
       ...current,
       { id: userId, role: 'user', text: question, streaming: false },
-      { id: assistantId, role: 'assistant', text: '', postgresResult: null, answer: null, terminalText: null, activity: 'Planning an authorized database query…', outcome: null, streaming: true },
+      { id: assistantId, role: 'assistant', text: '', postgresResult: null, answer: null, terminalText: null, outcome: 'pending', stage: 'sending', reasonCode: null, errorCode: null, startedAt: stamp, streaming: true },
     ])
     setInput('')
     setStreaming(true)
@@ -469,121 +607,123 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
       const stream = sourceApi.streamChatMessage(sessionId, { message: question }, { signal: streamController.signal })
       for await (const { event, data } of stream) {
         if (streamController.signal.aborted) break
+        accepted = true                       // any frame proves the server took the turn
         if (event === 'start') {
           turnIdRef.current = typeof data?.turn_id === 'string' ? data.turn_id : null
+          patchMessage(assistantId, { stage: 'understanding' })
         } else if (event === 'planning') {
-          updateAssistant(assistantId, { activity: safeEventMessage(data, 'Planning an authorized database query…') })
+          patchMessage(assistantId, { stage: 'understanding' })
         } else if (event === 'catalog') {
-          setSourceContext(current => ({
-            ...current,
-            snapshotId: data?.snapshot_id ?? current.snapshotId,
-          }))
+          setSourceContext(current => ({ ...current, snapshotId: data?.snapshot_id ?? current.snapshotId }))
         } else if (event === 'sql_generated') {
           // The owner sees the query (decision 6). A second one means the first was corrected once.
-          setMessages(current => current.map(message => message.id === assistantId
-            ? {
-                ...message,
-                answer: {
-                  ...(message.answer ?? {}),
-                  sql: typeof data?.sql === 'string' ? data.sql : null,
-                  assumptions: Array.isArray(data?.assumptions) ? data.assumptions : [],
-                  route: 'sql',
-                },
-                activity: 'Query written · checking…',
-              }
-            : message))
+          patchMessage(assistantId, message => {
+            const previous = message.answer?.sql ?? null
+            const corrected = Boolean(message.answer?.repaired) || data?.attempt >= 2
+            return {
+              stage: corrected ? 'corrected' : 'written',
+              answer: {
+                ...(message.answer ?? {}),
+                sql: typeof data?.sql === 'string' ? data.sql : null,
+                firstSql: corrected && previous ? previous : message.answer?.firstSql ?? null,
+                assumptions: Array.isArray(data?.assumptions) ? data.assumptions : [],
+                route: 'sql',
+              },
+            }
+          })
         } else if (event === 'repairing') {
-          setMessages(current => current.map(message => message.id === assistantId
-            ? { ...message, answer: { ...(message.answer ?? {}), repaired: true }, activity: 'First query failed · correcting once…' }
-            : message))
-        } else if (event === 'presentation') {
-          setMessages(current => current.map(message => message.id === assistantId
-            ? { ...message, answer: { ...(message.answer ?? {}), presentation: data && typeof data === 'object' ? data : null } }
-            : message))
+          patchMessage(assistantId, message => ({
+            stage: 'repairing',
+            reasonCode: data?.reason_code ?? null,
+            answer: { ...(message.answer ?? {}), repaired: true, repair: { reasonCode: data?.reason_code ?? null } },
+          }))
         } else if (event === 'executing') {
-          updateAssistant(assistantId, { activity: safeEventMessage(data, 'Executing a controlled read-only query…') })
+          patchMessage(assistantId, { stage: 'running' })
+        } else if (event === 'presenting') {
+          patchMessage(assistantId, { stage: 'presenting' })
+        } else if (event === 'presentation') {
+          patchMessage(assistantId, message => ({ answer: { ...(message.answer ?? {}), presentation: data && typeof data === 'object' ? data : null } }))
         } else if (event === 'clarification' || event === 'clarification_required') {
           const terminalText = data?.message ?? data?.question ?? 'Please clarify which table or calculation you mean.'
-          updateAssistant(assistantId, {
-            text: terminalText,
-            terminalText,
-            activity: null,
-            outcome: 'clarification',
-            streaming: false,
-          })
+          focusAfterTurnRef.current = true
+          patchMessage(assistantId, { text: terminalText, terminalText, stage: null, outcome: 'clarification' })
         } else if (event === 'unsupported') {
           const terminalText = data?.message ?? 'That request is not supported for this database conversation.'
-          updateAssistant(assistantId, {
-            text: terminalText,
-            terminalText,
-            activity: null,
-            outcome: 'unsupported',
-            streaming: false,
-          })
+          patchMessage(assistantId, { text: terminalText, terminalText, stage: null, outcome: 'unsupported' })
         } else if (event === 'postgres_result') {
           const postgresResult = data?.postgres_result ?? data?.result ?? data
           if (postgresResult) {
             resultReceivedRef.current = true
             setResultReceived(true)
           }
-          updateAssistant(assistantId, {
-            postgresResult,
-            activity: null,
-          })
+          patchMessage(assistantId, { postgresResult, stage: null })
         } else if (event === 'token') {
           const tokenText = data?.text ?? ''
-          setMessages(current => current.map(message => {
-            if (message.id !== assistantId) return message
+          patchMessage(assistantId, message => {
             const duplicateTerminalToken = Boolean(message.terminalText) && message.terminalText === tokenText
-            return {
-              ...message,
-              text: duplicateTerminalToken ? message.text : message.text + tokenText,
-              terminalText: null,
-              activity: null,
-            }
-          }))
+            return { text: duplicateTerminalToken ? message.text : message.text + tokenText, terminalText: null, stage: null }
+          })
         } else if (event === 'error') {
+          sawError = true
           if (resultReceivedRef.current) {
-            updateAssistant(assistantId, {
-              text: 'The database result above was received, but the response ended before its final summary.',
-              activity: null,
-              outcome: 'interrupted',
-              streaming: false,
-            })
+            patchMessage(assistantId, { text: 'The database result above was received, but the response ended before its final summary.', stage: null, outcome: 'interrupted' })
           } else {
-            updateAssistant(assistantId, {
-              text: safeEventMessage(data, 'The database conversation could not be completed.'),
-              postgresResult: null,
-              activity: null,
-              outcome: 'failed',
-              streaming: false,
-            })
+            const text = safeEventMessage(data, GENERIC_FAILURE)
+            patchMessage(assistantId, { text, terminalText: text, errorCode: data?.code ?? null, postgresResult: null, stage: null, outcome: 'failed' })
           }
-          break
         } else if (event === 'done') {
+          sawDone = true
           const result = data?.postgres_result ?? data?.result
           if (result) {
             resultReceivedRef.current = true
             setResultReceived(true)
           }
-          setMessages(current => current.map(message => message.id === assistantId
-            ? { ...message, postgresResult: result ?? message.postgresResult, activity: null, streaming: false }
-            : message))
-          break
+          patchMessage(assistantId, message => ({
+            postgresResult: result ?? message.postgresResult,
+            stage: null,
+            streaming: false,
+            outcome: message.outcome === 'pending' ? 'answer' : message.outcome,
+          }))
+          break // nothing after `done` changes the message
         }
+        // Unknown events are ignored.
+      }
+      if (!sawDone && !streamController.signal.aborted && accepted) {
+        patchMessage(assistantId, message => ({
+          streaming: false, stage: null,
+          outcome: message.outcome === 'pending' ? (message.postgresResult ? 'interrupted' : 'interrupted') : message.outcome,
+          text: message.outcome === 'pending' && !message.text ? 'The connection was lost while answering.' : message.text,
+        }))
+        if (!sawError) void reconcile()
       }
     } catch (error) {
-      if (resultReceivedRef.current) {
-        updateAssistant(assistantId, {
-          text: 'The database result above was received before the response ended.',
-          activity: null,
-          outcome: 'interrupted',
-          streaming: false,
-        })
-      } else if (error?.name === 'AbortError') {
-        updateAssistant(assistantId, { text: 'The database query was cancelled.', postgresResult: null, activity: null, outcome: 'cancelled', streaming: false })
+      const cancelledByUser = streamController.signal.aborted
+      if (!accepted && !cancelledByUser) {
+        // Pre-acceptance: the server never took the question. Remove the bubbles, give the question back, say why.
+        const failure = noticeFor(error)
+        setMessages(current => current.filter(message => message.id !== userId && message.id !== assistantId))
+        setInput(current => (current.trim() ? current : question))
+        setNotice(failure)
+        if (failure.reconcile) {
+          const stored = await reconcile()
+          // The server may have accepted the question after all: then it is in the transcript, not in the box.
+          const sameQuestionNow = stored ? stored.filter(message => String(message.role).toLowerCase() === 'user' && message.content === question).length : 0
+          // Clear the box only when a NEW saved copy of this question appeared: an earlier question must not count.
+          if (stored && sameQuestionNow > sameQuestionBefore) setInput(current => (current === question ? '' : current))
+        }
+      } else if (cancelledByUser) {
+        if (resultReceivedRef.current) {
+          patchMessage(assistantId, { text: 'Cancelled.', stage: null, outcome: 'interrupted', streaming: false })
+        } else {
+          patchMessage(assistantId, { text: 'Cancelled.', postgresResult: null, stage: null, outcome: 'cancelled', streaming: false })
+        }
+        void reconcile()
+      } else if (resultReceivedRef.current) {
+        patchMessage(assistantId, { text: 'The database result above was received before the response ended.', stage: null, outcome: 'interrupted', streaming: false })
+        void reconcile()
       } else {
-        updateAssistant(assistantId, { text: safeErrorMessage(error, 'The database conversation could not be completed.'), postgresResult: null, activity: null, outcome: 'failed', streaming: false })
+        patchMessage(assistantId, { text: 'The connection was lost while answering.', stage: null, outcome: 'interrupted', streaming: false })
+        void reconcile()
       }
     } finally {
       if (streamAbortRef.current === streamController) {
@@ -593,7 +733,16 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
       setStreaming(false)
       setCancelling(false)
     }
-  }, [input, sessionId, sourceId, streaming, updateAssistant])
+  }, [input, messages, patchMessage, reconcile, sessionId, sourceId, streaming])
+
+  useEffect(() => {
+    if (!streaming && focusAfterTurnRef.current) {
+      focusAfterTurnRef.current = false
+      const active = document.activeElement
+      const typing = active && active !== document.body && active !== composerRef.current && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)
+      if (!typing) composerRef.current?.focus()
+    }
+  }, [streaming])
 
   const cancelExecution = useCallback(() => {
     const streamController = streamAbortRef.current
@@ -612,6 +761,45 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
     streamController.abort()
   }, [cancelling, sessionId])
 
+  const startNewConversation = async () => {
+    if (streaming || creatingRef.current) return
+    creatingRef.current = true
+    setCreating(true)
+    setNewConversationError(null)
+    try {
+      const created = await sourceApi.createChatSession(sourceId, { mode: 'AUTO' })
+      const session = created?.session
+      if (!isSourceSession(session, sourceId)) throw new Error('source_session_mismatch')
+      saveSessionId(sourceId, session.session_id)
+      sessionIdRef.current = session.session_id      // a read of the old conversation must not land in the new one
+      turnSeqRef.current += 1
+      setSessionId(session.session_id)
+      setMessages([])
+      setNotice(null)
+      pinnedRef.current = true
+      composerRef.current?.focus()
+    } catch (error) {
+      setNewConversationError(safeErrorMessage(error, 'We could not start a new conversation. Your current conversation is unchanged.'))
+    } finally {
+      creatingRef.current = false
+      setCreating(false)
+    }
+  }
+
+  const editQuestion = messageId => {
+    const index = messages.findIndex(message => message.id === messageId)
+    const previousUser = messages.slice(0, index).reverse().find(message => message.role === 'user')
+    if (!previousUser) return
+    setInput(previousUser.text)
+    composerRef.current?.focus()
+  }
+
+  const tryAgain = messageId => {
+    const index = messages.findIndex(message => message.id === messageId)
+    const previousUser = messages.slice(0, index).reverse().find(message => message.role === 'user')
+    if (previousUser) void handleSend(previousUser.text)       // a new turn, started by the user's click
+  }
+
   const handleKeyDown = event => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
@@ -621,60 +809,102 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
 
   const displayName = sourceContext.displayName || 'Selected PostgreSQL source'
   const sessionReady = Boolean(sessionId && !sessionError)
+  const tooLong = input.length > MAX_QUESTION_CHARS
+  const canSend = Boolean(input.trim()) && sessionReady && !streaming && !creating && !tooLong
+
+  const renderAssistant = (message) => {
+    const sqlAnswer = Boolean(message.postgresResult) && message.answer?.route === 'sql'
+    const sqlOutcome = message.outcome
+    const proseHidden = sqlAnswer || ['clarification', 'unsupported', 'failed', 'cancelled', 'interrupted'].includes(sqlOutcome)
+    return (
+      <div className="chat-assistant">
+        {message.outcome === 'pending' && (
+          <TurnProgress stage={message.stage} startedAt={message.startedAt} sourceName={displayName} reasonCode={message.reasonCode} typed={!message.answer} />
+        )}
+        {message.outcome === 'clarification' && <ClarificationCard text={message.text} />}
+        {message.outcome === 'unsupported' && <UnsupportedCard text={message.text} writeRefusal={message.text === WRITE_REFUSAL} />}
+        {message.outcome === 'failed' && (
+          <FailedCard text={message.text} answer={message.answer} failureCode={message.errorCode} busy={streaming}
+            onEdit={() => editQuestion(message.id)} onTryAgain={() => tryAgain(message.id)} />
+        )}
+        {message.outcome === 'cancelled' && <CancelledNote text={message.text || 'Cancelled.'} />}
+        {message.outcome === 'interrupted' && <InterruptedNote text={message.text} />}
+        {message.text && !proseHidden && (
+          <p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-primary)', lineHeight: 1.6, marginBottom: message.postgresResult ? 10 : 0, whiteSpace: 'pre-wrap' }}>
+            {message.text}{message.streaming && <span style={{ display: 'inline-block', width: 8, height: 14, background: 'var(--color-primary-indigo)', marginLeft: 2, borderRadius: 1, verticalAlign: 'text-bottom', animation: 'pulse-dot 0.8s ease-in-out infinite' }} />}
+          </p>
+        )}
+        {sqlAnswer
+          ? <AnswerView result={message.postgresResult} answer={message.answer} text={message.text} />
+          : <PostgresResultTable result={message.postgresResult} />}
+      </div>
+    )
+  }
 
   return (
     <Layout className="chat-page" title="Database Conversation" subtitle="Authorized catalog context and controlled PostgreSQL reads">
       <div className="chat-workspace" style={{ display: 'grid', gridTemplateColumns: '1fr 260px', gap: 0, height: 'calc(100vh - var(--topbar-height) - 48px)', position: 'relative' }}>
-        <div className="chat-conversation" style={{ display: 'flex', flexDirection: 'column', background: 'transparent' }}>
+        <div className="chat-conversation" style={{ display: 'flex', flexDirection: 'column', background: 'transparent', minHeight: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, marginBottom: 12, paddingRight: 12 }}>
+            <button type="button" className="btn btn-ghost-neutral btn-sm" onClick={() => { void startNewConversation() }} disabled={streaming || creating || !sessionReady}>New conversation</button>
             <span style={{ background: '#EFF6FF', color: '#1D4ED8', border: '1px solid #BFDBFE', borderRadius: 'var(--radius-full)', padding: '5px 12px', fontFamily: 'var(--font-heading)', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Database mode</span>
           </div>
+          {newConversationError && <div role="alert" style={{ ...card, marginBottom: 8, marginRight: 12, background: '#FFF1F2', border: '1px solid #FECDD3', color: '#9F1239' }}>{newConversationError}</div>}
 
-          <div className="chat-messages" style={{ flex: 1, overflowY: 'auto', paddingRight: 12, display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {sessionError && <div role="alert" style={{ background: '#FFF1F2', border: '1px solid #FECDD3', borderRadius: 8, padding: '12px 16px', fontFamily: 'var(--font-body)', fontSize: 13, color: '#9F1239' }}>{sessionError}</div>}
-            {messages.length === 0 ? (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: '40px 24px', gap: 12 }}>
-                <div style={{ width: 52, height: 52, borderRadius: '50%', background: '#EFF6FF', border: '1px solid #BFDBFE', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary-indigo)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
-                </div>
-                {!sessionReady && !sessionError ? (
-                  <><h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>Creating database session…</h3><p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-secondary)', maxWidth: 360, lineHeight: 1.6 }}>Authorizing the selected source and its published metadata.</p></>
-                ) : sessionError ? (
-                  <><h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>Database chat is unavailable</h3><Link to="/upload" className="btn btn-primary btn-sm" style={{ marginTop: 8 }}>Go to sources</Link></>
-                ) : (
-                  <><h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>Ask about {displayName}</h3><p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-secondary)', maxWidth: 410, lineHeight: 1.6 }}>This feature supports controlled, read-only questions over one authorized table, plus a confirmed metric with one approved direct lookup relationship. Eligible returned results can be viewed as a deterministic chart; the exact table remains the record. Arbitrary joins are not available.</p></>
-                )}
-              </div>
-            ) : messages.map(message => (
-              <div key={message.id} className="anim-fade-up">
-                {message.role === 'user' ? (
-                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}><div className="chat-user">{message.text}</div></div>
-                ) : (
-                  <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                    <div style={{ width: 28, height: 28, borderRadius: 8, background: 'var(--color-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 4 }}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M3 12h3M18 12h3M12 3v3M12 18v3" /></svg></div>
-                    <div style={{ flex: 1, maxWidth: '85%' }}><div className="chat-assistant">
-                      <SourceStatus activity={message.activity} />
-                      {message.text && !message.answer?.presentation && <p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-primary)', lineHeight: 1.6, marginBottom: message.postgresResult ? 10 : 0, whiteSpace: 'pre-wrap' }}>{message.text}{message.streaming && <span style={{ display: 'inline-block', width: 8, height: 14, background: 'var(--color-primary-indigo)', marginLeft: 2, borderRadius: 1, verticalAlign: 'text-bottom', animation: 'pulse-dot 0.8s ease-in-out infinite' }} />}</p>}
-                      {message.outcome === 'clarification' && <span style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: '#1D4ED8' }}>Clarification required</span>}
-                      {message.outcome === 'unsupported' && <span style={{ fontFamily: 'var(--font-data)', fontSize: 10, color: '#92400E' }}>Unsupported operation</span>}
-                      {message.postgresResult && message.answer?.presentation
-                        ? <AnswerView result={message.postgresResult} answer={message.answer} />
-                        : <PostgresResultTable result={message.postgresResult} />}
-                    </div></div>
+          <div style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <div ref={listRef} onScroll={handleScroll} className="chat-messages" style={{ flex: 1, overflowY: 'auto', paddingRight: 12, display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {sessionError && <div role="alert" style={{ background: '#FFF1F2', border: '1px solid #FECDD3', borderRadius: 8, padding: '12px 16px', fontFamily: 'var(--font-body)', fontSize: 13, color: '#9F1239' }}>{sessionError}</div>}
+              {messages.length === 0 ? (
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: '40px 24px', gap: 12 }}>
+                  <div style={{ width: 52, height: 52, borderRadius: '50%', background: '#EFF6FF', border: '1px solid #BFDBFE', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary-indigo)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
                   </div>
-                )}
-              </div>
-            ))}
-            <div ref={messagesEndRef} />
+                  {!sessionReady && !sessionError ? (
+                    <><h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>Creating database session…</h3><p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-secondary)', maxWidth: 360, lineHeight: 1.6 }}>Authorizing the selected source and its published metadata.</p></>
+                  ) : sessionError ? (
+                    <><h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>Database chat is unavailable</h3><Link to="/upload" className="btn btn-primary btn-sm" style={{ marginTop: 8 }}>Go to sources</Link></>
+                  ) : (
+                    <><h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>Ask about {displayName}</h3><p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-secondary)', maxWidth: 410, lineHeight: 1.6 }}>Ask a question in plain language. I write a read-only query over the tables this source shares, run it, and show the answer with the exact result table and the SQL I used. Confirmed metrics are calculated with their approved definitions.</p></>
+                  )}
+                </div>
+              ) : messages.map(message => (
+                <div key={message.id} className="anim-fade-up">
+                  {message.role === 'user' ? (
+                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}><div className="chat-user">{message.text}</div></div>
+                  ) : (
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                      <div style={{ width: 28, height: 28, borderRadius: 8, background: 'var(--color-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 4 }}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M3 12h3M18 12h3M12 3v3M12 18v3" /></svg></div>
+                      <div style={{ flex: 1, maxWidth: '85%', minWidth: 0 }}>{renderAssistant(message)}</div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            {unpinned && streaming && (
+              <button type="button" className="btn btn-primary btn-sm" onClick={jumpToLatest} style={{ position: 'absolute', bottom: 8, left: '50%', transform: 'translateX(-50%)', borderRadius: 999 }}>Jump to latest</button>
+            )}
           </div>
 
+          {notice && (
+            <div role="alert" style={{ ...card, marginTop: 12, background: '#FFFBEB', border: '1px solid #FDE68A', color: '#92400E', display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+              <span>{notice.text}</span>
+              <span style={{ display: 'flex', gap: 8 }}>
+                {notice.refresh && <button type="button" className="btn btn-ghost-neutral btn-sm" onClick={() => { if (!streamAbortRef.current) void reconcile() }}>Refresh conversation</button>}
+                <button type="button" className="btn btn-ghost-neutral btn-sm" aria-label="Dismiss notice" onClick={() => setNotice(null)}>Dismiss</button>
+              </span>
+            </div>
+          )}
+
           <div className="chat-composer" style={{ marginTop: 12, background: 'white', border: '1px solid var(--color-border)', borderRadius: 12, padding: '12px 14px', boxShadow: 'var(--shadow-card)' }}>
-            <textarea aria-label="Database question" value={input} onChange={event => setInput(event.target.value)} onKeyDown={handleKeyDown} placeholder={sessionReady ? 'Ask a question about this database source…' : 'Preparing database conversation…'} rows={2} disabled={!sessionReady || streaming} style={{ width: '100%', border: 'none', outline: 'none', resize: 'none', fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-primary)', lineHeight: 1.5, background: 'transparent', opacity: sessionReady ? 1 : 0.5 }} />
+            <textarea ref={composerRef} aria-label="Database question" value={input} onChange={event => { setInput(event.target.value); if (notice) setNotice(null) }} onKeyDown={handleKeyDown} placeholder={sessionReady ? 'Ask a question about this database source…' : 'Preparing database conversation…'} rows={2} disabled={!sessionReady || streaming} style={{ width: '100%', border: 'none', outline: 'none', resize: 'none', fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--color-text-primary)', lineHeight: 1.5, background: 'transparent', opacity: sessionReady ? 1 : 0.5 }} />
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--color-border-light)' }}>
-              <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--color-text-muted)' }}>{streaming ? (cancelling ? 'Cancelling controlled query…' : 'Planning or executing…') : 'Read-only database chat · confirmed lookup joins only'}</span>
+              <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: tooLong ? '#9F1239' : 'var(--color-text-muted)' }} role={tooLong ? 'alert' : undefined}>
+                {tooLong ? QUESTION_TOO_LONG : streaming ? (cancelling ? 'Cancelling controlled query…' : 'Working on it…') : 'Read-only · answers show their SQL'}
+                {input.length > 3500 && !tooLong && <span> · {input.length}/{MAX_QUESTION_CHARS}</span>}
+              </span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 {streaming && !resultReceived && <button type="button" className="btn btn-ghost-neutral btn-sm" onClick={cancelExecution} disabled={cancelling}>{cancelling ? 'Cancelling…' : 'Cancel'}</button>}
-                <button type="button" aria-label="Send database question" onClick={() => { void handleSend() }} disabled={!input.trim() || !sessionReady || streaming} style={{ width: 32, height: 32, borderRadius: 8, background: (input.trim() && sessionReady && !streaming) ? 'var(--color-primary-indigo)' : 'var(--color-border)', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: (input.trim() && sessionReady && !streaming) ? 'pointer' : 'not-allowed' }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg></button>
+                <button type="button" aria-label="Send database question" onClick={() => { void handleSend() }} disabled={!canSend} style={{ width: 32, height: 32, borderRadius: 8, background: canSend ? 'var(--color-primary-indigo)' : 'var(--color-border)', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: canSend ? 'pointer' : 'not-allowed' }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg></button>
               </div>
             </div>
           </div>
@@ -692,8 +922,9 @@ function DatabaseChatSession({ sourceId, initialPrefill }) {
           </div>
           <div style={{ marginBottom: 20 }}>
             <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Capability</p>
-            <div style={{ background: 'white', border: '1px solid var(--color-border)', borderRadius: 8, padding: '10px 12px', fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-secondary)', lineHeight: 1.55 }}>Controlled read-only queries over one authorized table, or a confirmed metric with one owner-approved direct lookup relationship. No arbitrary joins, profiling, findings, or database charts.</div>
+            <div style={{ background: 'white', border: '1px solid var(--color-border)', borderRadius: 8, padding: '10px 12px', fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--color-text-secondary)', lineHeight: 1.55 }}>Read-only questions across the tables this source shares. Confirmed metrics use their approved definitions. Every answer shows its SQL and the exact rows.</div>
           </div>
+          <AiSettingsBlock settings={aiSettings} />
           <div style={{ marginTop: 20, padding: '12px', background: 'var(--color-base)', borderRadius: 8 }}>
             <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Session stats</p>
             {[['Messages', String(messages.length)], ['Session ID', sessionId ? `${sessionId.slice(0, 8)}…` : '—'], ['Binding', 'Database source']].map(([label, value]) => <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}><span style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'var(--color-text-muted)' }}>{label}</span><span style={{ fontFamily: 'var(--font-data)', fontSize: 11, color: 'var(--color-text-primary)', overflowWrap: 'anywhere', textAlign: 'right' }}>{value}</span></div>)}
