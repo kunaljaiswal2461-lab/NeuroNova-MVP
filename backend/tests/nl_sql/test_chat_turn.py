@@ -35,17 +35,14 @@ def settings_with(world, **changes):
 async def test_sql_answer_order_and_payloads(synced, monkeypatch):
     run = await drive(synced, monkeypatch, question=Q, responses=[sql_env(GOOD), KPI_SPEC])
     assert run.types == [
-        "start", "planning", "sql_generated", "executing", "presenting", "postgres_result", "presentation", "token", "done",
+        "start", "planning", "sql_generated", "executing", "postgres_result", "presentation", "token", "done",
     ]
     generated = run.data("sql_generated")[0]
     assert set(generated) == {"sql", "assumptions", "output_intent", "rewrites", "attempt"} and generated["attempt"] == 1
     assert run.data("executing")[0]["state"] == "executing" and run.data("executing")[0]["snapshot_id"]
     presentation = run.data("presentation")[0]
     assert presentation["answer"] == "There are 42 orders." and presentation["display"] == "kpi"
-    assert set(presentation) == {
-        "answer", "takeaways", "caveats", "display", "encodings", "table_columns", "fallback", "derived",
-        "answer_segments", "takeaways_segments", "display_time_zone",      # SPEC-10 W3.4
-    }
+    assert set(presentation) == {"answer", "takeaways", "caveats", "display", "encodings", "table_columns", "fallback", "derived"}
     assert run.data("token")[0]["text"] == "There are 42 orders."
     assert run.data("postgres_result")[0]["postgres_result"]["rows"][0][0] == {"kind": "integer", "value": "42"}
     assert run.data("done")[0]["message_id"]
@@ -74,7 +71,7 @@ async def test_repair_events_in_order(synced, monkeypatch):
     run = await drive(synced, monkeypatch, question=Q, responses=[sql_env(BAD), sql_env(GOOD), KPI_SPEC], script=script)
     assert run.types == [
         "start", "planning", "sql_generated", "executing", "repairing", "sql_generated", "executing",
-        "presenting", "postgres_result", "presentation", "token", "done",
+        "postgres_result", "presentation", "token", "done",
     ]
     assert run.data("repairing") == [{"reason_code": "query_error:42703"}]
     assert [d["attempt"] for d in run.data("sql_generated")] == [1, 2]
@@ -92,7 +89,7 @@ async def test_repair_after_a_rejection_has_no_executing_before_it(synced, monke
     run = await drive(synced, monkeypatch, question=Q, responses=[sql_env(BAD), sql_env(GOOD), KPI_SPEC], script=script)
     assert run.types == [
         "start", "planning", "sql_generated", "repairing", "sql_generated", "executing",
-        "presenting", "postgres_result", "presentation", "token", "done",
+        "postgres_result", "presentation", "token", "done",
     ]
 
 
@@ -233,7 +230,7 @@ async def test_the_record_validates_for_every_terminal_path_and_never_leaks_sql_
     for outcome, (responses, script) in cases.items():
         run = await drive(synced, monkeypatch, question=Q, responses=responses, script=script)
         record = run.assistant.nl_sql
-        assert isinstance(record, NlSqlTurn) and record.outcome == outcome and record.version == 2
+        assert isinstance(record, NlSqlTurn) and record.outcome == outcome and record.version == 1
         NlSqlTurn.model_validate(json.loads(record.model_dump_json()))                                # C2 round trip
         if outcome == "answer":
             stored_result = run.assistant.postgres_result.model_dump_json()
@@ -265,7 +262,7 @@ async def test_a_pass2_failure_is_never_a_turn_failure(synced, monkeypatch):
         ([sql_env(GOOD), {**KPI_SPEC, "answer": "{{row:0.zzz}}"}], "bad_reference"),
     ):
         run = await drive(synced, monkeypatch, question=Q, responses=responses)
-        assert run.types[-5:] == ["presenting", "postgres_result", "presentation", "token", "done"]
+        assert run.types[-4:] == ["postgres_result", "presentation", "token", "done"]
         presentation = run.assistant.nl_sql.presentation
         assert presentation.fallback == reason and presentation.display == "table"
         assert run.assistant.content == "The read-only calculation completed with 1 returned row(s)."
@@ -297,7 +294,7 @@ async def test_the_guard_is_checked_before_pass_2_and_held_for_persistence_and_e
         seen.append((n, len(run.llm.calls)))
 
     run = await drive(synced, monkeypatch, question=Q, responses=[sql_env(GOOD), KPI_SPEC], on_guard=on_guard)
-    assert run.types[-5:] == ["presenting", "postgres_result", "presentation", "token", "done"]
+    assert run.types[-4:] == ["postgres_result", "presentation", "token", "done"]
     # (guard number, model calls made so far): the check runs after pass 1 and before pass 2; the other two
     # (persistence, emission) run after pass 2 has been made.
     assert seen == [(1, 1), (2, 2), (3, 2)]

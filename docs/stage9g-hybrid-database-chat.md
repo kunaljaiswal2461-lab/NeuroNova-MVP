@@ -42,25 +42,21 @@ only). A repair that returns the same SQL (after whitespace and identifier-case 
 
 ## SSE contract (C1)
 
-New event types: `sql_generated`, `repairing`, `presentation`, and (SPEC-10) `presenting`. `: keepalive` comment frames may
-appear at any point after the response headers; every SSE parser ignores them.
+New event types: `sql_generated`, `repairing`, `presentation`.
 
 | Path | Events, in order |
 |---|---|
 | typed path | as before: `start, planning, [executing], postgres_result \| clarification \| unsupported \| catalog \| error, token, done` |
 | write guard | `start, planning, unsupported, token, done` |
 | SQL → clarification / unsupported | `start, planning, clarification \| unsupported, token, done` |
-| SQL → answer | `start, planning, sql_generated, executing, presenting, postgres_result, presentation, token, done` |
-| SQL → repair → answer | `…, sql_generated, executing, repairing, sql_generated, executing, presenting, postgres_result, presentation, token, done` |
+| SQL → answer | `start, planning, sql_generated, executing, postgres_result, presentation, token, done` |
+| SQL → repair → answer | `…, sql_generated, executing, repairing, sql_generated, executing, postgres_result, presentation, token, done` |
 | SQL → repair after a rejection | `…, sql_generated, repairing, sql_generated, executing, …` (no `executing` before the repair: the event is emitted only after the validator accepts) |
 | SQL → failed | `…, error, token, done` with `error.data = {code, message}` |
-| SQL → turn budget exceeded (SPEC-10) | `…, error {code: "turn_timeout", message}, token, done` |
-| route crash (SPEC-10) | `…, error {code: "internal_error", message}, done` |
 | cancelled | the existing cancellation path |
 
 Payloads: `sql_generated {sql, assumptions, output_intent, rewrites, attempt}`, `repairing {reason_code}`,
-`presenting {state}`, `presentation {answer, takeaways, caveats, display, encodings, table_columns, fallback, derived,
-answer_segments, takeaways_segments, display_time_zone}`.
+`presentation {answer, takeaways, caveats, display, encodings, table_columns, fallback, derived}`.
 No event carries row values outside `postgres_result`, placeholders, prompts, canaries, server error text or a stack trace.
 
 ## Persistence (C2)
@@ -114,14 +110,3 @@ query failed · correcting once…", the "Corrected automatically" chip). 18. SQ
 a column's personal flag and watch the caveats change. 21. A second browser tab gets the 409 message while a turn runs.
 22. Close the tab mid-answer, reopen: one cancellation message, no duplicate. 23. A Hindi question. 24. The planted
 comment question (`adv-002`). 25. 360 px wide and dark mode.
-
-## SPEC-10 additions
-
-- `turn_timeout` (new `failure_code`, fixed message `TURN_TIMEOUT`): the SQL path has a wall-clock budget
-  (`nl_sql_turn_budget_seconds`, default 150 s) covering pass 1, executions, the repair and pass 2. On expiry the turn is
-  cancelled exactly as a user cancel is (connection terminated, model tasks dropped) but persisted and reported as
-  `turn_timeout`, never as a cancellation. After rows are persisted the budget no longer applies.
-- `internal_error` (SSE only, fixed message `INTERNAL`): the route's crash frame. Nothing is persisted for it.
-- Heartbeat: `chat_sse_heartbeat_seconds` (default 10). The wrapper keeps one pending `__anext__()` and never cancels it
-  on a timeout, so a keep-alive can never cancel a model call or a query.
-- The revoked-before-pass-2 path now persists its `nl_sql` record.
