@@ -240,6 +240,8 @@ class ChatStreamEventType(str, enum.Enum):
     SQL_GENERATED = "sql_generated"
     REPAIRING = "repairing"
     PRESENTATION = "presentation"
+    # SPEC-10 W2.1: pass 2 (the answer-writing model call) has started.
+    PRESENTING = "presenting"
     INTENT = "intent"
     CITATIONS = "citations"
     QUERY_RESULT = "query_result"
