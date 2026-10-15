@@ -6,11 +6,6 @@ export const JWT_REQUIRED_MESSAGE = 'Please sign in again to manage database con
 const TRANSIENT_STATUSES = new Set([502, 503, 504])
 const READ_TIMEOUT_MS = 15_000
 const LONG_TIMEOUT_MS = 120_000
-// SPEC-10 W1.3: a stream has three limits instead of one wall clock. Connect covers a Render cold start (~50 s); idle
-// is four missed 10 s heartbeats; the ceiling sits above the server's 150 s turn budget plus a cold start.
-const CONNECT_TIMEOUT_MS = 75_000
-const IDLE_TIMEOUT_MS = 45_000
-const MAX_STREAM_MS = 300_000
 
 function cancellation() {
   return new DOMException('Request cancelled.', 'AbortError')
@@ -28,7 +23,6 @@ function friendlyError(error, uncertain = false) {
       status: error.status,
       response: error.response,
       code: error.code,
-      ...(error.name === 'TimeoutError' ? { name: 'TimeoutError' } : {}),
     })
   }
   return error
@@ -64,75 +58,6 @@ function deadline(signal, timeoutMs) {
       // Stop any unread/unfinished response as well as releasing listeners.
       controller.abort(cancellation())
     },
-  }
-}
-
-function streamTimeout(code) {
-  const messages = {
-    connect_timeout: 'The server did not respond in time.',
-    stream_idle_timeout: 'The connection went quiet while answering.',
-    stream_max_timeout: 'The answer took longer than the maximum allowed time.',
-  }
-  return Object.assign(new Error(messages[code] ?? UNAVAILABLE_MESSAGE), { name: 'TimeoutError', code })
-}
-
-// Connect, idle and ceiling limits for one stream. `connected()` ends the connect phase and starts the idle timer;
-// `touch()` (any bytes, a heartbeat comment included) restarts it.
-function streamScope(signal, { connectTimeoutMs, idleTimeoutMs, maxStreamMs }) {
-  const controller = new AbortController()
-  const onAbort = () => controller.abort(cancellation())
-  if (signal?.aborted) onAbort()
-  else signal?.addEventListener('abort', onAbort, { once: true })
-  const fail = code => controller.abort(streamTimeout(code))
-  let connectTimer = setTimeout(() => fail('connect_timeout'), connectTimeoutMs)
-  let idleTimer = null
-  const maxTimer = setTimeout(() => fail('stream_max_timeout'), maxStreamMs)
-  return {
-    signal: controller.signal,
-    run: task => abortable(task, controller.signal),
-    connected() {
-      clearTimeout(connectTimer)
-      connectTimer = null
-      idleTimer = setTimeout(() => fail('stream_idle_timeout'), idleTimeoutMs)
-    },
-    touch() {
-      if (idleTimer === null) return
-      clearTimeout(idleTimer)
-      idleTimer = setTimeout(() => fail('stream_idle_timeout'), idleTimeoutMs)
-    },
-    close() {
-      clearTimeout(connectTimer)
-      clearTimeout(idleTimer)
-      clearTimeout(maxTimer)
-      signal?.removeEventListener('abort', onAbort)
-      controller.abort(cancellation())
-    },
-  }
-}
-
-// One SSE frame: `event:` plus every `data:` line (joined with a newline, per the SSE rule). Comment lines are ignored.
-function parseFrame(part) {
-  let event = null
-  const data = []
-  for (const line of part.split('\n')) {
-    if (!line || line[0] === ':') continue
-    const colon = line.indexOf(':')
-    const field = colon < 0 ? line : line.slice(0, colon)
-    let value = colon < 0 ? '' : line.slice(colon + 1)
-    if (value[0] === ' ') value = value.slice(1)
-    if (field === 'event') event = value.trim()
-    else if (field === 'data') data.push(value)
-  }
-  return event && data.length ? { event, data: data.join('\n') } : null
-}
-
-function tokenExpiry(token) {
-  try {
-    const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')
-    const exp = JSON.parse(atob(payload.padEnd(Math.ceil(payload.length / 4) * 4, '='))).exp
-    return typeof exp === 'number' ? exp : null
-  } catch {
-    return null
   }
 }
 
@@ -188,9 +113,6 @@ export function createApi({
   fetchImpl = (...args) => fetch(...args),
   readTimeoutMs = READ_TIMEOUT_MS,
   longTimeoutMs = LONG_TIMEOUT_MS,
-  connectTimeoutMs = CONNECT_TIMEOUT_MS,
-  idleTimeoutMs = IDLE_TIMEOUT_MS,
-  maxStreamMs = MAX_STREAM_MS,
   retryDelays = [500, 1000],
 }) {
   let refreshPromise = null
@@ -244,21 +166,6 @@ export function createApi({
       refreshPromise = null
     })
     return refreshPromise
-  }
-
-  // SPEC-10 W1.5. A hint, not a verification: refresh when the access token is about to expire (or cannot be read) so
-  // the first question after a long idle does not meet a 401 that a stream may never retry. A transient refresh failure
-  // never blocks the send; an explicit 401/403 goes through the normal `onAuthExpired` path inside `refresh()`.
-  async function ensureFreshToken({ minValiditySeconds = 60 } = {}) {
-    const token = storage.getItem('access_token')
-    if (!token || !storage.getItem('refresh_token')) return
-    const exp = tokenExpiry(token)
-    if (exp !== null && exp - Date.now() / 1000 >= minValiditySeconds) return
-    try {
-      await refresh()
-    } catch (error) {
-      if (error.status === 401 || error.status === 403) throw error
-    }
   }
 
   async function fetchAuthenticated(path, init, signal, state = {}, responseOptions = {}, allowAuthRefresh = true) {
@@ -352,66 +259,42 @@ export function createApi({
     }, res => res.status === 204 ? null : res.json(), options)
   }
 
-  // Streams are never retried (reconnecting a chat mutation could generate a duplicate reply) and never replayed after
-  // a token refresh (the server may have accepted the turn before the browser saw a failed response). The returned
-  // iterator also exposes `skippedFrames`: frames whose JSON could not be parsed.
-  function streamSSE(path, body = {}, options = {}) {
-    const stats = { skippedFrames: 0 }
-    const iterator = readStream(path, body, options, stats)
-    Object.defineProperty(iterator, 'skippedFrames', { get: () => stats.skippedFrames })
-    return iterator
-  }
-
-  async function* readStream(path, body, options, stats) {
+  async function* streamSSE(path, body = {}, options = {}) {
+    // One deadline spans connection and body consumption. Streams are never
+    // retried: reconnecting a chat mutation could generate a duplicate reply.
+    // Do not replay a stream after a token refresh either: a server may have
+    // accepted the turn before the browser receives a failed stream response.
     if (options.requireJwt && !storage.getItem('access_token')) throw jwtRequired()
-    const scope = streamScope(options.signal, {
-      connectTimeoutMs: options.connectTimeoutMs ?? connectTimeoutMs,
-      idleTimeoutMs: options.idleTimeoutMs ?? idleTimeoutMs,
-      maxStreamMs: options.maxStreamMs ?? options.timeoutMs ?? maxStreamMs,
-    })
+    const scope = deadline(options.signal, options.timeoutMs ?? longTimeoutMs)
     let reader
     try {
       const res = await scope.run(() => fetchAuthenticated(path, {
         method: 'POST', headers: authHeaders(options), body: JSON.stringify(body),
       }, scope.signal, {}, { preserveErrorBody: options.preserveErrorBody }, false))
-      scope.connected()
       reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
-      let heldCarriageReturn = ''
-      const frames = function* (text) {
-        for (const part of text.split('\n\n')) {
-          if (!part.trim()) continue
-          const frame = parseFrame(part)
-          if (!frame) continue
-          let data
-          try {
-            data = JSON.parse(frame.data)
-          } catch {
-            stats.skippedFrames++
-            continue // Preserve skipping malformed frames.
-          }
-          yield { event: frame.event, data }
-        }
-      }
       while (true) {
         const { done, value } = await scope.run(() => reader.read())
         if (done) break
-        scope.touch()
-        // CRLF and bare CR are line breaks too; a CR at the end of a chunk may be half of a CRLF, so wait for more.
-        let text = heldCarriageReturn + decoder.decode(value, { stream: true })
-        heldCarriageReturn = text.endsWith('\r') ? '\r' : ''
-        if (heldCarriageReturn) text = text.slice(0, -1)
-        buffer += text.replace(/\r\n?/g, '\n')
-        const boundary = buffer.lastIndexOf('\n\n')
-        if (boundary < 0) continue
-        const complete = buffer.slice(0, boundary)
-        buffer = buffer.slice(boundary + 2)
-        yield* frames(complete)
+        buffer += decoder.decode(value, { stream: true })
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop() ?? ''
+        for (const part of parts) {
+          if (!part.trim()) continue
+          const eventMatch = part.match(/^event:\s*(.+)$/m)
+          const dataMatch = part.match(/^data:\s*(.+)$/ms)
+          if (eventMatch && dataMatch) {
+            let data
+            try {
+              data = JSON.parse(dataMatch[1])
+            } catch {
+              continue // Preserve skipping malformed frames.
+            }
+            yield { event: eventMatch[1].trim(), data }
+          }
+        }
       }
-      // The stream ended: flush the decoder and parse whatever is left as a last frame (no trailing blank line needed).
-      buffer += (heldCarriageReturn + decoder.decode()).replace(/\r\n?/g, '\n')
-      yield* frames(buffer)
     } catch (error) {
       if (options.signal?.aborted) throw cancellation()
       throw friendlyError(error)
@@ -425,5 +308,5 @@ export function createApi({
     }
   }
 
-  return { get, getBlob, post, put, postForm, delete: del, streamSSE, ensureFreshToken }
+  return { get, getBlob, post, put, postForm, delete: del, streamSSE }
 }
