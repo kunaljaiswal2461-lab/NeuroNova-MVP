@@ -1,4 +1,4 @@
-# Keep the Render backend warm
+# Keep the Render backend warm and wake
 
 ## 1. Why this exists
 
